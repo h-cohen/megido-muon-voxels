@@ -148,15 +148,19 @@ baseline model will need to account for.
 
 ## Verdict
 
-Phase 1's exit gate is fully met, with no remaining open items: all 9 S0-det
-checks pass on real P0 data, including the stop-condition
+Phase 1's exit gate is fully met, with no engineering work outstanding: all 9
+S0-det checks pass on real P0 data, including the stop-condition
 `acceptance_cutoff` check, which confirms the absolute angular scale to
 within 2.4% of the purely geometric prediction; the adjacency, active-width,
 and coordinate-pairing checks all pass with comfortable margin; zero dead
 channels were found in this chunk; the ingest seam into the downstream
 reconstruction solver (`load_phantom_dir`) is verified end to end; and the
 full 70-file ingest across all four exposures completed successfully with a
-stable ~25% valid-track fraction and exact 4x row expansion throughout. The
-acceptance-budget finding above (unmapped channels costing ~3/4 of usable
-statistics) remains the top open question to escalate to the detector
-engineers heading into Phase 2.
+stable ~25% valid-track fraction and exact 4x row expansion throughout.
+
+One question remains open, and it is a question for the detector engineers
+rather than a gap in this phase's code: the acceptance-budget finding above,
+where the nine unmapped channels per ASIC cost roughly three quarters of the
+usable statistics. Answering it would not change anything built here, but it
+could quadruple the data Phase 2 has to work with, so it is the highest-value
+item to escalate before the baseline solve begins.
