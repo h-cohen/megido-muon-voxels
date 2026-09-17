@@ -2,6 +2,14 @@
 
 Used as the ground-truth gate: the full chain must recover injected angles
 within resolution, and must reproduce the measured two-adjacent-bar rate.
+
+    Known infidelity, deliberate: charge is split linearly in the crossing
+    fraction, which yields roughly 93% two-adjacent-bar clusters against about
+    53% measured on real data (DET200084). Real triangular bars do not share
+    light linearly with position — a muon crossing near a bar's thick centre
+    deposits almost all of it in that one bar. This simulator is a pipeline
+    gate, not a detector-response model: do not use it to predict acceptance,
+    to tune the adjacency threshold, or to estimate cluster-topology rates.
 """
 from __future__ import annotations
 
