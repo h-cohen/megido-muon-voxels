@@ -32,8 +32,15 @@ class EventChunk:
         return int(self.hit.shape[0])
 
 
-def read_chunks(path: Path, chunksize: int = 200_000) -> Iterator[EventChunk]:
-    """Yield EventChunks. Repeated header rows are dropped."""
+def read_chunks(path: Path, chunksize: int = 50_000) -> Iterator[EventChunk]:
+    """Yield EventChunks. Repeated header rows are dropped.
+
+    chunksize is deliberately modest. The repeated header rows force dtype=str,
+    which materialises one Python string object per cell, so memory scales as
+    chunksize x 257 columns. At 200,000 rows that reached 9 GB resident and had
+    to be killed; 50,000 keeps the parse under about 1.5 GB. Raise it only if
+    you have measured the headroom.
+    """
     usecols = [_ID] + HIT_COLUMNS + CHARGE_COLUMNS
     reader = pd.read_csv(
         path,

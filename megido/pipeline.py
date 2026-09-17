@@ -22,6 +22,11 @@ from megido.reader import read_chunks
 from megido.trackfile import open_writer, tracks_to_table
 from megido.tracks import fit_tracks
 
+# Bump whenever a change alters reconstruction OUTPUT for unchanged input:
+# hit finding, position reconstruction, track fitting, calibration or binning.
+# The artifact cache keys on this, so a stale bump silently serves old results.
+RECONSTRUCTION_VERSION = 2
+
 
 @dataclass(frozen=True)
 class ExposureResult:
@@ -35,8 +40,14 @@ class ExposureResult:
 
 
 def exposure_key(cfg: SiteConfig, eid: str) -> str:
+    """Hash the exposure id, pose, binning, input files, and RECONSTRUCTION_VERSION.
+
+    RECONSTRUCTION_VERSION must be bumped whenever a code change alters
+    reconstruction output for unchanged input, so this reads the module-level
+    constant at call time rather than any value captured earlier.
+    """
     exp = cfg.exposure(eid)
-    parts = [eid, repr(exp.pose), cfg.binning.t_max, cfg.binning.n_bins]
+    parts = [eid, repr(exp.pose), cfg.binning.t_max, cfg.binning.n_bins, RECONSTRUCTION_VERSION]
     for f in cfg.files_for(eid):
         st = f.stat()
         parts.append(f"{f.name}:{st.st_size}:{int(st.st_mtime)}")
@@ -46,7 +57,8 @@ def exposure_key(cfg: SiteConfig, eid: str) -> str:
 
 def process_exposure(cfg: SiteConfig, eid: str, out_dir: Path,
                      geom: DetectorGeometry | None = None,
-                     force: bool = False) -> ExposureResult:
+                     force: bool = False,
+                     chunksize: int = 50_000) -> ExposureResult:
     geom = geom or DetectorGeometry.megiddo()
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -67,7 +79,7 @@ def process_exposure(cfg: SiteConfig, eid: str, out_dir: Path,
         raise FileNotFoundError(f"exposure {eid!r} has no data files in {cfg.data_dir}")
 
     # Pass 1: calibration needs the whole exposure before hits can be found.
-    cal = calibrate(chunk for f in files for chunk in read_chunks(f))
+    cal = calibrate(chunk for f in files for chunk in read_chunks(f, chunksize=chunksize))
 
     # Pass 2: hits, tracks, artifacts.
     edges = cfg.binning.edges()
@@ -78,7 +90,7 @@ def process_exposure(cfg: SiteConfig, eid: str, out_dir: Path,
     chunk_index = 0
     try:
         for f in files:
-            for chunk in read_chunks(f):
+            for chunk in read_chunks(f, chunksize=chunksize):
                 # A running counter, not a hash of file/offset: ingest only needs to
                 # avoid reusing the same dither pattern across chunks in one run, and
                 # a fixed input set always yields the same file/chunk order, so this
@@ -114,5 +126,7 @@ def process_exposure(cfg: SiteConfig, eid: str, out_dir: Path,
     return ExposureResult(eid, key, n_events, n_valid, counts_path, tracks_path, cached=False)
 
 
-def process_all(cfg: SiteConfig, out_dir: Path, force: bool = False) -> list[ExposureResult]:
-    return [process_exposure(cfg, e.id, out_dir, force=force) for e in cfg.exposures]
+def process_all(cfg: SiteConfig, out_dir: Path, force: bool = False,
+                chunksize: int = 50_000) -> list[ExposureResult]:
+    return [process_exposure(cfg, e.id, out_dir, force=force, chunksize=chunksize)
+            for e in cfg.exposures]

@@ -87,6 +87,17 @@ def test_key_changes_when_a_new_file_appears(fake_site):
     assert exposure_key(load_site_config(cfg_path), "E0") != k1
 
 
+def test_key_changes_when_the_reconstruction_version_changes(fake_site, monkeypatch):
+    """A code change that alters output must invalidate the artifact."""
+    cfg_path, _, _ = fake_site
+    cfg = load_site_config(cfg_path)
+    before = exposure_key(cfg, "E0")
+
+    from megido import pipeline
+    monkeypatch.setattr(pipeline, "RECONSTRUCTION_VERSION", pipeline.RECONSTRUCTION_VERSION + 1)
+    assert exposure_key(cfg, "E0") != before
+
+
 def test_counts_total_matches_valid_tracks_in_range(fake_site):
     cfg_path, out, _ = fake_site
     cfg = load_site_config(cfg_path)

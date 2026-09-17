@@ -47,7 +47,7 @@ def _cmd_validate(args) -> int:
 
 def _cmd_ingest(args) -> int:
     cfg = load_site_config(args.config)
-    for r in process_all(cfg, Path(args.out), force=args.force):
+    for r in process_all(cfg, Path(args.out), force=args.force, chunksize=args.chunksize):
         tag = "cached" if r.cached else "built"
         rate = r.n_valid / r.n_events if r.n_events else 0.0
         print(f"{r.exposure_id:6s} {tag:6s} key={r.key}  events={r.n_events:>9,}  "
@@ -69,6 +69,8 @@ def main(argv: list[str] | None = None) -> int:
     i.add_argument("--config", default="configs/megido.yaml")
     i.add_argument("--out", default="runs/ingest")
     i.add_argument("--force", action="store_true")
+    i.add_argument("--chunksize", type=int, default=50_000,
+                   help="rows per parsed chunk; see megido.reader.read_chunks docstring")
     i.set_defaults(func=_cmd_ingest)
 
     args = p.parse_args(argv)

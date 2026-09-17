@@ -81,3 +81,10 @@ def test_chunking_splits_without_loss(fixture_file):
     chunks = list(read_chunks(fixture_file, chunksize=1))
     assert len(chunks) == 2
     assert all(c.n_events == 1 for c in chunks)
+
+
+def test_default_chunksize_is_memory_conservative():
+    """dtype=str costs one Python string per cell; see read_chunks' docstring."""
+    import inspect
+    from megido.reader import read_chunks
+    assert inspect.signature(read_chunks).parameters["chunksize"].default == 50_000
