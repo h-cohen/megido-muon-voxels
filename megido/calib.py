@@ -38,19 +38,42 @@ def sigma_clipped_pedestal(values: np.ndarray, n_sigma: float = 3.0,
     return mean, sigma
 
 
-def histogram_mpv(values: np.ndarray, bins: int = 200) -> float:
-    """Most-probable value: the peak bin centre.
+def histogram_mpv(values: np.ndarray, bins: int = 200, smooth: int = 15) -> float:
+    """Most-probable value of a Landau-like charge spectrum.
 
     Muon deposits follow a Landau with a long delta-ray tail, so the mean is
-    both biased high and unstable between channels. The MPV is the stable
-    estimator and is what the calibration normalises on.
+    biased high and unstable between channels. The MPV is the stable estimator.
+
+    Three refinements over a plain peak-bin search, each measured:
+      - the histogram range is bounded at the 90th percentile, because a Landau's
+        tail maximum grows with sample count and would otherwise make the bin
+        width depend on how much data a channel happened to collect;
+      - the counts are smoothed, because argmax of a Poisson-noisy histogram
+        wanders across the flat region near a smooth maximum;
+      - a parabola through the peak and its neighbours gives sub-bin resolution.
     """
     v = np.asarray(values, dtype=np.float64)
     if v.size < 50:
         return float("nan")
-    counts, edges = np.histogram(v, bins=bins)
+
+    lo, hi = np.percentile(v, [0.0, 90.0])
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        return float("nan")
+
+    counts, edges = np.histogram(v, bins=bins, range=(lo, hi))
+    counts = counts.astype(np.float64)
+    if smooth > 1:
+        counts = np.convolve(counts, np.ones(smooth) / smooth, mode="same")
+
     i = int(np.argmax(counts))
-    return float(0.5 * (edges[i] + edges[i + 1]))
+    offset = 0.0
+    if 0 < i < len(counts) - 1:
+        curvature = counts[i - 1] - 2.0 * counts[i] + counts[i + 1]
+        if curvature != 0.0:
+            offset = float(np.clip(0.5 * (counts[i - 1] - counts[i + 1]) / curvature, -1.0, 1.0))
+
+    bin_width = edges[1] - edges[0]
+    return float(0.5 * (edges[i] + edges[i + 1]) + offset * bin_width)
 
 
 @dataclass(frozen=True)
