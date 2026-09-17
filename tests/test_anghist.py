@@ -88,32 +88,59 @@ def test_saved_npz_has_the_load_phantom_dir_keys(tmp_path):
 
 
 def test_dither_removes_the_position_quantisation_comb():
-    """Single-bar hits in both layers would otherwise quantise tan to 1.6/31.5 steps.
+    """Single-bar hits in both layers quantise tan to steps of 1.6/31.5 = 0.0508.
 
-    Without dither the angular histogram develops teeth spaced 0.0508 apart at
-    roughly 3x the surrounding floor. This test fails if the dither is removed.
+    Built directly rather than through the simulator, whose linear charge-sharing
+    model yields ~93% two-bar clusters and so barely exercises this. Real data is
+    ~46% single-bar, which is what produces the measured 3x teeth.
+
+    This test fails if the dither is removed.
     """
     import numpy as np
-    from megido.calib import calibrate
+    from megido.calib import ChannelCalibration
+    from megido.config import Binning
     from megido.detector import DetectorGeometry
     from megido.hits import find_hits
-    from megido.sim import simulate
+    from megido.reader import EventChunk
     from megido.tracks import fit_tracks
-    from megido.config import Binning
 
     geom = DetectorGeometry.megiddo()
-    truth = simulate(geom, n_events=40_000, seed=11)
-    cal = calibrate([truth.chunk])
+    rng = np.random.default_rng(3)
+    n = 30_000
+
+    cal = ChannelCalibration(
+        pedestal=np.full((4, 32), 2200.0),
+        noise_sigma=np.full((4, 32), 40.0),
+        mpv=np.full((4, 32), 1750.0),
+        gain=np.ones((4, 32)),
+        n_hits=np.full((4, 32), 10_000, dtype=np.int64),
+    )
+
+    # every layer gets a single-bar cluster at a random bar: the pure comb case
+    hit = np.zeros((n, 4, 32), dtype=bool)
+    charge = np.full((n, 4, 32), 2200, dtype=np.int32)
+    for a in range(4):
+        bars = rng.integers(0, geom.bar.n_bars, size=n)
+        chans = np.array([geom.bar_to_channel(a, int(b)) for b in bars])
+        hit[np.arange(n), a, chans] = True
+        charge[np.arange(n), a, chans] = 2200 + 1750
+    chunk = EventChunk(hit=hit, charge=charge)
 
     def comb_strength(dither):
-        tracks = fit_tracks(find_hits(truth.chunk, geom, cal, dither=dither), geom)
+        tracks = fit_tracks(find_hits(chunk, geom, cal, dither=dither), geom)
         h = histogram_tracks(tracks, Binning())
         profile = h.values.sum(axis=0).astype(float)
-        smooth = np.convolve(profile, np.ones(41) / 41, mode="same")
-        detrended = profile - smooth
-        core = slice(len(profile) // 4, 3 * len(profile) // 4)
-        ac = np.correlate(detrended[core], detrended[core], "full")
+        detrended = profile - np.convolve(profile, np.ones(41) / 41, mode="same")
+        core = detrended[len(profile) // 4: 3 * len(profile) // 4]
+        ac = np.correlate(core, core, "full")
         ac = ac[len(ac) // 2:]
-        return ac[10] / ac[0] if ac[0] > 0 else 0.0   # lag 10 bins = 0.050 tan units
+        return float(ac[10] / ac[0]) if ac[0] > 0 else 0.0
 
-    assert comb_strength(dither=True) < comb_strength(dither=False)
+    undithered = comb_strength(dither=False)
+    dithered = comb_strength(dither=True)
+
+    assert undithered > 0.3, f"the comb must be clearly present without dither (got {undithered:.3f})"
+    assert dithered < 0.5 * undithered, (
+        f"dither must substantially suppress the comb "
+        f"(undithered {undithered:.3f}, dithered {dithered:.3f})"
+    )
