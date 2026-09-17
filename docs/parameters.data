@@ -1,0 +1,71 @@
+number_of_layers = 4
+width_of_bar   = 3.2
+side_of_bar = 2.3345
+height_of_bar = 1.7
+length_of_bar = 40
+number_of_bars = 23
+offset0 = 0.
+offset1 = 0.
+offset2 = 0.
+offset3 = 0.
+
+alpha = 43.08*3.1415926/180
+
+# Detector 3
+zlayer0= 0
+zlayer1= 6.2
+zlayer2= 31.5
+zlayer3= 37.7
+
+
+
+#lookup table asic channels -> bars Yan version
+
+asic0ch = [28, 30, 3, 31, 29, 0, 24, 26, 7, 27, 25, 4, 20, 22, 11, 23, 21, 8, 16, 18, 15, 19, 17]
+asic1ch = [3, 31, 2, 0, 28, 1, 7, 27, 6, 4, 24, 5, 11, 23, 10, 8, 20, 9, 15, 19, 14, 12, 16]
+asic2ch = [19, 15, 18, 16, 12, 17, 23, 11, 22, 20, 8, 21, 27, 7, 26, 24, 4, 25, 31, 3, 30, 28, 0]
+asic3ch = [12, 14, 19, 15, 13, 16, 8, 10, 23, 11, 9, 20, 4, 6, 27, 7, 5, 24, 0, 2, 31, 3, 1]
+ 
+
+
+#lookup table asic -> layer (layer order is bottom up)
+asic_to_layer = [1,3,2,0]   
+
+#[asic0=layerXXX, asic1=layerXXX, asic2=layerXXX, asic3=layerXXX]
+
+
+
+
+#=================================  Y_up, ASIC_B (1)
+
+#+++++++++++++++++++++++++++++++++  X_up, ASIC_C (2)
+
+#=================================  Y_bot, ASIC_A (0)
+
+#+++++++++++++++++++++++++++++++++  X_bot, ASIC_D (3)
+
+
+
+"""
+ XYXY means bottommost layer =X1, then Y1, X2,Y2
+     bar count is from left to right along Y/X and in  standard RH coordinates.
+     orgin 0,0,0 is bottom left
+     Rotation about Z is phi azimuthal angle: Y axis is pointed 281 degrees WRT true north
+     Rotation about X is theta polar angle.
+ 
+     
+                     Z
+                      |
+			          |
+			          |
+			          |
+			          |
+		    (0,0,0)   |_________________________Y
+                      .
+                    .
+                  .
+                .
+              .
+            X
+
+"""

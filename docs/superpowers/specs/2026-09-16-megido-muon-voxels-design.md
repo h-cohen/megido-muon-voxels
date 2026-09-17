@@ -40,63 +40,143 @@ This is **strictly more information than the per-track tree** that `NEW_PROJECT_
 §1.3 identified as the single highest-leverage ask. Offline refocusing at arbitrary
 height, per-track quality cuts, re-weighting and re-binning are all available.
 
-### 1.2 Inherited constants that are empirically false
+### 1.2 Authoritative detector constants
 
-| Claim | Source | Reality |
+Supplied by the detector engineers on 2026-09-17 as
+`00_knowledge/literature_notes/muon-detector/{parameters.data, detector_info.txt}`.
+These supersede `detector_summary.md`, which is wrong on several points.
+
+| Quantity | Value | Note |
 |---|---|---|
-| "23 bars/layer, 9 channels unused" | `detector_summary.md:138` | **All 32 channels per ASIC are live**, with comparable occupancy and comparable MIP charge spectra. Confirmed independently on both Megido and cafeteria data |
-| `ACTIVE_CHANNELS = 23`; `bar_id = asic*23 + channel` | `cafeteria_flux_analysis/calibrate_bars.py:45,202` | An assumption, never measured. Silently discards 36 of 128 real channels |
-| Layer order X, Y, X, Y | `detector_summary.md:31-40`, `layers_fit_calibration/config.py:32` | ASIC-pair mutual information indicates **X, Y, Y, X** (see §1.4) |
-| `aperture_m = 0.65` | cafeteria config default | Was wrong there too (real ≈ 0.354 m). Do not inherit — measure |
+| Layers | 4 | |
+| Bars per layer | **23** | `detector_summary.md` was right; §1.3 records why we briefly doubted it |
+| Bar base width | **3.2 cm** | `detector_summary.md` says 3.3 cm — wrong |
+| Bar height | 1.7 cm | |
+| Bar side | 2.3345 cm | Consistent: √(1.6² + 1.7²) = 2.335 |
+| Bar length | 40 cm | |
+| Apex angle `alpha` | 43.08° | |
+| **Layer z** | **0, 6.2, 31.5, 37.7 cm** | `detector_summary.md` says "~80 cm detector height" — **wrong**. Station separation is 31.5 cm |
+| Layer offsets | 0, 0, 0, 0 | |
+| `asic_to_layer` | `[1, 3, 2, 0]` | Layer order bottom-up |
+| Layer stack (bottom-up) | **X, Y, X, Y** | ASIC 3 = X_bot, ASIC 0 = Y_bot, ASIC 2 = X_up, ASIC 1 = Y_up |
+| Coordinate frame | Origin bottom-left, right-handed, Z up | Rotation about Z = azimuth φ; about X = polar θ |
 
-This is the failure mode `NEW_PROJECT_BRIEF.md` §1.5 warns about: *a wrong instrumental
-constant survives indefinitely when nothing independent checks it.* Every detector
-constant in this project is measured from data and gated by an independent test.
+The values are filed under a `# Detector 3` heading; the user has confirmed the Megiddo
+campaign used that unit.
 
-### 1.3 Channel → bar mapping is a folded permutation, and is unknown
+**Layer separation matters more than any other number here.** At 31.5 cm rather than the
+assumed 80 cm, the angular acceptance is far wider than the inherited configuration
+implies. Derive the acceptance cutoff from data and cross-check it against this value
+before trusting either.
 
-Two-hit coincidence analysis (adjacent bars share charge, so co-occurring channel pairs
-reveal adjacency):
+### 1.2.1 Constants that must still not be inherited
 
-- Strongest pairs, identical across all four ASICs: **(3,31), (7,27), (11,23), (15,19)**
-  — each sums to 34, each member ≡ 3 (mod 4).
-- Channel occupancy has a strict period-4 pattern: `c mod 4 ∈ {0,3}` high, `{1,2}` low.
-- The adjacency graph splits into **four disjoint blocks of 8 that never mix**:
-  `{0,1,2,3,28,29,30,31}`, `{4,5,6,7,24,25,26,27}`, `{8,9,10,11,20,21,22,23}`,
-  `{12,13,14,15,16,17,18,19}` — i.e. block *k* = `{4k..4k+3} ∪ {31-4k..28-4k}`.
+| Claim | Source | Status |
+|---|---|---|
+| `ACTIVE_CHANNELS = 23`; `bar_id = asic*23 + channel` | `cafeteria_flux_analysis/calibrate_bars.py:45,202` | **Wrong.** The bar count is right, but the mapping is not the identity — see §1.3 |
+| `aperture_m = 0.65` | cafeteria config default | Was wrong there too (real ≈ 0.354 m). Measure, do not inherit |
+| "9 channels unused per layer" | `detector_summary.md:138` | True that 9 are unmapped, but they are **not quiet** — see §1.3.1 |
 
-Naive greedy seriation of the coincidence graph explains only 65 % of two-hit events and
-its weakest forced edge has weight 2 — **not trustworthy**. A proper solve is required
-(§4.1).
+`NEW_PROJECT_BRIEF.md` §1.5 warns that *a wrong instrumental constant survives
+indefinitely when nothing independent checks it.* Every constant above is checked against
+data, and §1.3 is the worked example of why that discipline pays.
 
-**Open risk:** four *disconnected* adjacency blocks are not what a single contiguous row
-of bars produces — one line of bars gives one connected path. Either a layer is built
-from four separate 8-bar modules, or the readout does something not yet understood.
-Until §4.1 resolves it, **bars-per-layer and active width are unknown** — neither 23 nor
-32 may be assumed.
+### 1.3 Channel → bar mapping — supplied and validated
 
-### 1.4 Layer orientation
+The mapping is **not** the identity. It is a folded permutation, different per ASIC,
+supplied as four 23-entry lists indexed by bar position:
 
-Mutual information between ASIC pairs, over single-hit events (layers measuring the same
-coordinate must correlate):
+```
+asic0 = [28, 30,  3, 31, 29,  0, 24, 26,  7, 27, 25,  4, 20, 22, 11, 23, 21,  8, 16, 18, 15, 19, 17]
+asic1 = [ 3, 31,  2,  0, 28,  1,  7, 27,  6,  4, 24,  5, 11, 23, 10,  8, 20,  9, 15, 19, 14, 12, 16]
+asic2 = [19, 15, 18, 16, 12, 17, 23, 11, 22, 20,  8, 21, 27,  7, 26, 24,  4, 25, 31,  3, 30, 28,  0]
+asic3 = [12, 14, 19, 15, 13, 16,  8, 10, 23, 11,  9, 20,  4,  6, 27,  7,  5, 24,  0,  2, 31,  3,  1]
+```
+
+i.e. `asic0[0] = 28` means bar 1 is read by channel 28. Each list holds 23 distinct
+channels, leaving 9 unmapped per ASIC.
+
+**Validation — the acceptance test for any mapping.** Adjacent bars share charge, so
+two-hit events must land on *adjacent bar indices*. Measured on DET200084 (56 081 events):
+
+| Interpretation | 2-hit events on adjacent bars |
+|---|---|
+| Raw channel number (i.e. assuming identity) | 130 — **0.2 %** |
+| Supplied map, in bar space | ~17 000 — **44–47 %** on every ASIC |
+
+Chance level for two random distinct bars out of 23 is 8.7 %. The supplied map beats the
+identity assumption by ~130× and sits far above chance on all four ASICs. **The map is
+correct.** This test is the regression gate: any future mapping change must reproduce
+≥40 % adjacency.
+
+Had we shipped `bar_id = asic*23 + channel`, 99.8 % of charge-sharing pairs would have
+been mis-assigned and every sub-bar interpolated position would have been noise.
+
+**Why the coincidence structure looked pathological.** Before the map arrived, the
+adjacency graph in *channel* space appeared to split into four disjoint blocks of 8
+(`{0-3,28-31}`, `{4-7,24-27}`, `{8-11,20-23}`, `{12-15,16-19}`), which no contiguous row
+of bars can produce. That structure is entirely an artifact of the fold; it dissolves in
+bar space. Recorded here so it is not re-investigated.
+
+### 1.3.1 Unmapped channels are not quiet — open item
+
+The 9 unmapped channels per ASIC are neither dead nor cleanly pedestal:
+
+| | mapped (23 ch) | unmapped (9 ch) |
+|---|---|---|
+| Share of all hits | 80 % | **20 %** |
+| Hits per channel | ~3700 | ~2200 (60 % of mapped) |
+| `CHARGE_HG` median | 6098–6286 | 5917–6306 |
+
+A near-identical charge median argues against simple crosstalk. Unexplained, and on the
+open question list. It does not block the pipeline: S1 rejects events whose hits fall on
+unmapped channels, so the cost is acceptance, not correctness. **Quantify that acceptance
+loss** — 20 % of hits is not negligible, and if it is angle-dependent it biases the
+baseline solve.
+
+### 1.4 Layer orientation — resolved, and a retracted inference
+
+**Authoritative:** `asic_to_layer = [1, 3, 2, 0]`, layers ordered bottom-up, stack
+**X, Y, X, Y**:
+
+| Position | Layer | ASIC | Coordinate | z (cm) |
+|---|---|---|---|---|
+| top | 3 | 1 | Y_up | 37.7 |
+| | 2 | 2 | X_up | 31.5 |
+| | 1 | 0 | Y_bot | 6.2 |
+| bottom | 0 | 3 | X_bot | 0 |
+
+So ASIC 0 and 1 measure Y; ASIC 2 and 3 measure X.
+
+**Retracted.** During design we inferred X, Y, Y, X from mutual information between ASIC
+pairs on single-hit events, reasoning that same-coordinate layers must correlate most:
 
 | pair | MI | pair | MI |
 |---|---|---|---|
-| **0–3** | **0.274** | 0–1 | 0.232 |
-| **1–2** | **0.247** | 2–3 | 0.245 |
+| 0–3 | 0.274 | **0–1** | **0.232** |
+| 1–2 | 0.247 | **2–3** | **0.245** |
 | | | 0–2 | 0.156 |
 | | | 1–3 | 0.159 |
 
-Highest {0,3} and {1,2}; lowest {0,2} and {1,3}. Consistent with two identical XY modules
-with one flipped — **ASIC 0,3 measure one coordinate; ASIC 1,2 the other**. An X,Y,X,Y
-stack predicts the opposite ranking. Evidence is suggestive, not conclusive at this
-exposure; §4.1 settles it by track χ².
+The true same-coordinate pairs are {0,1} and {2,3} — mid-table, not the top-ranked {0,3}
+and {1,2}. **Mutual information did not discriminate orientation on this detector.** The
+likely reason is that the two same-coordinate layers sit either side of the drift gap,
+so angular spread degrades their correlation below that of adjacent orthogonal layers.
+
+Kept as a recorded negative result: do not re-derive orientation this way, and do not
+treat a plausible-looking ranking as evidence without an independent check.
 
 ### 1.5 Exposures
 
 Poses supplied by the user. Azimuth 241° is the **detector yaw** — the compass bearing of
 the detector's local +x (bar) axis — constant for the whole campaign; for T20 the tilt
 leans toward that same bearing.
+
+**Noted conflict, resolved in favour of the campaign log.** `parameters.data` states
+*"Y axis is pointed 281 degrees WRT true north"*. The user has confirmed **241° is
+correct** for this campaign; the 281° figure refers to a different deployment. Recorded
+because a 40° error would rotate the entire reconstruction about the vertical with nothing
+downstream flagging it — if a result ever looks rotated, check here first.
 
 | Exposure | Runs | Files | x, y, z (m) | tilt° | az° | Note |
 |---|---|---|---|---|---|---|
@@ -179,17 +259,22 @@ implementation plan, and each ends at a gate that must pass before the next begi
 
 | Phase | Scope | Exit gate |
 |---|---|---|
-| **1** | S0-det, S0-exp, S1 — raw `.data` to per-exposure angular histograms | Synthetic simulator's injected channel permutation recovered exactly; `counts_<exp>.npz` written for all four exposures |
+| **1** | S0-det, S0-exp, S1 — raw `.data` to per-exposure angular histograms | Supplied constants validated (adjacency ≥ 40 %, acceptance cutoff consistent with 31.5 cm); synthetic angles recovered within resolution; `counts_<exp>.npz` written for all four exposures |
 | **2** | S2 — baseline solve | Synthetic scene + synthetic baseline both recovered from multi-pose data; null space correctly identified |
 | **3** | S3, S4 — tilt-aware forward model, inversion, uncertainty | Phantom RMSE gate from `topography.csv`; LOO cross-validation honest |
 | **4** | S5 — viewer | Playwright smoke; every control operable on real reconstructed output |
 
-Phase 1 carries nearly all of the project risk, because every inherited detector constant
-it depends on has already been shown to be wrong (§1.2) and its central unknown — the
-channel permutation — is unsolved (§1.3). It is also the only phase with no reusable prior
-art. **Plan and execute Phase 1 first; do not scope Phases 2–4 in detail until it lands**,
-since its measured outputs (bars per layer, active width, layer Δz) set parameters those
-phases depend on.
+Phase 1 was the dominant risk while the channel map was unknown. **That risk is now
+largely retired** — the engineers supplied the map and the layer geometry (§1.2–§1.4), and
+the map validates against data at 44–47 % adjacency versus 0.2 % for the identity
+assumption. Phase 1 is now substantial but ordinary work: a streaming reader, hit
+clustering, charge-sharing interpolation, track fitting, and a set of falsification tests
+on supplied constants.
+
+It remains the only phase with no reusable prior art — no raw-data-to-angles pipeline
+exists in Python anywhere on this machine (§1.6). **Plan and execute Phase 1 first**, since
+its outputs (validated acceptance cutoff, achieved angular resolution, unmapped-channel
+acceptance loss) set parameters Phases 2–4 depend on.
 
 ---
 
@@ -255,16 +340,25 @@ python -m megido compare runs/007 runs/008
 Runs once; re-run only if hardware changed. Consumes the full P0 bunch (21 files,
 ~1.2 M events) for statistics.
 
-| Sub-task | Method | Independent gate |
+All four constants are now **supplied** (§1.2, §1.3, §1.4), so this stage is
+*validation*, not discovery. It loads the engineers' values and proves each against data
+before anything consumes them.
+
+| Sub-task | Supplied value | Validation against data |
 |---|---|---|
-| **0a** channel → bar permutation | Two-hit coincidence matrix over all P0 files; seriate into a bar ordering | **Track collinearity**: the correct permutation maximizes the fraction of 4-layer events with a good straight-line fit. Independent of the coincidence statistic used to derive it |
-| **0b** bars per layer, bar pitch | Length of the recovered ordering; pitch from hit-position histogram hard edges | Flat-topped occupancy with sharp edges at both ends |
-| **0c** X/Y assignment and z-order | Test all three pairings by track χ² | χ² must clearly prefer one; cross-check against §1.4 MI |
-| **0d** layer z separation | **Not recorded anywhere.** Derive from angular acceptance cutoff: `\|tan θ\|_max = active_width / Δz` | Cross-check against the "~80 cm" figure in `detector_summary.md` |
+| **0a** channel → bar map | Four 23-entry lists (§1.3) | **Adjacency rate ≥ 40 %** of two-hit events on adjacent bar indices, per ASIC. Identity mapping scores 0.2 %, chance 8.7 %. Already passes at 44–47 % |
+| **0b** bars per layer, pitch | 23 bars, base 3.2 cm | Hit-position histogram is flat-topped with hard edges; recovered active width consistent with 23 bars at the derived pitch |
+| **0c** X/Y assignment, z-order | `asic_to_layer = [1,3,2,0]`, X,Y,X,Y | Track χ² must prefer this pairing over the two alternatives. Note §1.4: mutual information is **not** a valid discriminator here |
+| **0d** layer z separation | 0, 6.2, 31.5, 37.7 cm | Angular acceptance cutoff `\|tan θ\|_max = active_width / Δz` must agree with a 31.5 cm station separation. **Disagreement here is a stop condition** — it is the absolute angular scale |
+| **0e** unmapped-channel acceptance | — | Quantify the acceptance loss from rejecting events that touch unmapped channels (§1.3.1, ~20 % of hits), and test whether it is angle-dependent |
 
 **Acceptance gate for the whole stage:** a synthetic detector simulator generates events
-through a known, randomly chosen channel permutation; S0-det must recover it exactly.
-Nothing downstream runs until this passes.
+through the known channel permutation and known layer geometry; S0-det must recover the
+injected angles within resolution and reproduce the adjacency rate. Nothing downstream
+runs until this passes.
+
+Each validation is a *falsification test on a supplied number*, not a fit. A supplied
+constant that fails its test is escalated to the engineers, never silently replaced.
 
 ### 4.2 S0-exp (per exposure, automatic)
 
@@ -283,9 +377,12 @@ New code. Streaming chunked reader; must skip the repeated header line every ~16
 
 Per event:
 
-1. Per layer, select channels with `HIT = 1` and charge above `pedestal + 3σ`
-2. Accept 1 hit, or 2 hits on **physically adjacent bars** (adjacency from the S0-det
-   permutation, not from channel number). Reject larger or non-adjacent clusters
+1. Per layer, select channels with `HIT = 1` and charge above `pedestal + 3σ`. Translate
+   channel → bar index through the §1.3 map for that ASIC. **Reject the event if any hit
+   falls on an unmapped channel** — ~20 % of hits, see §1.3.1; record the rejection rate
+   per angular bin, since an angle-dependent loss biases S2
+2. Accept 1 hit, or 2 hits on **physically adjacent bars** (adjacency in bar index, never
+   in channel number). Reject larger or non-adjacent clusters
 3. Sub-bar position `x = a · n / (N + n)` on pedestal-subtracted, gain-corrected charge
 4. Straight-line least squares across the four layers → `(ax, ay) = tan θx, tan θy`, plus χ²
 5. Cuts: hit in all 4 layers, ≤2 adjacent bars per layer, χ² below threshold
@@ -515,6 +612,11 @@ alias-distance and CV-scan-degeneracy problems early.
   scale is locked by one surveyed length; angles alone fix only ratios. The cafeteria
   project ran an entire campaign on an unverified self-calibrated baseline
 - **Aug 6 rate drop** — cause unknown; handled defensively by splitting T20a/T20b
+- **Unmapped-channel hits** (§1.3.1) — the 9 unmapped channels per ASIC fire at 60 % of
+  the mapped rate with a near-identical charge median, which argues against simple
+  crosstalk. Costs ~20 % acceptance. Not blocking, but worth an answer
+- **`_filter` condition** — every row is a 4-fold coincidence; the exact trigger condition
+  and its rejection fraction are needed to model acceptance
 - **Fiducial marker** — strongly recommended for future campaigns; decouples "is the
   pipeline working" from "what is the scene"
 
@@ -530,4 +632,7 @@ alias-distance and CV-scan-degeneracy problems early.
 | T20 handling | Split into T20a / T20b | Merge as one exposure | Unexplained 22 % rate change inside one nominal pose |
 | Pose storage | YAML registry, data not code | Config dataclass defaults | Adding a datapoint must touch no code |
 | Viewer | Ground-up rebuild, GPU raymarching | Port cafeteria marching-cubes viewer | Continuous transfer-function control; honest soft-density rendering |
-| Detector constants | Measured from data, independently gated | Inherited from `detector_summary.md` | Three inherited constants already proven false |
+| Detector constants | Engineers' supplied values, each falsification-tested against data | Inherited from `detector_summary.md`; or fitted from data | `detector_summary.md` is wrong on bar width and layer height; a supplied constant that fails its test is escalated, not silently refitted |
+| Channel → bar map | Supplied lookup, gated at ≥40 % bar adjacency | `bar_id = asic*23 + channel` | The identity assumption scores 0.2 % adjacency against 44–47 % for the real map — it would have made every interpolated position noise |
+| Layer orientation | `asic_to_layer = [1,3,2,0]`, X,Y,X,Y | X,Y,Y,X inferred from ASIC-pair mutual information | MI ranked the true same-coordinate pairs mid-table. Recorded as a negative result in §1.4 |
+| Campaign azimuth | 241° from the campaign log | 281° from `parameters.data` | User confirmed 241°; the file value is a different deployment |

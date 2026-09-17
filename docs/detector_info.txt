@@ -1,0 +1,35 @@
+Some detector parameters:
+
+number_of_layers = 4
+width_of_bar   = 3.2
+side_of_bar = 2.3345
+height_of_bar = 1.7
+length_of_bar = 40
+number_of_bars = 23
+
+
+
+##lookup table asic channels -> bars
+
+asic0 = [28, 30, 3, 31, 29, 0, 24, 26, 7, 27, 25, 4, 20, 22, 11, 23, 21, 8, 16, 18, 15, 19, 17]
+asic1 = [3, 31, 2, 0, 28, 1, 7, 27, 6, 4, 24, 5, 11, 23, 10, 8, 20, 9, 15, 19, 14, 12, 16]
+asic2 = [19, 15, 18, 16, 12, 17, 23, 11, 22, 20, 8, 21, 27, 7, 26, 24, 4, 25, 31, 3, 30, 28, 0]
+asic3 = [12, 14, 19, 15, 13, 16, 8, 10, 23, 11, 9, 20, 4, 6, 27, 7, 5, 24, 0, 2, 31, 3, 1]
+
+## for example channel 28 of ASIC_0 connected to bar number 1, ch 30 of ASIC_0 to bar number 2 ,etc.
+
+
+
+
+
+##Each layer connected to different ASIC
+
+
+#=================================  Y_up, ASIC_1 
+
+#+++++++++++++++++++++++++++++++++  X_up, ASIC_2 
+
+#=================================  Y_bot, ASIC_0 
+
+#+++++++++++++++++++++++++++++++++  X_bot, ASIC_3 
+
