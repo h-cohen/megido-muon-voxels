@@ -87,6 +87,15 @@ class ChannelCalibration:
     def threshold(self, n_sigma: float = 3.0) -> np.ndarray:
         return self.pedestal + n_sigma * self.noise_sigma
 
+    def dead(self) -> np.ndarray:
+        """Boolean [4, 32] mask of channels with no usable calibration.
+
+        `gain` falls back to 1.0 for these so downstream arithmetic stays finite,
+        which would otherwise make a dead channel look perfectly normal to the
+        >10% gain-deviation flagging. This mask is how a caller tells them apart.
+        """
+        return (self.n_hits == 0) | ~np.isfinite(self.mpv)
+
     def save(self, path: Path) -> None:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(

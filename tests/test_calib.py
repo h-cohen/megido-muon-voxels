@@ -79,3 +79,24 @@ def test_calibration_roundtrips_through_disk(tmp_path):
     assert np.allclose(back.pedestal, cal.pedestal)
     assert np.allclose(back.gain, cal.gain)
     assert np.array_equal(back.n_hits, cal.n_hits)
+
+
+def test_dead_channel_is_flagged_even_though_gain_defaults_to_one():
+    """A channel with no hits must not look healthy."""
+    chunk = _synthetic_chunk()
+    chunk.hit[:, 0, 5] = False          # channel (0, 5) records nothing
+    cal = calibrate([chunk])
+
+    assert cal.n_hits[0, 5] == 0
+    assert cal.gain[0, 5] == 1.0, "gain stays finite so downstream arithmetic is safe"
+    assert cal.dead()[0, 5], "but the channel must be identifiable as dead"
+    assert cal.dead().sum() == 1, "and no live channel is flagged"
+
+
+def test_dead_mask_round_trips_through_disk(tmp_path):
+    chunk = _synthetic_chunk()
+    chunk.hit[:, 2, 11] = False
+    cal = calibrate([chunk])
+    p = tmp_path / "cal.npz"
+    cal.save(p)
+    assert ChannelCalibration.load(p).dead()[2, 11]
