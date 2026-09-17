@@ -103,9 +103,13 @@ class ChannelCalibration:
         healthy channel sits near 1.0. Dead channels are excluded — they are
         reported by `dead()` and their gain is a placeholder, not a measurement.
 
-        On real data this flags a large fraction of channels (53 of 92 mapped
-        bars on DET200084), which is genuine detector structure rather than a
-        calibration failure: per-ASIC MPV medians run 1698 / 1854 / 1906 / 2463.
+        Measured across all four full exposures, this flags 18-23 of the 92
+        mapped bars, concentrated in ASIC 3, whose MPV median runs about 15%
+        above the other three (roughly 1960-2030 against 1685-1800). That is
+        genuine detector structure and it is stable across poses, not a
+        calibration failure. Note the figure is statistics-sensitive: a single
+        run file gives ~3,700 hits per channel and flags 53 of 92, most of that
+        MPV sampling noise, against ~85,000 hits per channel for a full exposure.
         """
         deviation = np.abs(self.gain - 1.0)
         return (deviation > tolerance) & ~self.dead()

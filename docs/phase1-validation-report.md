@@ -120,6 +120,32 @@ Three observations from the full-scale run:
    stability across poses and across the unexplained 6 August rate change is
    itself a mild cross-check.
 
+## Per-channel gain structure
+
+Measured on the committed calibration artifacts (`runs/ingest/calib_*.npz`),
+restricted to the 92 mapped bars:
+
+| Exposure | hits/channel (median) | mapped MPV median | per-ASIC MPV medians | flagged |
+|---|---|---|---|---|
+| P0 | 85,824 | 1734 | 1695 / 1716 / 1742 / 1964 | 20 / 92 |
+| T20a | 49,048 | 1746 | 1685 / 1707 / 1775 / 2034 | 21 / 92 |
+| T20b | 83,162 | 1761 | 1699 / 1764 / 1757 / 2011 | 23 / 92 |
+| P1 | 34,957 | 1787 | 1709 / 1796 / 1748 / 1970 | 18 / 92 |
+
+The flagged fraction is stable at 18-23 of 92 across all four exposures,
+including across the unexplained 6 August rate change that separates T20a
+from T20b, which is a mild independent cross-check that the change did not
+alter per-channel gains.
+
+The mapped-bar MPV median is 1734-1787 ADC pedestal-subtracted, consistent
+across exposures. This corroborates the Task 4 finding that spec section
+1.1's "MIP ~ +4000 ADC" conflated the hit-charge median with the
+most-probable value. The prior group's independent calibration of this same
+detector reported roughly 1409 ADC subtracted, the same regime.
+
+ASIC 3's ~15% gain offset is per-channel efficiency structure that Phase 2's
+baseline model will need to account for.
+
 ## Verdict
 
 Phase 1's exit gate is fully met, with no remaining open items: all 9 S0-det
