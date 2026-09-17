@@ -19,6 +19,7 @@ REJECT_NO_HIT = 1
 REJECT_UNMAPPED = 2
 REJECT_TOO_MANY = 3
 REJECT_NON_ADJACENT = 4
+REJECT_DEAD_CHANNEL = 5
 
 REJECT_NAMES = {
     REJECT_OK: "ok",
@@ -26,6 +27,7 @@ REJECT_NAMES = {
     REJECT_UNMAPPED: "unmapped_channel",
     REJECT_TOO_MANY: "too_many_bars",
     REJECT_NON_ADJACENT: "non_adjacent_bars",
+    REJECT_DEAD_CHANNEL: "dead_channel",
 }
 
 
@@ -53,6 +55,14 @@ def hit_position_cm(bar_lo: int, q_lo: float, q_hi: float, bar: BarGeometry) -> 
 
 def find_hits(chunk: EventChunk, geom: DetectorGeometry,
               cal: ChannelCalibration, n_sigma: float = 3.0) -> LayerHits:
+    """Threshold, cluster, map to bars, and interpolate sub-bar position.
+
+    Rejection precedence, highest first — Task 8 accounts for loss per cause, so
+    a cluster failing several checks is attributed to exactly one:
+        unmapped_channel  > dead_channel > too_many_bars > non_adjacent_bars
+    An unmapped channel outranks a dead one because it has no bar at all, so no
+    position could be formed for it even with a perfect calibration.
+    """
     n = chunk.n_events
     position = np.full((n, 4), np.nan)
     bar_lo = np.full((n, 4), -1, dtype=np.int16)
@@ -66,6 +76,7 @@ def find_hits(chunk: EventChunk, geom: DetectorGeometry,
     for a in range(4):
         for b in range(geom.bar.n_bars):
             ch2bar[a, geom.bar_to_channel(a, b)] = b
+    dead = cal.dead()
 
     above = chunk.hit & (chunk.charge > threshold[None, :, :])
     corrected = (chunk.charge.astype(np.float64) - cal.pedestal[None, :, :]) * cal.gain[None, :, :]
@@ -79,6 +90,9 @@ def find_hits(chunk: EventChunk, geom: DetectorGeometry,
             bars = ch2bar[a, chans]
             if np.any(bars < 0):
                 reject[ev, a] = REJECT_UNMAPPED
+                continue
+            if dead[a, chans].any():
+                reject[ev, a] = REJECT_DEAD_CHANNEL
                 continue
             if bars.size > 2:
                 reject[ev, a] = REJECT_TOO_MANY

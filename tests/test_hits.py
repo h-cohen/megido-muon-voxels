@@ -3,9 +3,9 @@ import pytest
 
 from megido.calib import ChannelCalibration
 from megido.detector import BarGeometry, DetectorGeometry
-from megido.hits import (REJECT_NON_ADJACENT, REJECT_NO_HIT, REJECT_OK,
-                         REJECT_TOO_MANY, REJECT_UNMAPPED, find_hits,
-                         hit_position_cm)
+from megido.hits import (REJECT_DEAD_CHANNEL, REJECT_NON_ADJACENT,
+                         REJECT_NO_HIT, REJECT_OK, REJECT_TOO_MANY,
+                         REJECT_UNMAPPED, find_hits, hit_position_cm)
 from megido.reader import EventChunk
 
 
@@ -22,7 +22,7 @@ def flat_cal():
         noise_sigma=np.full((4, 32), 40.0),
         mpv=np.full((4, 32), 4000.0),
         gain=np.ones((4, 32)),
-        n_hits=np.zeros((4, 32), dtype=np.int64),
+        n_hits=np.full((4, 32), 1000, dtype=np.int64),
     )
 
 
@@ -121,3 +121,36 @@ def test_gain_correction_is_applied(geom, flat_cal):
     plain = find_hits(chunk, geom, flat_cal).position_cm[0, 0]
     boosted = find_hits(chunk, geom, cal2).position_cm[0, 0]
     assert boosted > plain
+
+
+def test_hit_on_a_dead_channel_is_rejected(geom, flat_cal):
+    """A channel with no valid MPV has gain=1.0, i.e. uncorrected charge."""
+    ch = geom.bar_to_channel(0, 7)
+    mpv = flat_cal.mpv.copy()
+    mpv[0, ch] = np.nan                      # too few hits for a valid MPV
+    cal = ChannelCalibration(flat_cal.pedestal, flat_cal.noise_sigma, mpv,
+                             flat_cal.gain, flat_cal.n_hits)
+    assert cal.dead()[0, ch]
+    hits = find_hits(_chunk({(0, ch): 6000}), geom, cal)
+    assert hits.reject[0, 0] == REJECT_DEAD_CHANNEL
+
+
+def test_unmapped_outranks_dead_in_reason_precedence(geom, flat_cal):
+    """Precedence must be deterministic: Task 8 attributes loss per cause."""
+    unmapped = geom.unmapped_channels(0)[0]
+    mpv = flat_cal.mpv.copy()
+    mpv[0, unmapped] = np.nan                # both unmapped AND dead
+    cal = ChannelCalibration(flat_cal.pedestal, flat_cal.noise_sigma, mpv,
+                             flat_cal.gain, flat_cal.n_hits)
+    hits = find_hits(_chunk({(0, unmapped): 6000}), geom, cal)
+    assert hits.reject[0, 0] == REJECT_UNMAPPED
+
+
+def test_dead_outranks_too_many_bars(geom, flat_cal):
+    chans = [geom.bar_to_channel(0, b) for b in (7, 8, 9)]
+    mpv = flat_cal.mpv.copy()
+    mpv[0, chans[0]] = np.nan
+    cal = ChannelCalibration(flat_cal.pedestal, flat_cal.noise_sigma, mpv,
+                             flat_cal.gain, flat_cal.n_hits)
+    hits = find_hits(_chunk({(0, c): 6000 for c in chans}), geom, cal)
+    assert hits.reject[0, 0] == REJECT_DEAD_CHANNEL
