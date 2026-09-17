@@ -64,7 +64,10 @@ def _chunk(spec, n_events=1):
 
 def test_single_mapped_hit_is_accepted(geom, flat_cal):
     ch = geom.bar_to_channel(0, 7)
-    hits = find_hits(_chunk({(0, ch): 6000}), geom, flat_cal)
+    # dither=False: this test is about classification (accept/bar/reject), not
+    # about the sub-bar position, which is deliberately smeared by default —
+    # see test_dither_disabled_reproduces_the_bar_centre for that behaviour.
+    hits = find_hits(_chunk({(0, ch): 6000}), geom, flat_cal, dither=False)
     assert hits.reject[0, 0] == REJECT_OK
     assert hits.bar_lo[0, 0] == 7
     assert hits.position_cm[0, 0] == pytest.approx(geom.bar.bar_center_cm(7))
@@ -154,3 +157,45 @@ def test_dead_outranks_too_many_bars(geom, flat_cal):
                              flat_cal.gain, flat_cal.n_hits)
     hits = find_hits(_chunk({(0, c): 6000 for c in chans}), geom, cal)
     assert hits.reject[0, 0] == REJECT_DEAD_CHANNEL
+
+
+# --- single-bar dither ---------------------------------------------------
+
+def test_dither_disabled_reproduces_the_bar_centre(geom, flat_cal):
+    ch = geom.bar_to_channel(0, 7)
+    hits = find_hits(_chunk({(0, ch): 6000}), geom, flat_cal, dither=False)
+    assert hits.position_cm[0, 0] == pytest.approx(geom.bar.bar_center_cm(7))
+
+
+def test_dither_leaves_two_bar_clusters_untouched(geom, flat_cal):
+    """Charge sharing genuinely locates these, so they must not be smeared."""
+    c7, c8 = geom.bar_to_channel(0, 7), geom.bar_to_channel(0, 8)
+    chunk = _chunk({(0, c7): 5200, (0, c8): 5200})
+    plain = find_hits(chunk, geom, flat_cal, dither=False).position_cm[0, 0]
+    dithered = find_hits(chunk, geom, flat_cal, dither=True).position_cm[0, 0]
+    assert dithered == pytest.approx(plain)
+
+
+def test_dither_spreads_single_bar_positions_within_the_measured_window(geom, flat_cal):
+    ch = geom.bar_to_channel(0, 7)
+    n = 4000
+    hits = find_hits(_chunk({(0, ch): 6000}, n_events=n), geom, flat_cal, dither=True)
+    pos = hits.position_cm[:, 0]
+    centre = geom.bar.bar_center_cm(7)
+
+    # every layer here is single-bar, so f_single == 1 and the window is one pitch
+    assert np.ptp(pos) > 0.5 * geom.bar.pitch_cm, "positions must actually spread"
+    assert np.abs(pos - centre).max() <= 0.5 * geom.bar.pitch_cm + 1e-9
+    assert np.mean(pos) == pytest.approx(centre, abs=0.05), "dither must be unbiased"
+
+
+def test_dither_is_reproducible_for_a_fixed_seed(geom, flat_cal):
+    ch = geom.bar_to_channel(0, 7)
+    chunk = _chunk({(0, ch): 6000}, n_events=200)
+    a = find_hits(chunk, geom, flat_cal, dither=True, seed=7).position_cm
+    b = find_hits(chunk, geom, flat_cal, dither=True, seed=7).position_cm
+    c = find_hits(chunk, geom, flat_cal, dither=True, seed=8).position_cm
+    # equal_nan=True: only asic 0 has any hit in this chunk, so the other
+    # three columns are NaN in every run and must compare equal as such.
+    assert np.array_equal(a, b, equal_nan=True)
+    assert not np.array_equal(a, c, equal_nan=True)

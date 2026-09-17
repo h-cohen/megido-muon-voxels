@@ -75,10 +75,16 @@ def process_exposure(cfg: SiteConfig, eid: str, out_dir: Path,
                         xedges=edges, yedges=edges)
     n_events = n_valid = 0
     writer = None
+    chunk_index = 0
     try:
         for f in files:
             for chunk in read_chunks(f):
-                hits = find_hits(chunk, geom, cal)
+                # A running counter, not a hash of file/offset: ingest only needs to
+                # avoid reusing the same dither pattern across chunks in one run, and
+                # a fixed input set always yields the same file/chunk order, so this
+                # counter (and hence the whole pipeline's output) is reproducible.
+                hits = find_hits(chunk, geom, cal, seed=chunk_index)
+                chunk_index += 1
                 tracks = fit_tracks(hits, geom)
                 total = total + histogram_tracks(tracks, cfg.binning)
 

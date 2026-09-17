@@ -85,3 +85,35 @@ def test_saved_npz_has_the_load_phantom_dir_keys(tmp_path):
     p = save_counts(h, tmp_path, "P0", meta={})
     with np.load(p) as d:
         assert set(d.files) >= {"values", "xedges", "yedges", "name"}
+
+
+def test_dither_removes_the_position_quantisation_comb():
+    """Single-bar hits in both layers would otherwise quantise tan to 1.6/31.5 steps.
+
+    Without dither the angular histogram develops teeth spaced 0.0508 apart at
+    roughly 3x the surrounding floor. This test fails if the dither is removed.
+    """
+    import numpy as np
+    from megido.calib import calibrate
+    from megido.detector import DetectorGeometry
+    from megido.hits import find_hits
+    from megido.sim import simulate
+    from megido.tracks import fit_tracks
+    from megido.config import Binning
+
+    geom = DetectorGeometry.megiddo()
+    truth = simulate(geom, n_events=40_000, seed=11)
+    cal = calibrate([truth.chunk])
+
+    def comb_strength(dither):
+        tracks = fit_tracks(find_hits(truth.chunk, geom, cal, dither=dither), geom)
+        h = histogram_tracks(tracks, Binning())
+        profile = h.values.sum(axis=0).astype(float)
+        smooth = np.convolve(profile, np.ones(41) / 41, mode="same")
+        detrended = profile - smooth
+        core = slice(len(profile) // 4, 3 * len(profile) // 4)
+        ac = np.correlate(detrended[core], detrended[core], "full")
+        ac = ac[len(ac) // 2:]
+        return ac[10] / ac[0] if ac[0] > 0 else 0.0   # lag 10 bins = 0.050 tan units
+
+    assert comb_strength(dither=True) < comb_strength(dither=False)
