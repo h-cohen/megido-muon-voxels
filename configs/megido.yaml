@@ -1,0 +1,30 @@
+site: megido
+data_dir: /home/hadar/Cloud/Work/Postdoc/01_data/processed/megido
+frame:
+  origin: P0
+  x_axis_bearing_deg: 241
+
+binning:
+  t_max: 1.25
+  n_bins: 500
+
+exposures:
+  - id: P0
+    runs: DET200084-DET200104
+    pose: {x: 0.0, y: 0.0, z: 0.0, tilt_deg: 0, az_deg: 241}
+    pose_sigma: {xy: 0.05, ang: 1.0}
+
+  - id: T20a
+    runs: DET200105-DET200116
+    pose: {x: 0.0, y: 0.0, z: 0.0, tilt_deg: 20, az_deg: 241}
+    norm_group: T20a
+
+  - id: T20b
+    runs: DET200119-DET200144
+    pose: {x: 0.0, y: 0.0, z: 0.0, tilt_deg: 20, az_deg: 241}
+    norm_group: T20b
+    note: "-22% rate after the 20 Jul - 5 Aug gap, cause unknown"
+
+  - id: P1
+    runs: DET200145-DET200155
+    pose: {x: 2.2, y: 0.0, z: 0.0, tilt_deg: 0, az_deg: 241}

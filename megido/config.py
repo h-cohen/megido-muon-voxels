@@ -1,0 +1,127 @@
+"""Exposure registry. Poses live in data (configs/*.yaml), never in code.
+
+Adding a datapoint: drop files in data_dir, append one exposure block, re-run.
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import numpy as np
+import yaml
+
+_RUN_RANGE = re.compile(r"^DET(\d+)\s*-\s*DET(\d+)$")
+
+
+@dataclass(frozen=True)
+class Pose:
+    x: float
+    y: float
+    z: float
+    tilt_deg: float
+    az_deg: float
+
+    def rotation(self) -> np.ndarray:
+        """R = Rz(az) @ Ry(tilt). Tilt takes the normal off zenith; az is the
+        bearing of the detector's local +x (bar) axis."""
+        t = np.radians(self.tilt_deg)
+        a = np.radians(self.az_deg)
+        ry = np.array([[np.cos(t), 0.0, np.sin(t)],
+                       [0.0, 1.0, 0.0],
+                       [-np.sin(t), 0.0, np.cos(t)]])
+        rz = np.array([[np.cos(a), -np.sin(a), 0.0],
+                       [np.sin(a), np.cos(a), 0.0],
+                       [0.0, 0.0, 1.0]])
+        return rz @ ry
+
+
+@dataclass(frozen=True)
+class PoseSigma:
+    xy: float = 0.05     # metres
+    ang: float = 1.0     # degrees
+
+
+@dataclass(frozen=True)
+class Exposure:
+    id: str
+    run_ids: tuple[int, ...]
+    pose: Pose
+    pose_sigma: PoseSigma = field(default_factory=PoseSigma)
+    norm_group: str = ""
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class Binning:
+    t_max: float = 1.25
+    n_bins: int = 500
+
+    def edges(self) -> np.ndarray:
+        return np.linspace(-self.t_max, self.t_max, self.n_bins + 1)
+
+
+@dataclass(frozen=True)
+class SiteConfig:
+    site: str
+    data_dir: Path
+    frame_origin: str
+    x_axis_bearing_deg: float
+    exposures: tuple[Exposure, ...]
+    binning: Binning
+
+    def exposure(self, eid: str) -> Exposure:
+        for e in self.exposures:
+            if e.id == eid:
+                return e
+        raise KeyError(f"no exposure {eid!r}; have {[e.id for e in self.exposures]}")
+
+    def files_for(self, eid: str) -> list[Path]:
+        """Existing data files for an exposure, sorted by run id.
+
+        A run id in the configured range with no file on disk is skipped, not an
+        error: the campaign has gaps (e.g. DET200117, DET200118).
+        """
+        out: list[Path] = []
+        for rid in self.exposure(eid).run_ids:
+            matches = sorted(self.data_dir.glob(f"DET{rid}_*.data"))
+            out.extend(matches)
+        return out
+
+
+def _parse_runs(spec: str) -> tuple[int, ...]:
+    m = _RUN_RANGE.match(str(spec).strip())
+    if not m:
+        raise ValueError(f"run spec {spec!r} must look like 'DET200084-DET200104'")
+    lo, hi = int(m.group(1)), int(m.group(2))
+    if hi < lo:
+        raise ValueError(f"run range {spec!r} is reversed")
+    return tuple(range(lo, hi + 1))
+
+
+def load_site_config(path: str | Path) -> SiteConfig:
+    raw = yaml.safe_load(Path(path).read_text())
+    frame = raw.get("frame", {})
+    binning = Binning(**raw.get("binning", {}))
+
+    exposures = []
+    for block in raw["exposures"]:
+        eid = block["id"]
+        exposures.append(
+            Exposure(
+                id=eid,
+                run_ids=_parse_runs(block["runs"]),
+                pose=Pose(**block["pose"]),
+                pose_sigma=PoseSigma(**block.get("pose_sigma", {})),
+                norm_group=block.get("norm_group", eid),
+                note=block.get("note", ""),
+            )
+        )
+    return SiteConfig(
+        site=raw["site"],
+        data_dir=Path(raw["data_dir"]),
+        frame_origin=frame.get("origin", ""),
+        x_axis_bearing_deg=float(frame.get("x_axis_bearing_deg", 0.0)),
+        exposures=tuple(exposures),
+        binning=binning,
+    )
