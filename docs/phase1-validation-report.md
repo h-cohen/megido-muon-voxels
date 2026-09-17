@@ -146,6 +146,76 @@ detector reported roughly 1409 ADC subtracted, the same regime.
 ASIC 3's ~15% gain offset is per-channel efficiency structure that Phase 2's
 baseline model will need to account for.
 
+## Defects found after the gate passed
+
+All nine S0-det checks above pass, and this phase's process included twelve
+per-task reviews plus a whole-branch review. None of that caught the three
+defects below. Every one of them surfaced only from running the real
+pipeline at full scale — none from review, none from the gate. The common
+thread in the first defect is the sharpest: the gate checks acceptance rates,
+widths, and cutoffs, but no check ever inspected the *fine structure* of the
+angular distribution. The new regression test (below) closes that blind
+spot; the other two are operational lessons from the full 70-file run.
+
+### 1. Position-quantisation comb in the angle histogram
+
+**Mechanism.** `find_hits` assigned a single-bar cluster the exact bar
+centre. When both layers of a coordinate gave single-bar hits, the
+reconstructed angle landed on the discrete comb `tan = 1.6 * delta_bar /
+31.5`. About 46% of accepted clusters are single-bar, so single-single pairs
+are roughly 20% of events per coordinate — enough to leave a visible mark on
+the histogram, not enough that any of the nine acceptance/width/cutoff gate
+checks would notice.
+
+**Measured before the fix**, on the real P0 angular histogram: teeth at
+tan_y = +0.003, +0.053, +0.103 with counts 5558 / 4221 / 3646 against a floor
+near 1900 — about 3x. Tooth spacing 0.050, against the predicted 1.6/31.5 =
+0.0508. Autocorrelation of the detrended profile peaked at lag 10 bins =
+0.0500, matching the tooth spacing exactly.
+
+**Why it nearly fooled us.** The comb is fixed in the *detector* frame, so it
+survives a 20 degree tilt unchanged — the profile peak sat at tan_y = +0.023
+in all four exposures to three decimals, with peak/median about 2.0. That is
+precisely the signature `B(d)`, the Phase 2 baseline, is defined to absorb.
+Phase 2 would have fitted it happily and produced a plausible-looking
+baseline built on a reconstruction artifact rather than on detector
+efficiency structure.
+
+**The fix.** A single-bar hit constrains the crossing only to the region
+where that bar collects essentially all the light. Since crossings are
+uniform in x and each bar owns one pitch of width, that region has width
+`pitch * f_single`, with `f_single` the measured single-bar fraction — so the
+dither width is self-calibrated from the data, not a tuned constant.
+Positions are now drawn uniformly across it. Two-bar clusters are untouched;
+charge sharing genuinely locates those.
+
+**Measured after the fix**, same bins: 2318 / 2036 / 1780 against the same
+~1900 floor — flat. The profile is now a smooth monotonic falloff with
+angle. Comb autocorrelation at lag 10 is negative for every exposure: P0
+-0.2529, T20a -0.2450, T20b -0.3579, P1 -0.3094.
+
+**Regression test.** `tests/test_anghist.py::test_dither_removes_the_position_quantisation_comb`
+builds the input directly rather than through the simulator, because the
+simulator's linear charge-sharing model yields ~93% two-bar clusters and
+barely exercises this path. It measures autocorrelation 0.813 undithered
+against -0.050 dithered.
+
+### 2. Reader memory at full-scale chunk size
+
+`dtype=str` is required to survive the repeated header rows in the raw CSV,
+but it materialises one Python string per cell. At the old 200,000-row chunk
+size that is 51.4 million objects per chunk; the full-scale ingest reached
+9 GB resident on a 14 GB machine and had to be killed. Default chunk size is
+now 50,000 rows (measured 0.6-0.8 GB resident), with `--chunksize` exposed on
+the CLI for machines with more headroom.
+
+### 3. Cache key ignored the code version
+
+`exposure_key` hashed inputs and config but nothing about the reconstruction
+code itself, so a re-run after the dither fix would have served the stale
+pre-dither cached artifacts as a silent cache hit. The key now includes
+`RECONSTRUCTION_VERSION`, currently 2.
+
 ## Verdict
 
 Phase 1's exit gate is fully met, with no engineering work outstanding: all 9
@@ -157,6 +227,13 @@ channels were found in this chunk; the ingest seam into the downstream
 reconstruction solver (`load_phantom_dir`) is verified end to end; and the
 full 70-file ingest across all four exposures completed successfully with a
 stable ~25% valid-track fraction and exact 4x row expansion throughout.
+
+The ingest artifacts have since been rebuilt with the single-bar dither fix
+(§ Defects found after the gate passed) and `RECONSTRUCTION_VERSION = 2`.
+The valid-track counts are unchanged — P0 292,983 / T20a 168,116 / T20b
+284,913 / P1 122,046, 868,058 total — as expected, since dithering moves a
+hit's position within its bar and does not change which clusters are
+accepted.
 
 One question remains open, and it is a question for the detector engineers
 rather than a gap in this phase's code: the acceptance-budget finding above,

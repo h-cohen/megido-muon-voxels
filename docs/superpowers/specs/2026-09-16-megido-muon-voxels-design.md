@@ -384,6 +384,12 @@ Per event:
 2. Accept 1 hit, or 2 hits on **physically adjacent bars** (adjacency in bar index, never
    in channel number). Reject larger or non-adjacent clusters
 3. Sub-bar position `x = a · n / (N + n)` on pedestal-subtracted, gain-corrected charge
+   for two-bar clusters. **Single-bar clusters are dithered uniformly across a
+   self-calibrated window of width `pitch * f_single`** (`f_single` the measured
+   single-bar fraction), not assigned the bar centre — a fixed centre value produces a
+   position-quantisation comb in the angle that survives detector-frame tilts and mimics
+   the Phase 2 baseline signature; see `docs/phase1-validation-report.md` for the
+   measurement and fix
 4. Straight-line least squares across the four layers → `(ax, ay) = tan θx, tan θy`, plus χ²
 5. Cuts: hit in all 4 layers, ≤2 adjacent bars per layer, χ² below threshold
 
@@ -619,6 +625,12 @@ alias-distance and CV-scan-degeneracy problems early.
   and its rejection fraction are needed to model acceptance
 - **Fiducial marker** — strongly recommended for future campaigns; decouples "is the
   pipeline working" from "what is the scene"
+- **Reader memory and cache-versioning are hard constraints, not tuning** — the
+  full-scale ingest showed `dtype=str` chunked reads must stay at a bounded chunk size
+  (50,000 rows measured safe; 200,000 exhausted a 14 GB machine), and any change to
+  reconstruction logic must bump `RECONSTRUCTION_VERSION` or stale cached artifacts will
+  be served silently. Future phases that add reconstruction steps inherit both
+  constraints; see `docs/phase1-validation-report.md`
 
 ---
 
