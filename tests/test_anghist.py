@@ -25,12 +25,16 @@ def test_binning_shape_and_edges():
 
 
 def test_a_track_lands_in_the_expected_bin():
+    """np.digitize follows the same left-closed convention as np.histogram2d."""
     b = Binning()
-    h = histogram_tracks(_tracks([0.0], [0.0]), b)
-    assert h.total == 1
-    i = np.searchsorted(h.xedges, 0.0) - 1
-    j = np.searchsorted(h.yedges, 0.0) - 1
-    assert h.values[i, j] == 1
+    for tx, ty in [(0.0, 0.0), (0.3125, -0.4375)]:   # on an edge, then mid-bin
+        h = histogram_tracks(_tracks([tx], [ty]), b)
+        assert h.total == 1
+        i = np.digitize(tx, h.xedges) - 1
+        j = np.digitize(ty, h.yedges) - 1
+        assert h.values[i, j] == 1, f"({tx}, {ty}) landed in the wrong bin"
+        assert h.xedges[i] <= tx < h.xedges[i + 1]
+        assert h.yedges[j] <= ty < h.yedges[j + 1]
 
 
 def test_tan_x_runs_along_axis_zero():
