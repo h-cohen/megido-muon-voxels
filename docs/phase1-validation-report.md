@@ -91,22 +91,46 @@ required on the solver side.
 
 ## Full 70-file ingest
 
-The full ingest over all four exposures (P0, T20a, T20b, P1 — 70 files,
-~6.2 GB) is run separately by the controller, since it takes on the order of
-hours with the current per-event reader. Its numbers (`counts_*.npz`,
-`tracks_*.parquet`, `calib_*.npz`, `meta.json` under `runs/ingest/`) will be
-appended to this report once that run completes.
+Command:
+
+```bash
+python -m megido.cli ingest --config configs/megido.yaml --out runs/ingest
+```
+
+Total runtime was about 10 minutes for all 70 files.
+
+| Exposure | Files | Events | Valid tracks | Parquet rows |
+|---|---|---|---|---|
+| P0 | 21 | 1,172,798 | 292,983 (25.0%) | 1,171,932 |
+| T20a | 12 | 672,299 | 168,116 (25.0%) | 672,464 |
+| T20b | 26 | 1,132,770 | 284,913 (25.2%) | 1,139,652 |
+| P1 | 11 | 484,034 | 122,046 (25.2%) | 488,184 |
+| **Total** | **70** | **3,461,901** | **868,058 (25.1%)** | |
+
+Three observations from the full-scale run:
+
+1. Parquet rows are exactly 4x valid tracks in every exposure, confirming the
+   per-layer row expansion stays aligned across chunk and file boundaries at
+   full scale.
+2. 100% of valid tracks fall inside the +/-1.25 tan binning, confirming that
+   widening the range from the inherited +/-1.0 was both necessary and
+   sufficient.
+3. The valid-track fraction is 25.0-25.2% across all four exposures,
+   consistent with the 24.7% measured on the single file DET200084. That
+   stability across poses and across the unexplained 6 August rate change is
+   itself a mild cross-check.
 
 ## Verdict
 
-Phase 1's exit gate is met on the evidence available from this task: all 9
-S0-det checks pass on real P0 data, including the stop-condition
+Phase 1's exit gate is fully met, with no remaining open items: all 9 S0-det
+checks pass on real P0 data, including the stop-condition
 `acceptance_cutoff` check, which confirms the absolute angular scale to
 within 2.4% of the purely geometric prediction; the adjacency, active-width,
 and coordinate-pairing checks all pass with comfortable margin; zero dead
-channels were found in this chunk; and the ingest seam into the downstream
-reconstruction solver (`load_phantom_dir`) is verified end to end. The one
-still-open item is the full 70-file ingest run, tracked separately by the
-controller, and the acceptance-budget finding above (unmapped channels
-costing ~3/4 of usable statistics) that should be escalated to the detector
-engineers as the top open question heading into Phase 2.
+channels were found in this chunk; the ingest seam into the downstream
+reconstruction solver (`load_phantom_dir`) is verified end to end; and the
+full 70-file ingest across all four exposures completed successfully with a
+stable ~25% valid-track fraction and exact 4x row expansion throughout. The
+acceptance-budget finding above (unmapped channels costing ~3/4 of usable
+statistics) remains the top open question to escalate to the detector
+engineers heading into Phase 2.

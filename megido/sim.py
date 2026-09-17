@@ -52,7 +52,8 @@ def _deposit(bar_geom, pos_cm: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 
 def simulate(geom: DetectorGeometry, n_events: int = 20_000, seed: int = 0,
-             pedestal: float = 2200.0, noise: float = 40.0, mpv: float = 4000.0,
+             pedestal: float = 2200.0, noise: float = 40.0,
+             mpv: float = 4000.0,   # arbitrary charge scale, NOT the measured ~1900 ADC MPV
              max_tan: float | None = None) -> TruthEvents:
     """Throw muons through the real geometry and the real channel map.
 

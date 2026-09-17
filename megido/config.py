@@ -1,6 +1,8 @@
 """Exposure registry. Poses live in data (configs/*.yaml), never in code.
 
 Adding a datapoint: drop files in data_dir, append one exposure block, re-run.
+
+Pose coordinates are METRES; every other length in Phase 1 is centimetres.
 """
 from __future__ import annotations
 
@@ -16,11 +18,11 @@ _RUN_RANGE = re.compile(r"^DET(\d+)\s*-\s*DET(\d+)$")
 
 @dataclass(frozen=True)
 class Pose:
-    x: float
-    y: float
-    z: float
-    tilt_deg: float
-    az_deg: float
+    x: float          # metres — detector position in the site frame
+    y: float          # metres
+    z: float          # metres
+    tilt_deg: float   # degrees from zenith
+    az_deg: float     # degrees, bearing of the detector's local +x (bar) axis
 
     def rotation(self) -> np.ndarray:
         """R = Rz(az) @ Ry(tilt). Tilt takes the normal off zenith; az is the

@@ -100,3 +100,38 @@ def test_dead_mask_round_trips_through_disk(tmp_path):
     p = tmp_path / "cal.npz"
     cal.save(p)
     assert ChannelCalibration.load(p).dead()[2, 11]
+
+
+def test_flagged_identifies_channels_outside_tolerance():
+    cal = calibrate([_synthetic_chunk()])
+    gain = cal.gain.copy()
+    gain[1, 4] = 1.30                       # 30% high
+    gain[2, 9] = 0.80                       # 20% low
+    gain[3, 2] = 1.05                       # within tolerance
+    tweaked = ChannelCalibration(cal.pedestal, cal.noise_sigma, cal.mpv,
+                                 gain, cal.n_hits)
+    flags = tweaked.flagged()
+    assert flags[1, 4] and flags[2, 9]
+    assert not flags[3, 2]
+
+
+def test_flagged_excludes_dead_channels():
+    """A dead channel's gain is a 1.0 placeholder, not a measurement."""
+    cal = calibrate([_synthetic_chunk()])
+    mpv = cal.mpv.copy()
+    mpv[0, 7] = np.nan                      # dead
+    gain = cal.gain.copy()
+    gain[0, 7] = 5.0                        # nonsense value that must not be flagged
+    tweaked = ChannelCalibration(cal.pedestal, cal.noise_sigma, mpv, gain, cal.n_hits)
+    assert tweaked.dead()[0, 7]
+    assert not tweaked.flagged()[0, 7]
+
+
+def test_flagged_tolerance_is_adjustable():
+    cal = calibrate([_synthetic_chunk()])
+    gain = cal.gain.copy()
+    gain[0, 0] = 1.15
+    tweaked = ChannelCalibration(cal.pedestal, cal.noise_sigma, cal.mpv,
+                                 gain, cal.n_hits)
+    assert tweaked.flagged(tolerance=0.10)[0, 0]
+    assert not tweaked.flagged(tolerance=0.20)[0, 0]

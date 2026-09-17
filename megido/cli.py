@@ -14,9 +14,6 @@ from megido.detector import DetectorGeometry
 from megido.pipeline import process_all
 from megido.reader import EventChunk, read_chunks
 
-_VALIDATE_EVENTS = 200_000
-
-
 def _cmd_validate(args) -> int:
     cfg = load_site_config(args.config)
     geom = DetectorGeometry.megiddo()
@@ -41,6 +38,9 @@ def _cmd_validate(args) -> int:
         asics, chans = np.nonzero(cal.dead())
         pairs = ", ".join(f"({a},{c})" for a, c in zip(asics, chans))
         print(f"  {pairs}")
+
+    n_flagged = int(cal.flagged().sum())
+    print(f"gain-flagged channels (>10% from median): {n_flagged} of 128")
 
     return 0 if all(c.passed for c in checks) else 1
 

@@ -96,6 +96,20 @@ class ChannelCalibration:
         """
         return (self.n_hits == 0) | ~np.isfinite(self.mpv)
 
+    def flagged(self, tolerance: float = 0.10) -> np.ndarray:
+        """Boolean [4, 32] mask of channels whose gain deviates beyond `tolerance`.
+
+        Spec 4.2's per-exposure quality flag. `gain` is median(mpv)/mpv, so a
+        healthy channel sits near 1.0. Dead channels are excluded — they are
+        reported by `dead()` and their gain is a placeholder, not a measurement.
+
+        On real data this flags a large fraction of channels (53 of 92 mapped
+        bars on DET200084), which is genuine detector structure rather than a
+        calibration failure: per-ASIC MPV medians run 1698 / 1854 / 1906 / 2463.
+        """
+        deviation = np.abs(self.gain - 1.0)
+        return (deviation > tolerance) & ~self.dead()
+
     def save(self, path: Path) -> None:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(
