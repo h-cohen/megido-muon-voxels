@@ -149,7 +149,8 @@ def _cmd_reconstruct(args) -> int:
     full = fits["full"]
     data = build_fit_data(sol, cfg, sigma=sigma)
     fwd = build_forward_model(data.rows, cfg, cache_dir=args.cache)
-    np.save(out / "views.npy", views_per_voxel(fwd))
+    views = views_per_voxel(fwd)
+    np.save(out / "views.npy", views)
 
     print(f"grid            {full.grid.shape} at {full.grid.spacing:.3f} m, "
           f"origin {tuple(round(v, 2) for v in full.grid.origin)}")
@@ -168,9 +169,22 @@ def _cmd_reconstruct(args) -> int:
                                solve_kwargs={"n_iter": args.iters})
         boot.save(out / "uncertainty.npz")
         snr = boot.snr()
-        ok = np.isfinite(snr)
-        print(f"bootstrap       {args.bootstrap} replicas; "
-              f"{int((np.abs(snr[ok]) > 3).sum())} of {int(ok.sum())} voxels above SNR 3")
+        n_grid = views.size
+        # views==0 voxels sit outside every position's footprint (edge padding);
+        # they get stable near-zero TV-driven values and score high "SNR" while
+        # measuring nothing. Restrict the SNR claim to voxels an actual ray
+        # crossed, and separately to voxels crossed by both positions (the only
+        # ones with any depth information at all).
+        seen1 = np.isfinite(snr) & (views >= 1)
+        seen2 = np.isfinite(snr) & (views >= 2)
+        n1, n2 = int(seen1.sum()), int(seen2.sum())
+        hi1 = int((np.abs(snr[seen1]) > 3).sum())
+        hi2 = int((np.abs(snr[seen2]) > 3).sum())
+        print(f"bootstrap       {args.bootstrap} replicas")
+        print(f"  viewed>=1     {n1} of {n_grid} voxels ({n1 / n_grid:.1%} of grid); "
+              f"{hi1} of {max(n1, 1)} above SNR 3 ({hi1 / max(n1, 1):.1%})")
+        print(f"  viewed==2     {n2} of {n_grid} voxels ({n2 / n_grid:.1%} of grid, "
+              f"depth-informative); {hi2} of {max(n2, 1)} above SNR 3 ({hi2 / max(n2, 1):.1%})")
 
     if not args.no_systematic:
         sysmap = systematic_map(sol, cfg, cache_dir=args.cache)
