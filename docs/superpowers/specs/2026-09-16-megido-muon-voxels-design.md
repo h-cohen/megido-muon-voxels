@@ -610,8 +610,16 @@ alias-distance and CV-scan-degeneracy problems early.
 
 ## 11. Open items (do not block implementation)
 
-- **Structure scale** — feature size and expected depth range, needed to finalize grid
-  spacing and the `rebin` factor
+- **Structure scale** — still needed to finalize grid spacing, but no longer
+  blocking: Phase 3's Megiddo-geometry phantom (`tests/test_phantom.py`,
+  `test_megiddo_geometry_recovers_lateral_structure_but_not_depth`) measured
+  what the campaign resolves. Lateral structure is recovered (column correlation
+  ~0.66); the HEIGHT of that structure is set by the regulariser, not the data,
+  because the campaign has a single 2.2 m baseline (depth localization ~0.09,
+  analytic dz ~1.4 m at mid-range). `megido.resolution.campaign_resolution`
+  reports the closed-form number for any configured volume. A second translated
+  position is what would change this — a larger tilt at the same spot would not,
+  because tilt adds no baseline.
 - **Rock material** — needed to re-derive the multiple-Coulomb-scattering systematic. Do
   not inherit `X0_CONCRETE_M` from the cafeteria project
 - **Surveyed baseline** — independent confirmation of the 2.2 m P0↔P1 separation. Absolute
