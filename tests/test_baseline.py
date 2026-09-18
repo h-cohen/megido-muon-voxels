@@ -123,3 +123,34 @@ def test_solution_round_trips_through_disk(cfg, tmp_path):
     assert back.flux_index == pytest.approx(sol.flux_index)
     for pid in sol.opacity:
         assert np.allclose(back.opacity[pid], sol.opacity[pid], equal_nan=True)
+
+
+def test_normalizations_do_not_collapse_under_long_runs(cfg):
+    """The norm/opacity degeneracy is exact; without a fixed gauge the solve
+    slides along it and the norms run to zero while the fit degrades."""
+    grid = _flat_grid(cfg)
+    short = solve_baseline(grid, cfg, n_iter=20, tol=0.0)
+    long = solve_baseline(grid, cfg, n_iter=2000, tol=0.0)
+    for group, value in long.norms.items():
+        assert value > 0.1 * short.norms[group], (
+            f"norm {group} fell from {short.norms[group]:.4g} to {value:.4g}"
+        )
+
+
+def test_opacity_gauge_is_pinned(cfg):
+    """Each position's opacity has a fixed zero point, so runs are comparable."""
+    sol = solve_baseline(_flat_grid(cfg), cfg, n_iter=200, tol=0.0)
+    for pid, lam in sol.opacity.items():
+        finite = lam[np.isfinite(lam)]
+        if finite.size:
+            assert abs(np.median(finite)) < 1e-6, f"{pid} median {np.median(finite)}"
+
+
+def test_longer_runs_do_not_worsen_the_fit(cfg):
+    """Coordinate descent must not go backwards. It did, by 3700 units on real
+    data, because each update was optimal given the others while the pair was
+    free to drift."""
+    grid = _flat_grid(cfg)
+    short = solve_baseline(grid, cfg, n_iter=50, tol=0.0)
+    long = solve_baseline(grid, cfg, n_iter=1500, tol=0.0)
+    assert long.nll_history[-1] <= short.nll_history[-1] + 1e-6

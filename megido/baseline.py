@@ -33,7 +33,11 @@ from megido.config import SiteConfig
 from megido.detector import DetectorGeometry
 from megido.sky import SkyGrid, detector_to_sky, flux_shape, make_sky_grid
 
-_MIN_COUNTS = 1.0
+# A sky bin seen by only a handful of tracks cannot constrain opacity. Modelling
+# it anyway forces a choice between inventing counts and asserting lambda = 0,
+# and both distort the fit. The set is computed once from raw counts, so it is
+# fixed across iterations and the likelihood stays comparable between them.
+MIN_SKY_COUNTS = 5.0
 _EPS = 1e-12
 
 
@@ -164,17 +168,40 @@ def _build_terms(grid: AnalysisGrid, cfg: SiteConfig, geom: DetectorGeometry,
     acceptance_full = geometric_acceptance(tx, ty, geom)
     positions = position_ids(cfg)
 
-    terms: dict[str, _ExposureTerms] = {}
+    # First pass: geometry-only live mask and sky mapping per exposure, before
+    # any statistics-based exclusion (which needs the raw counts of ALL
+    # exposures at a position, not just this one).
+    raw: dict[str, dict] = {}
     for eid, counts in grid.counts.items():
         exp = cfg.exposure(eid)
         sx, sy, on_sky = detector_to_sky(tx, ty, exp.pose)
         flat, in_grid = sky.bin_index(sx, sy)
-
         live = (acceptance_full > 0) & on_sky & in_grid
+        raw[eid] = dict(exp=exp, counts=counts, sx=sx, sy=sy, flat=flat, live=live)
+
+    # Per-position total observed counts per sky bin, from raw data only, fixed
+    # for the whole solve. A sky bin below MIN_SKY_COUNTS is dropped from every
+    # exposure at that position: it cannot constrain opacity there regardless
+    # of how the smooth correction or norms are set.
+    position_sky_counts: dict[str, np.ndarray] = {}
+    for eid, r in raw.items():
+        pid = positions[eid]
+        acc = position_sky_counts.setdefault(pid, np.zeros(sky.flat_size))
+        live = r["live"]
+        np.add.at(acc, r["flat"][live], r["counts"][live].astype(np.float64))
+
+    terms: dict[str, _ExposureTerms] = {}
+    for eid, r in raw.items():
+        exp = r["exp"]
+        pid = positions[eid]
+        sx, sy, flat, counts = r["sx"], r["sy"], r["flat"], r["counts"]
+        sky_ok = position_sky_counts[pid][flat] >= MIN_SKY_COUNTS
+        live = r["live"] & sky_ok
+
         terms[eid] = _ExposureTerms(
             exposure_id=eid,
             norm_group=exp.norm_group,
-            position=positions[eid],
+            position=pid,
             counts=counts[live].astype(np.float64),
             acceptance=acceptance_full[live],
             design=basis.design(tx[live], ty[live]),
@@ -207,8 +234,23 @@ def _update_opacity(terms, coeffs, norms, flux_index, sky: SkyGrid
                       norms[t.norm_group] * _kernel(t, coeffs, flux_index))
         seen = expected > _EPS
         lam = np.full(sky.flat_size, np.nan)
-        ratio = np.clip(observed[seen], _MIN_COUNTS, None) / expected[seen]
+        # No clip needed: sparse sky bins were already excluded from `live` in
+        # _build_terms (MIN_SKY_COUNTS), so `observed` here is always backed by
+        # a real sample, never an invented one.
+        ratio = observed[seen] / expected[seen]
         lam[seen] = -np.log(ratio)
+
+        if np.isfinite(lam).any():
+            # Gauge fixing. norm_e and lambda_p are exactly degenerate: scaling
+            # every norm at a position by c and adding log(c) to that position's
+            # opacity leaves every prediction identical. Left free, the
+            # alternating updates slide along that direction indefinitely — on
+            # real data the norms collapsed toward zero and opacity ran to -13
+            # while the fit got steadily worse. Pinning the median to zero
+            # removes the flat direction; the immediately following norm update
+            # absorbs the shift in closed form, so the fit itself is unchanged.
+            lam[np.isfinite(lam)] -= np.nanmedian(lam)
+
         out[pid] = lam
     return out
 
