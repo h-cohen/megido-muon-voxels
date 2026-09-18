@@ -32,7 +32,13 @@ reasoning, the dead ends, and every decision.
   (`dz ≈ √2·σ_t·z²/b`), and the real campaign has one baseline (2.2 m), giving
   ~1.4 m depth error at mid-range — depth is *not* resolved. Never write a gate
   or a claim that assumes depth is recovered. `megido/resolution.py` computes the
-  honest numbers; report them.
+  honest numbers; report them. The productive response to this is a *different
+  observable*, not despair: the detector sits under a small hill looking up, so
+  the hill's silhouette is a sharp flux edge (thick overburden at the crown,
+  near-open sky off the flanks) — a lateral feature this geometry resolves well,
+  whose parallax between positions can extract the hillside surface where the
+  voxel depth cannot. See spec §11 "Data-driven hillside extraction from the
+  flux edge."
 - **The absolute level of opacity is not measured.** Phase 2 pins each position's
   opacity gauge independently, so only differences are meaningful. Feed the solver
   `BaselineSolution.normalized_opacity(pid)`, never raw `.opacity[pid]` (which is
@@ -123,12 +129,6 @@ costs if wrong, and surfaced to the user at the end.
 
 - Repo-local identity: `Hadar Cohen <hal.nls@gmail.com>`.
 - Committing directly to `main` is authorized for this project.
-- End every commit message with:
-  ```
-  Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
-  Claude-Session: <the current session URL>
-  ```
-  (Use whichever Opus version is actually running; earlier commits carry Opus 5.)
 - **Pushing is done by the user.** The permission classifier blocks the assistant
   from pushing to the public remote; suggest `! git push origin main` and let the
   user run it.
@@ -139,6 +139,8 @@ Match the model to the cognitive load of the task, not to the file count. Use th
 least capable model that will reliably succeed — it is faster and cheaper — but
 never under-resource physics, numerics, or the review of a load-bearing
 algorithm.
+
+**Always use /caveman skill in new agents**
 
 | Task | Model |
 |---|---|
@@ -159,8 +161,8 @@ algorithm.
 | Mechanical cleanup | Haiku |
 
 How this maps onto the subagent workflow: the **controller** (planning, rulings,
-adjudicating reviews, physics decisions) runs on Opus. **Implementer** subagents
-run on Sonnet when the plan carries the full code, escalating to Opus for a task
+adjudicating reviews, physics decisions) runs on Opus 4.8. **Implementer** subagents
+run on Sonnet when the plan carries the full code, escalating to Opus 4.8 for a task
 that turns out to need real numerical or algorithmic judgment. **Reviewers** scale
 to the diff's risk — a mechanical diff takes Sonnet, but the review of a solver,
 a forward model, or any load-bearing algorithm takes Opus. Broad whole-branch

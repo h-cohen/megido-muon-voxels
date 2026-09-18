@@ -610,6 +610,26 @@ alias-distance and CV-scan-degeneracy problems early.
 
 ## 11. Open items (do not block implementation)
 
+- **Data-driven hillside extraction from the flux edge — the most promising next
+  analysis.** The setup is a detector under a small hill in a long cavern,
+  looking up; the hillside's exact shape is unknown and should be recovered from
+  the data, not assumed. The voxel solve cannot localise depth (single 2.2 m
+  baseline, §7.4), but the hill's SILHOUETTE is a different, well-conditioned
+  observable: the overburden is thick toward the crown and thins toward the
+  flanks, so a line of sight that grazes out through the hillside crosses from
+  heavy absorption to near-open sky over a narrow angular range. That produces a
+  **sharp spike / steep gradient in muon flux along the hill edge**, which is a
+  LATERAL feature — exactly the class this geometry resolves well (lateral column
+  correlation ~0.66, against depth localization ~0.09). Two consequences worth
+  pursuing: (1) the edge can be located per position by an edge/gradient detector
+  on the reconstructed sky flux rather than by trusting per-voxel depth; (2) a
+  sharp edge gives far better parallax than a diffuse field, so the shift of that
+  edge between P0 and P1 (2.2 m) can constrain the hillside surface where the
+  voxel field cannot — turning the campaign's one weakness (depth) into a
+  tractable 1-D problem (edge disparity) on its one strength (lateral contrast).
+  This is a Phase 4+ analysis, not part of the S3/S4 voxel inversion; flagged
+  here so the "depth not resolved" finding is read as *use a different observable*
+  rather than *nothing more is possible*.
 - **Structure scale** — still needed to finalize grid spacing, but no longer
   blocking: Phase 3's Megiddo-geometry phantom (`tests/test_phantom.py`,
   `test_megiddo_geometry_recovers_lateral_structure_but_not_depth`) measured
