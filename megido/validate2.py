@@ -60,10 +60,17 @@ def leave_one_out(grid: AnalysisGrid, cfg: SiteConfig,
     it is the only exposure at pos1, so holding it out removes that sky map
     entirely. P1 is reported as SKIPPED rather than silently passed.
 
-    Only the held-out exposure's own normalization is re-fitted, in closed form
-    from its total counts. Every shape-carrying parameter — the smooth
-    coefficients, the flux index, and the opacity map — comes from the fit that
-    never saw it.
+    No normalization is computed for the held-out exposure at all. Observed and
+    predicted are each divided by their own sum and compared by correlation, so
+    the test is scale-invariant by construction and there is no normalization
+    that could leak from a fit that saw the held-out data.
+
+    One residual asymmetry, stated rather than hidden: the set of bins scored is
+    derived from MIN_SKY_COUNTS applied to raw counts summed over the position,
+    which includes the held-out exposure. So WHICH bins are compared is
+    marginally influenced by the held-out data, even though every shape-carrying
+    parameter — coefficients, opacity, flux index — comes from the subset fit.
+    The test is not circular, but it is not perfectly blind either.
     """
     from megido.baseline import position_ids
 

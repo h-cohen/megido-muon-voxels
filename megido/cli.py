@@ -55,6 +55,49 @@ def _cmd_ingest(args) -> int:
     return 0
 
 
+def _cmd_solve(args) -> int:
+    from pathlib import Path
+
+    from megido.angular import load_analysis_grid
+    from megido.baseline import solve_baseline
+    from megido.validate2 import format_report2, leave_one_out, nll_per_bin_check
+
+    cfg = load_site_config(args.config)
+    run_dir = Path(args.run)
+    if not run_dir.is_dir():
+        print(f"no such run directory: {run_dir}")
+        return 1
+
+    exposure_ids = [e.id for e in cfg.exposures]
+    missing = [e for e in exposure_ids if not (run_dir / f"counts_{e}.npz").exists()]
+    if missing:
+        print(f"missing counts artifacts for: {', '.join(missing)}")
+        return 1
+
+    grid = load_analysis_grid(run_dir, exposure_ids, factor=args.rebin)
+    sol = solve_baseline(grid, cfg, n_iter=args.iters)
+
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    sol.save(out / "baseline.npz")
+
+    print(f"flux index      {sol.flux_index:.3f}")
+    print(f"NLL             {sol.nll_history[-1]:.1f} after {len(sol.nll_history)} iterations")
+    print("normalizations  " + "  ".join(f"{g}={v:.4g}" for g, v in sorted(sol.norms.items())))
+    for pid in sorted(sol.opacity):
+        lam = sol.opacity[pid]
+        seen = np.isfinite(lam)
+        print(f"opacity {pid}: {int(seen.sum())} sky bins constrained, "
+              f"median {np.nanmedian(lam):+.4f}, p5..p95 "
+              f"{np.nanpercentile(lam, 5):+.4f}..{np.nanpercentile(lam, 95):+.4f}")
+
+    checks = [nll_per_bin_check(sol, grid)]
+    checks += leave_one_out(grid, cfg, n_iter=max(args.iters // 2, 4))
+    print()
+    print(format_report2(checks))
+    return 0 if all(c.passed for c in checks) else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="megido")
     sub = p.add_subparsers(dest="command", required=True)
@@ -72,6 +115,16 @@ def main(argv: list[str] | None = None) -> int:
     i.add_argument("--chunksize", type=int, default=50_000,
                    help="rows per parsed chunk; see megido.reader.read_chunks docstring")
     i.set_defaults(func=_cmd_ingest)
+
+    s = sub.add_parser("solve", help="Phase 2 baseline and opacity solve")
+    s.add_argument("--config", default="configs/megido.yaml")
+    s.add_argument("--run", default="runs/ingest")
+    s.add_argument("--out", default="runs/solve")
+    s.add_argument("--rebin", type=int, default=10)
+    s.add_argument("--iters", type=int, default=5000,
+                   help="outer iterations; the alternating solve converges "
+                        "slowly, see solve_baseline")
+    s.set_defaults(func=_cmd_solve)
 
     args = p.parse_args(argv)
     return int(args.func(args))
