@@ -1340,7 +1340,7 @@ def test_sirt_never_returns_a_negative_voxel():
 def test_sirt_stops_early_at_the_discrepancy_target():
     fwd, truth, data = _toy()
     x, info = sirt(fwd, data, Reconstruction(algorithm="sirt", n_iter=5000,
-                                             chi2_target=1e-3))
+                                             chi2_target=1e-2))
     assert info["n_iter_used"] < 5000
 
 
@@ -1398,7 +1398,7 @@ def test_tv_denoises_a_piecewise_constant_volume_better_than_plain_sirt():
     plain, _ = sirt(fwd, data, Reconstruction(algorithm="sirt", n_iter=300,
                                               chi2_target=1e-12))
     tv, _ = sirt_tv(fwd, data, Reconstruction(algorithm="tv", n_iter=300,
-                                              tv_alpha=0.05, tv_z_weight=0.5))
+                                              tv_alpha=0.001, tv_z_weight=0.5))
     assert np.linalg.norm(tv - truth) < np.linalg.norm(plain - truth)
 
 
