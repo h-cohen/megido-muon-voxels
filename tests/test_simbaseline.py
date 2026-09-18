@@ -92,10 +92,10 @@ def test_opacity_recovery_at_campaign_statistics(cfg):
     """Reality check: what this campaign's actual counts deliver.
 
     scale=10 puts roughly 400 counts in a core bin, matching the real data
-    (medians 176-429). The gap to the high-count limit is a COUNTING-STATISTICS
-    limit, not a geometry one: it responds to exposure time, not to more
-    viewpoints, and that is the honest expectation for Phase 3 to inherit —
-    not a defect.
+    (medians 176-429). Over the sky bins that are actually constrained, recovery
+    is close to the high-count limit — the earlier much weaker figure came from
+    scoring the fit on bins too sparsely observed to constrain anything, which
+    MIN_SKY_COUNTS now excludes.
     """
     sky = make_sky_grid(t_max=1.8, n_bins=36)
     basis = make_smooth_basis(n_per_axis=5)
@@ -109,7 +109,7 @@ def test_opacity_recovery_at_campaign_statistics(cfg):
     both = np.isfinite(truth) & np.isfinite(got)
     corr = np.corrcoef(truth[both] - truth[both].mean(),
                        got[both] - got[both].mean())[0, 1]
-    assert corr > 0.40, f"campaign-statistics opacity correlation {corr:.3f}"
+    assert corr > 0.75, f"campaign-statistics opacity correlation {corr:.3f}"
 
 
 def test_a_flat_sky_is_recovered_as_flat_in_the_high_count_limit(cfg):
@@ -131,8 +131,10 @@ def test_a_flat_sky_is_recovered_as_flat_in_the_high_count_limit(cfg):
 
 
 def test_flat_sky_leakage_at_campaign_statistics_is_bounded(cfg):
-    """Reality check on the negative control. This number is the noise floor
-    below which no feature in the real sky map should be believed."""
+    """Reality check on the negative control: how much structure the solve
+    manufactures at campaign statistics. This is the floor below which no
+    feature in the real sky map should be believed.
+    """
     sky = make_sky_grid(t_max=1.8, n_bins=36)
     basis = make_smooth_basis(n_per_axis=5)
     scene = make_synthetic_scene(cfg, n_bins=30, sky=sky, basis=basis,
@@ -142,7 +144,7 @@ def test_flat_sky_leakage_at_campaign_statistics_is_bounded(cfg):
 
     lam = sol.opacity[sorted(sol.opacity)[0]]
     lam = lam[np.isfinite(lam)]
-    assert np.std(lam) < 0.40, f"campaign-statistics leakage std={np.std(lam):.3f}"
+    assert np.std(lam) < 0.15, f"campaign-statistics leakage std={np.std(lam):.3f}"
 
 
 def test_flux_index_is_not_identifiable_which_is_why_it_is_fixed(cfg):
