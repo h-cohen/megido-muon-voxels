@@ -8,6 +8,19 @@ binning:
   t_max: 1.25
   n_bins: 500
 
+volume:
+  z_min_m: 1.0
+  z_max_m: 12.0
+  spacing_m: 0.25
+  n_aperture_sub: 4
+  # xy_m: [[-12.0, 12.0], [-12.0, 12.0]]   # uncomment to pin the lateral box
+
+reconstruction:
+  algorithm: tv
+  n_iter: 150
+  tv_alpha: 0.01
+  tv_z_weight: 0.5
+
 exposures:
   - id: P0
     runs: DET200084-DET200104

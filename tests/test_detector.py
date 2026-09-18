@@ -75,3 +75,11 @@ def test_max_tan_is_geometric_acceptance_limit():
     # active_width / dz = 38.4 / 31.5
     assert g.max_tan() == pytest.approx(38.4 / 31.5, rel=1e-6)
     assert g.max_tan() > 1.0   # the spec's inherited +-1 crop would lose real data
+
+
+def test_aperture_is_the_active_width_in_metres():
+    from megido.detector import DetectorGeometry
+
+    geom = DetectorGeometry.megiddo()
+    assert geom.aperture_m == pytest.approx(geom.bar.active_width_cm / 100.0)
+    assert geom.aperture_m == pytest.approx(0.384)

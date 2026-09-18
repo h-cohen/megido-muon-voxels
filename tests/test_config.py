@@ -89,3 +89,53 @@ def test_binning_edges():
     assert e[0] == pytest.approx(-1.25)
     assert e[-1] == pytest.approx(1.25)
     assert (e[1] - e[0]) == pytest.approx(0.005)
+
+
+def test_site_config_supplies_volume_and_reconstruction_defaults(tmp_path):
+    """Configs written before Phase 3 must still load."""
+    from megido.config import load_site_config
+
+    p = tmp_path / "old.yaml"
+    p.write_text(
+        "site: t\ndata_dir: /tmp\n"
+        "exposures:\n"
+        "  - id: P0\n    runs: DET1-DET2\n"
+        "    pose: {x: 0, y: 0, z: 0, tilt_deg: 0, az_deg: 0}\n"
+    )
+    cfg = load_site_config(p)
+    assert cfg.volume.spacing_m == 0.25
+    assert cfg.reconstruction.algorithm == "tv"
+
+
+def test_site_config_reads_volume_and_reconstruction_blocks(tmp_path):
+    from megido.config import load_site_config
+
+    p = tmp_path / "new.yaml"
+    p.write_text(
+        "site: t\ndata_dir: /tmp\n"
+        "volume: {z_min_m: 2.0, z_max_m: 9.0, spacing_m: 0.5, n_aperture_sub: 3}\n"
+        "reconstruction: {n_iter: 40, tv_alpha: 0.02}\n"
+        "exposures:\n"
+        "  - id: P0\n    runs: DET1-DET2\n"
+        "    pose: {x: 0, y: 0, z: 0, tilt_deg: 0, az_deg: 0}\n"
+    )
+    cfg = load_site_config(p)
+    assert (cfg.volume.z_min_m, cfg.volume.z_max_m) == (2.0, 9.0)
+    assert cfg.volume.n_aperture_sub == 3
+    assert cfg.reconstruction.n_iter == 40
+    assert cfg.reconstruction.tv_z_weight == 0.5   # untouched default
+
+
+def test_volume_xy_box_survives_yaml_round_trip(tmp_path):
+    from megido.config import load_site_config
+
+    p = tmp_path / "box.yaml"
+    p.write_text(
+        "site: t\ndata_dir: /tmp\n"
+        "volume: {xy_m: [[-3.0, 3.0], [-2.0, 2.0]]}\n"
+        "exposures:\n"
+        "  - id: P0\n    runs: DET1-DET2\n"
+        "    pose: {x: 0, y: 0, z: 0, tilt_deg: 0, az_deg: 0}\n"
+    )
+    cfg = load_site_config(p)
+    assert cfg.volume.xy_m == ((-3.0, 3.0), (-2.0, 2.0))

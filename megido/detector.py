@@ -123,6 +123,12 @@ class DetectorGeometry:
         lo, hi = self.asics_for_coord(coord)
         return self.z_of_asic(hi) - self.z_of_asic(lo)
 
+    @property
+    def aperture_m(self) -> float:
+        """Active transverse width in METRES. Phase 3 works in metres; every
+        other length in this module is centimetres."""
+        return self.bar.active_width_cm / 100.0
+
     def max_tan(self) -> float:
         """Geometric acceptance limit: a track must cross both layers of a coordinate."""
         return self.bar.active_width_cm / min(self.dz_cm("x"), self.dz_cm("y"))

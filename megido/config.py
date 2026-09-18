@@ -64,6 +64,34 @@ class Binning:
 
 
 @dataclass(frozen=True)
+class Volume:
+    """The voxel lattice the Phase 3 inversion solves on.
+
+    `spacing_m` defaults to 0.25 rather than the spec's 0.10 starting value:
+    Megiddo's rock sits at roughly 5-15 m, not the cafeteria's 3 m ceiling, so a
+    0.10 m lattice over that range is about 5e7 unknowns against 2e4
+    measurements. megido.resolution reports what is actually resolvable, and
+    this is a config field precisely so it can be retuned from that evidence.
+    """
+    z_min_m: float = 1.0
+    z_max_m: float = 12.0
+    spacing_m: float = 0.25
+    xy_m: tuple | None = None       # ((x0, x1), (y0, y1)); None -> from ray footprints
+    n_aperture_sub: int = 4         # sub-rays per axis across the aperture (n^2 total)
+
+
+@dataclass(frozen=True)
+class Reconstruction:
+    algorithm: str = "tv"           # "sirt" | "tv"
+    n_iter: int = 150
+    nonneg: bool = True
+    chi2_target: float = 1.0        # discrepancy-principle stop for plain SIRT
+    tv_alpha: float = 0.01          # TV threshold as a fraction of x's p95
+    tv_z_weight: float = 0.5        # anisotropic TV: relative weight of z gradients
+    seed: int = 42
+
+
+@dataclass(frozen=True)
 class SiteConfig:
     site: str
     data_dir: Path
@@ -71,6 +99,8 @@ class SiteConfig:
     x_axis_bearing_deg: float
     exposures: tuple[Exposure, ...]
     binning: Binning
+    volume: Volume = field(default_factory=Volume)
+    reconstruction: Reconstruction = field(default_factory=Reconstruction)
 
     def exposure(self, eid: str) -> Exposure:
         for e in self.exposures:
@@ -119,6 +149,12 @@ def load_site_config(path: str | Path) -> SiteConfig:
                 note=block.get("note", ""),
             )
         )
+    vol_raw = dict(raw.get("volume", {}))
+    if vol_raw.get("xy_m") is not None:
+        vol_raw["xy_m"] = tuple(tuple(float(v) for v in pair) for pair in vol_raw["xy_m"])
+    volume = Volume(**vol_raw)
+    reconstruction = Reconstruction(**raw.get("reconstruction", {}))
+
     return SiteConfig(
         site=raw["site"],
         data_dir=Path(raw["data_dir"]),
@@ -126,4 +162,6 @@ def load_site_config(path: str | Path) -> SiteConfig:
         x_axis_bearing_deg=float(frame.get("x_axis_bearing_deg", 0.0)),
         exposures=tuple(exposures),
         binning=binning,
+        volume=volume,
+        reconstruction=reconstruction,
     )
