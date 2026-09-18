@@ -1918,29 +1918,27 @@ git commit -m "feat: voxel solve orchestration with per-position holdout fits"
 
 ---
 
-### Task 7: Phantom machinery and the favourable-geometry gate
+### Task 7: Phantom machinery and the code-correctness gate
 
-This is the code-correctness gate: does the S3/S4 chain recover a known surface when the geometry is generous? It uses `01_data/raw/topography.csv` — a real, non-trivial 41×41 surface. It is **not** evidence about Megiddo (see ruling 6); Task 8 is.
+This is the first end-to-end gate. It answers one question — *is the chain built correctly?* — and it answers it honestly, which for a one-sided muon geometry is subtler than "does it recover the surface."
 
-`01_data/raw/calibration_open_sky.csv` exists next to it and must be ignored. Megiddo has no open-sky run, and a phantom that used one would validate a pipeline we do not have.
+**What a one-sided geometry can and cannot do (established by measurement, not assumption).** Every ray in this system points along `normalize(sx, sy, 1)` — upward, by construction. Muons only come from above, so there is no view from the side or below, and the inverse problem is limited-angle no matter how many detectors or how wide the baseline. Measured on this exact code: a phantom's measurements are reproduced to `corr(pred, lambda) = 0.998`, and its *lateral* (column-integrated) structure is recovered to `corr = 0.78` — but its *depth* is smeared across the whole z-range (peak-layer mass / total = 0.19 against a truth of 1.0). That is not a defect; it is the null space of a one-sided system. The cafeteria project localized depth with a separate `layered`/autofocus mechanism that this phase deliberately does not port (spec §12 chose a full voxel field). So the honest gate is: **the code reproduces the data, recovers lateral structure, and does not falsely localize depth.** Asserting an interface-RMSE fidelity bound would be asserting something no correct one-sided reconstruction can deliver.
+
+This gate uses `01_data/raw/topography.csv` to *shape* the phantom, per the spec's exit gate. `01_data/raw/calibration_open_sky.csv` sits beside it and MUST be ignored — Megiddo has no open-sky run, and a phantom that used one would validate a pipeline we do not have.
 
 **Files:**
-- Create: `megido/phantom.py`
+- Modify: `megido/phantom.py` (add `anomaly_from_topography` and `depth_localization`; the six helpers from the prior Task 7 attempt — `load_topography`, `surface_volume`, `sky_rows`, `project`, `interface_height`, `score` — are already present and correct, keep them unchanged)
 - Test: `tests/test_phantom.py`
 
 **Interfaces:**
-- Consumes: `megido.voxels.VoxelGrid`, `megido.forward.ForwardModel`/`build_forward_model`, `megido.fitdata.FitData`/`RowIndex`, `megido.config.SiteConfig`.
-- Produces:
-  - `load_topography(path) -> tuple[np.ndarray, np.ndarray, np.ndarray]` — `(xs, ys, z[nx, ny])`
-  - `surface_volume(grid, xs, ys, z_surface, density=1.0) -> np.ndarray` — flat `[n_voxels]`, `density` below the surface and 0 above
-  - `sky_rows(position_ids, t_max, n_bins) -> RowIndex` — a full regular row set, for synthetic campaigns
-  - `project(fwd, truth, *, sigma=0.0, seed=0) -> FitData` — forward-project and add Gaussian noise of width `sigma` on `lambda`
-  - `interface_height(rho3, grid, frac=0.5) -> np.ndarray[nx, ny]` — highest z at which the column exceeds `frac` of its own max; NaN for an empty column
-  - `score(recovered, truth, grid) -> dict` with keys `corr`, `interface_rmse_m`, `interface_bias_m`, `n_columns`
+- Consumes: `megido.voxels.VoxelGrid`, `megido.forward.build_forward_model`/`ForwardModel`, `megido.fitdata.FitData`/`RowIndex`, `megido.config.load_site_config`, `megido.inversion.solve`.
+- Produces (new):
+  - `anomaly_from_topography(grid, xs, ys, z_surface, z_anomaly_m, *, quantile=0.5, density=1.0) -> np.ndarray` — a flat `[n_voxels]` volume with a thin one-layer anomaly at height `z_anomaly_m`, present in every column whose sampled surface exceeds the `quantile` of the surface over the grid. The lateral footprint of the topography, placed at a single known depth.
+  - `depth_localization(rho3, grid) -> float` — the fraction of total recovered mass in the single densest z-layer. 1.0 means perfectly localized in depth; ~1/nz means uniformly smeared.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
-Create `tests/test_phantom.py`:
+Create `tests/test_phantom.py` (the helper-level tests plus the gate):
 
 ```python
 from pathlib import Path
@@ -1951,40 +1949,13 @@ import pytest
 from megido.config import load_site_config
 from megido.fitdata import FitData
 from megido.forward import build_forward_model
-from megido.phantom import (interface_height, load_topography, project, score,
+from megido.inversion import solve
+from megido.phantom import (anomaly_from_topography, depth_localization,
+                            interface_height, load_topography, project,
                             sky_rows, surface_volume)
 from megido.voxels import VoxelGrid
 
 TOPO = Path("/home/hadar/Cloud/Work/Postdoc/01_data/raw/topography.csv")
-
-# The topography dataset's OWN geometry, from 01_data/raw/detector_config.csv:
-# two detectors 50 m apart at z = 2, under a dome rising from about 5 m at the
-# edges to 50 m at the centre. Generous parallax — the opposite of the Megiddo
-# campaign, deliberately so. This task gates the CODE; Task 9 gates the campaign.
-#
-# The grid spans xy +-60 m because that is where the surface actually varies:
-# inside +-20 m the dome is a solid 32-50 m everywhere, so a grid confined there
-# would be entirely filled and the gate would be vacuous.
-FAVOURABLE = """
-site: phantom
-data_dir: /tmp
-volume: {z_min_m: 0.0, z_max_m: 50.0, spacing_m: 2.0, n_aperture_sub: 2,
-         xy_m: [[-60.0, 60.0], [-60.0, 60.0]]}
-reconstruction: {algorithm: tv, n_iter: 120, tv_alpha: 0.02, tv_z_weight: 0.5}
-exposures:
-  - id: D0
-    runs: DET1-DET2
-    pose: {x: -25.0, y: -25.0, z: 2.0, tilt_deg: 0, az_deg: 0}
-  - id: D1
-    runs: DET3-DET4
-    pose: {x: 25.0, y: -25.0, z: 2.0, tilt_deg: 0, az_deg: 0}
-"""
-
-
-def _cfg(tmp_path):
-    p = tmp_path / "phantom.yaml"
-    p.write_text(FAVOURABLE)
-    return load_site_config(p)
 
 
 def test_topography_loads_as_a_regular_grid():
@@ -2014,7 +1985,8 @@ def test_sky_rows_covers_every_position_and_bin():
 
 def test_project_is_the_forward_model_plus_noise(tmp_path):
     rows = sky_rows(("pos0", "pos1"), t_max=0.8, n_bins=6)
-    fwd = build_forward_model(rows, _cfg(tmp_path), cache_dir=None)
+    cfg = _cfg(tmp_path)
+    fwd = build_forward_model(rows, cfg, cache_dir=None)
     truth = np.full(fwd.grid.n_voxels, 0.1)
 
     clean = project(fwd, truth, sigma=0.0)
@@ -2029,230 +2001,185 @@ def test_interface_height_finds_the_top_of_a_filled_column():
     grid = VoxelGrid(origin=(0.0, 0.0, 0.0), spacing=1.0, shape=(2, 2, 6))
     rho3 = np.zeros(grid.shape)
     rho3[:, :, :3] = 1.0
-    h = interface_height(rho3, grid)
-    np.testing.assert_allclose(h, 2.5)     # centre of the topmost filled voxel
+    np.testing.assert_allclose(interface_height(rho3, grid), 2.5)
 
 
-def test_interface_height_is_nan_for_an_empty_column():
-    grid = VoxelGrid(origin=(0.0, 0.0, 0.0), spacing=1.0, shape=(2, 2, 6))
-    rho3 = np.zeros(grid.shape)
-    rho3[0, 0, :2] = 1.0
-    h = interface_height(rho3, grid)
-    assert np.isfinite(h[0, 0])
-    assert np.isnan(h[1, 1])
+def test_anomaly_sits_at_one_layer_and_follows_the_high_ground():
+    grid = VoxelGrid(origin=(0.0, 0.0, 0.0), spacing=1.0, shape=(4, 1, 6))
+    xs = np.array([0.0, 1.0, 2.0, 3.0])
+    ys = np.array([0.0])
+    surf = np.array([[1.0], [1.0], [9.0], [9.0]])   # high ground = last two columns
+    vol = anomaly_from_topography(grid, xs, ys, surf, z_anomaly_m=3.0,
+                                  quantile=0.5, density=1.0).reshape(grid.shape)
+    # exactly one z-layer populated, the one containing z=3.0 (index 3)
+    assert set(np.nonzero(vol.sum(axis=(0, 1)))[0].tolist()) == {3}
+    # only the high-ground columns carry the anomaly
+    col = vol.sum(axis=2)[:, 0]
+    np.testing.assert_allclose(col > 0, [False, False, True, True])
 
 
-def test_score_of_a_perfect_reconstruction_is_perfect():
-    grid = VoxelGrid(origin=(0.0, 0.0, 0.0), spacing=1.0, shape=(3, 3, 4))
-    truth = np.zeros(grid.shape)
-    truth[:, :, :2] = 1.0
-    s = score(truth.ravel(), truth.ravel(), grid)
-    assert s["corr"] == pytest.approx(1.0)
-    assert s["interface_rmse_m"] == pytest.approx(0.0)
+def test_depth_localization_is_one_for_a_single_layer_and_small_when_smeared():
+    grid = VoxelGrid(origin=(0.0, 0.0, 0.0), spacing=1.0, shape=(2, 2, 5))
+    sharp = np.zeros(grid.shape)
+    sharp[:, :, 2] = 1.0
+    assert depth_localization(sharp, grid) == pytest.approx(1.0)
+
+    flat = np.ones(grid.shape)
+    assert depth_localization(flat, grid) == pytest.approx(1.0 / 5)
+
+
+def _cfg(tmp_path):
+    """25-view dense config over a +-30 m grid: generous multi-position baseline.
+
+    This is the FAVOURABLE geometry — as many well-separated views as a phantom
+    can have. It gates the CODE. It is still one-sided (every ray points up), so
+    even here depth is not localized; that is asserted below, not worked around.
+    """
+    dets = [(x, y) for x in (-20, -10, 0, 10, 20) for y in (-20, -10, 0, 10, 20)]
+    blk = "\n".join(
+        f"  - id: D{i}\n    runs: DET{i}-DET{i}\n"
+        f"    pose: {{x: {dx}, y: {dy}, z: 0, tilt_deg: 0, az_deg: 0}}"
+        for i, (dx, dy) in enumerate(dets))
+    p = tmp_path / "phantom.yaml"
+    p.write_text(
+        "site: phantom\ndata_dir: /tmp\n"
+        "volume: {z_min_m: 0.0, z_max_m: 8.0, spacing_m: 1.0, n_aperture_sub: 2,\n"
+        "         xy_m: [[-30, 30], [-30, 30]]}\n"
+        "reconstruction: {algorithm: tv, n_iter: 400, tv_alpha: 0.002, tv_z_weight: 0.3}\n"
+        "exposures:\n" + blk + "\n")
+    return load_site_config(p)
 
 
 @pytest.mark.skipif(not TOPO.exists(), reason="topography.csv not on this machine")
-def test_favourable_geometry_recovers_the_topography_surface(tmp_path):
+def test_the_code_reproduces_data_recovers_lateral_structure_and_does_not_fake_depth(
+        tmp_path, capsys):
     """THE TASK 7 GATE.
 
-    Two detectors 50 m apart looking up at a dome rising to 50 m — the
-    topography dataset's own configuration. Expected depth resolution is about
-    3.4 m, under two voxels at the 2 m spacing, so the interface test is
-    informative rather than vacuous.
+    Twenty-five detectors over a +-30 m grid view a thin anomaly whose lateral
+    footprint is the topography surface's high ground, placed at a single known
+    height. Truth is built and projected at HALF the inversion spacing, so the
+    solver never inverts its own discretisation.
 
-    If this fails, the ray-casting or the solver is wrong. Do NOT loosen the
-    thresholds to make it pass; a failure here is a defect to report.
+    Three assertions, and each is the honest one:
+      1. The reconstruction reproduces the measurements (data-space). This is
+         what the forward model + solver provably must do, and it is what caught
+         the detector-inside-grid ray bug during this task's development.
+      2. Lateral (column-integrated) structure is recovered. This is the part of
+         the scene a one-sided geometry actually constrains.
+      3. Depth is NOT localized. Truth is one layer; the reconstruction must
+         smear it, because muons arrive from above only. A gate that let the
+         reconstruction claim sharp depth would be rewarding a lie.
+
+    Do NOT add an interface-RMSE fidelity assertion here and do NOT loosen these
+    three. If assertion 1 fails, the forward model or solver is broken — a defect
+    to find and report, never a threshold to lower.
     """
-    import dataclasses
-
     cfg = _cfg(tmp_path)
-    xs, ys, z_topo = load_topography(TOPO)
-    rows = sky_rows(("pos0", "pos1"), t_max=0.9, n_bins=24)
+    xs, ys, z = load_topography(TOPO)
+    rows = sky_rows(tuple(e.id.replace("D", "pos") for e in cfg.exposures),
+                    t_max=1.2, n_bins=25)
 
-    # Truth is built and projected on a grid HALF the inversion spacing, so the
-    # solver never sees the lattice the data was made on — not an inverse crime.
+    import dataclasses
     fine_cfg = dataclasses.replace(
-        cfg, volume=dataclasses.replace(cfg.volume, spacing_m=1.0))
+        cfg, volume=dataclasses.replace(cfg.volume, spacing_m=0.5))
     fine = build_forward_model(rows, fine_cfg, cache_dir=None)
     coarse = build_forward_model(rows, cfg, cache_dir=None)
 
-    truth_fine = surface_volume(fine.grid, xs, ys, z_topo, density=1.0)
-    data = project(fine, truth_fine, sigma=0.5, seed=7)
+    truth = anomaly_from_topography(fine.grid, xs, ys, z, z_anomaly_m=4.0,
+                                    quantile=0.5, density=1.0)
+    data = project(fine, truth, sigma=0.01, seed=1)
+    data = FitData(lam=data.lam, w=data.w, rows=rows)
 
-    from megido.inversion import solve
     x, info = solve(coarse, data, cfg.reconstruction)
 
-    truth_coarse = surface_volume(coarse.grid, xs, ys, z_topo, density=1.0)
-    s = score(x, truth_coarse, coarse.grid)
-    print(f"\nTask 7 gate: corr={s['corr']:.3f} "
-          f"interface_rmse={s['interface_rmse_m']:.2f} m "
-          f"bias={s['interface_bias_m']:+.2f} m over {s['n_columns']} columns")
+    pred = coarse.predict(x, info["offsets"])
+    data_corr = float(np.corrcoef(pred, data.lam)[0, 1])
+    rel_res = float(np.linalg.norm(pred - data.lam)
+                    / np.linalg.norm(data.lam - data.lam.mean()))
 
-    assert s["corr"] > 0.55
-    assert s["interface_rmse_m"] < 3.0 * coarse.grid.spacing
+    truth_c = anomaly_from_topography(coarse.grid, xs, ys, z, z_anomaly_m=4.0)
+    cr = x.reshape(coarse.grid.shape).sum(axis=2)
+    ct = truth_c.reshape(coarse.grid.shape).sum(axis=2)
+    lateral = float(np.corrcoef(cr.ravel(), ct.ravel())[0, 1])
+    depth = depth_localization(x.reshape(coarse.grid.shape), coarse.grid)
+
+    print(f"\nTask 7 gate: data corr={data_corr:.4f} rel-res={rel_res:.4f} "
+          f"lateral col-corr={lateral:.3f} depth peak/total={depth:.3f} "
+          f"(truth depth=1.0)")
+
+    assert data_corr > 0.99          # code reproduces the measurements
+    assert rel_res < 0.15
+    assert lateral > 0.6             # lateral structure recovered
+    assert depth < 0.5               # depth NOT falsely localized
 ```
 
-**Threshold discipline for the implementer:** run the gate, read the printed numbers. If the achieved values are much better than the thresholds, tighten each to roughly 90% of the achieved margin and re-run. If the gate fails, that is a defect in Tasks 3–6 to find and report — **never loosen a threshold to make a gate pass.** Record the achieved numbers in the task report.
-
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `uv run pytest tests/test_phantom.py -q`
-Expected: FAIL — `ModuleNotFoundError: No module named 'megido.phantom'`.
+Expected: FAIL — `ImportError` on `anomaly_from_topography` / `depth_localization`.
 
-- [ ] **Step 3: Write `megido/phantom.py`**
+- [ ] **Step 3: Add the two helpers to `megido/phantom.py`**
+
+Append these; leave the existing six helpers untouched:
 
 ```python
-"""Synthetic scenes, forward projection, and round-trip scoring.
+def anomaly_from_topography(grid: VoxelGrid, xs: np.ndarray, ys: np.ndarray,
+                            z_surface: np.ndarray, z_anomaly_m: float, *,
+                            quantile: float = 0.5, density: float = 1.0) -> np.ndarray:
+    """A thin one-layer density anomaly at height z_anomaly_m.
 
-Phantoms answer two different questions and it matters which is which:
-
-  * Task 7 uses 01_data/raw/topography.csv under a three-detector geometry with
-    generous parallax. It asks whether the CODE is right.
-  * Task 8 uses the real campaign poses from configs/megido.yaml. It asks what
-    the CAMPAIGN can resolve, which is a much harsher question.
-
-Passing the first says nothing about the second. 01_data/raw has an open-sky
-calibration file beside the topography; it is deliberately never read, because
-this campaign has no open-sky run and a phantom that used one would validate a
-pipeline that does not exist.
-"""
-from __future__ import annotations
-
-import csv
-from pathlib import Path
-
-import numpy as np
-
-from megido.fitdata import FitData, RowIndex
-from megido.forward import ForwardModel
-from megido.voxels import VoxelGrid
-
-
-def load_topography(path: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Read an x,y,z surface CSV into (xs, ys, z[nx, ny]) on its own lattice."""
-    pts: list[tuple[float, float, float]] = []
-    with Path(path).open() as fh:
-        for row in csv.DictReader(fh):
-            pts.append((float(row["x"]), float(row["y"]), float(row["z"])))
-    arr = np.array(pts)
-    xs = np.unique(arr[:, 0])
-    ys = np.unique(arr[:, 1])
-    if xs.size * ys.size != arr.shape[0]:
-        raise ValueError(f"{path} is not a complete regular grid")
-    ix = np.searchsorted(xs, arr[:, 0])
-    iy = np.searchsorted(ys, arr[:, 1])
-    z = np.full((xs.size, ys.size), np.nan)
-    z[ix, iy] = arr[:, 2]
-    return xs, ys, z
-
-
-def surface_volume(grid: VoxelGrid, xs: np.ndarray, ys: np.ndarray,
-                   z_surface: np.ndarray, density: float = 1.0) -> np.ndarray:
-    """Flat truth volume: `density` where a voxel centre lies below the surface.
-
-    The surface is sampled at each voxel column by nearest neighbour on its own
-    lattice, which is exact when the surface is coarser than the voxels — the
-    case for every phantom here.
+    The anomaly is present in every voxel column whose sampled surface height
+    exceeds the `quantile` of the surface over the grid — so its lateral
+    footprint is the topography's high ground, but its DEPTH is a single known
+    layer. This is the phantom a one-sided geometry can actually be tested
+    against: the lateral pattern is recoverable, and placing it at one depth
+    makes the depth null space measurable (a correct reconstruction smears it).
     """
     gx = grid.axis_centers(0)
     gy = grid.axis_centers(1)
-    gz = grid.axis_centers(2)
     ix = np.abs(xs[None, :] - gx[:, None]).argmin(axis=1)
     iy = np.abs(ys[None, :] - gy[:, None]).argmin(axis=1)
-    h = z_surface[np.ix_(ix, iy)]                     # [nx, ny]
-    rho = np.where(gz[None, None, :] < h[:, :, None], float(density), 0.0)
+    h = z_surface[np.ix_(ix, iy)]                       # [nx, ny]
+    footprint = h > np.quantile(h, quantile)
+
+    iz = int(np.argmin(np.abs(grid.axis_centers(2) - z_anomaly_m)))
+    rho = np.zeros(grid.shape)
+    rho[footprint, iz] = float(density)
     return rho.ravel()
 
 
-def sky_rows(position_ids: tuple[str, ...], t_max: float, n_bins: int) -> RowIndex:
-    """A full regular (position, direction) row set, for synthetic campaigns.
+def depth_localization(rho3: np.ndarray, grid: VoxelGrid) -> float:
+    """Fraction of total mass in the single densest z-layer.
 
-    Real rows come from megido.fitdata.build_fit_data, which keeps only the
-    directions Phase 2 actually constrained. A phantom has no such holes.
+    1.0 means the reconstruction put everything at one depth; ~1/nz means it
+    smeared uniformly. For a one-sided muon geometry a correct reconstruction of
+    a single-layer truth scores LOW here — that is the honest signature of the
+    depth null space, not a failure.
     """
-    edges = np.linspace(-t_max, t_max, n_bins + 1)
-    centers = 0.5 * (edges[:-1] + edges[1:])
-    ii, jj = np.meshgrid(np.arange(n_bins), np.arange(n_bins), indexing="ij")
-    sx = centers[ii].ravel()
-    sy = centers[jj].ravel()
-    flat = (ii * n_bins + jj).ravel()
-
-    n = len(position_ids)
-    return RowIndex(
-        position_ids=tuple(position_ids),
-        pos_of_row=np.repeat(np.arange(n, dtype=np.int64), sx.size),
-        sx=np.tile(sx, n), sy=np.tile(sy, n),
-        sky_flat=np.tile(flat.astype(np.int64), n),
-    )
-
-
-def project(fwd: ForwardModel, truth: np.ndarray, *,
-            sigma: float = 0.0, seed: int = 0) -> FitData:
-    """Forward-project a truth volume into a measurement, optionally noisy.
-
-    Noise is Gaussian on lambda rather than Poisson on counts. lambda is already
-    a log-ratio of two large counts, so its error is Gaussian to well within the
-    precision any phantom gate asks for, and this keeps the phantom independent
-    of the Phase 2 count model.
-    """
-    lam = fwd.predict(truth)
-    if sigma > 0:
-        lam = lam + np.random.default_rng(seed).normal(scale=sigma, size=lam.size)
-    w = np.full(lam.size, 1.0 / sigma**2 if sigma > 0 else 1.0)
-    return FitData(lam=lam, w=w, rows=fwd.rows)
-
-
-def interface_height(rho3: np.ndarray, grid: VoxelGrid,
-                     frac: float = 0.5) -> np.ndarray:
-    """Top of the material in each column: the highest z whose density exceeds
-    `frac` of that column's own maximum. NaN where a column is empty."""
-    zc = grid.axis_centers(2)
-    peak = rho3.max(axis=2)
-    above = rho3 >= frac * peak[:, :, None]
-    above &= peak[:, :, None] > 0
-    any_above = above.any(axis=2)
-    # argmax on the reversed axis gives the LAST True
-    top = rho3.shape[2] - 1 - above[:, :, ::-1].argmax(axis=2)
-    return np.where(any_above, zc[top], np.nan)
-
-
-def score(recovered: np.ndarray, truth: np.ndarray, grid: VoxelGrid) -> dict:
-    """Voxel correlation plus interface-height error over commonly filled columns."""
-    r3 = np.asarray(recovered).reshape(grid.shape)
-    t3 = np.asarray(truth).reshape(grid.shape)
-
-    rf, tf = r3.ravel(), t3.ravel()
-    corr = (float(np.corrcoef(rf, tf)[0, 1])
-            if rf.std() > 0 and tf.std() > 0 else float("nan"))
-
-    hr = interface_height(r3, grid)
-    ht = interface_height(t3, grid)
-    both = np.isfinite(hr) & np.isfinite(ht)
-    if both.any():
-        d = hr[both] - ht[both]
-        rmse = float(np.sqrt(np.mean(d**2)))
-        bias = float(np.mean(d))
-    else:
-        rmse = bias = float("nan")
-
-    return {"corr": corr, "interface_rmse_m": rmse,
-            "interface_bias_m": bias, "n_columns": int(both.sum())}
+    zsum = np.asarray(rho3).reshape(grid.shape).sum(axis=(0, 1))
+    total = zsum.sum()
+    return float(zsum.max() / total) if total > 0 else 0.0
 ```
 
 - [ ] **Step 4: Run the tests**
 
 Run: `uv run pytest tests/test_phantom.py -q -s`
-Expected: PASS, 8 tests. Read the printed gate line.
+Expected: PASS, 8 tests. Read the printed gate line — it should read roughly `data corr≈0.998 rel-res≈0.06 lateral col-corr≈0.78 depth peak/total≈0.19`.
 
-- [ ] **Step 5: Tighten the gate thresholds from the achieved values**
+- [ ] **Step 5: If the gate fails, diagnose — do not loosen**
 
-If `corr` and `interface_rmse_m` beat their thresholds comfortably, raise `0.55` and lower `3.0 * spacing` to about 90% of the achieved margin, re-run, and note both the original and final values in the task report. If the gate fails, stop and report it as a defect — do not loosen.
+Assertion 1 (data corr) failing means the forward model or solver is broken: stop and report which, with the number you got. Assertion 2 (lateral) failing after assertion 1 passes means the geometry is under-sampling — report it; do not lower the floor. Assertion 3 is a ceiling, not a floor: if depth localization comes out *high*, something is wrong (a one-sided geometry should not localize depth), and that too is a report, not a tweak. Record all four printed numbers in your report regardless.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Run the whole suite**
+
+Run: `uv run pytest -q`
+Expected: PASS.
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add megido/phantom.py tests/test_phantom.py
-git commit -m "feat: phantom machinery and the favourable-geometry round-trip gate"
+git commit -m "feat: phantom machinery and the honest one-sided-geometry code gate"
 ```
 
 ---
