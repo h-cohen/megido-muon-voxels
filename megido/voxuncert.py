@@ -71,18 +71,31 @@ def voxel_bootstrap(grid: AnalysisGrid, cfg: SiteConfig, *,
     is fitted from the same counts, so its uncertainty is part of the answer's.
     That makes each replica a full baseline solve, which is why the default
     replica count is small and the CLI exposes it.
+
+    The voxel LATTICE is pinned once, from the nominal (unresampled) counts,
+    and reused by every replica. `solve_voxels` otherwise auto-derives its
+    grid from `rows.t_reach()`, which depends on which sky bins survive
+    resampling — a replica could then land on a different grid shape, and
+    `np.stack` below would crash (or, worse, silently misalign with the
+    nominal grid used for honest-SNR reporting downstream). Pinning removes
+    that possibility rather than merely making it unlikely.
     """
     rng = np.random.default_rng(seed)
     kw = dict(solve_kwargs or {})
     stack: list[np.ndarray] = []
-    vgrid: VoxelGrid | None = None
+
+    # Nominal (unresampled) solve fixes the lattice; its own rho is not part
+    # of the statistics, only its grid is.
+    nominal_sol = solve_baseline(grid, cfg, **kw)
+    vgrid: VoxelGrid = solve_voxels(nominal_sol, cfg, cache_dir=cache_dir,
+                                    holdouts=False)["full"].grid
 
     for _ in range(n_replicas):
         counts = {eid: rng.poisson(v).astype(np.int64)
                   for eid, v in grid.counts.items()}
         sol = solve_baseline(AnalysisGrid(edges=grid.edges, counts=counts), cfg, **kw)
-        fits = solve_voxels(sol, cfg, cache_dir=cache_dir, holdouts=False)
-        vgrid = fits["full"].grid
+        fits = solve_voxels(sol, cfg, cache_dir=cache_dir, holdouts=False,
+                            grid=vgrid)
         stack.append(fits["full"].rho3())
 
     arr = np.stack(stack)

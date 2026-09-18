@@ -73,15 +73,21 @@ def solve_voxels(sol: BaselineSolution, cfg: SiteConfig, *,
                  max_tan: float = 1.25,
                  transparent_quantile: float = 0.05,
                  cache_dir: str | Path | None = "runs/.cache",
-                 holdouts: bool = True) -> dict[str, VoxelSolution]:
+                 holdouts: bool = True,
+                 grid: VoxelGrid | None = None) -> dict[str, VoxelSolution]:
     """Full fit plus one single-position fit per position.
 
     Every fit shares one system matrix; a holdout is a row-weight mask, not a
     rebuild. That is why the matrix cache pays for itself even on a single run.
+
+    `grid` defaults to None, which keeps today's behaviour: the grid is
+    auto-derived from this call's own `rows.t_reach()`. A caller that must
+    keep several calls on one identical lattice (e.g. a bootstrap stacking
+    replicas into one array) passes the grid explicitly instead.
     """
     data = build_fit_data(sol, cfg, sigma=sigma, max_tan=max_tan,
                           transparent_quantile=transparent_quantile)
-    fwd = build_forward_model(data.rows, cfg, cache_dir=cache_dir)
+    fwd = build_forward_model(data.rows, cfg, grid=grid, cache_dir=cache_dir)
     rc = cfg.reconstruction
 
     def run(keep: np.ndarray) -> VoxelSolution:

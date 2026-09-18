@@ -51,6 +51,32 @@ def test_bootstrap_returns_a_mean_and_sigma_on_the_solve_grid(tmp_path):
     assert np.all(r.sigma >= 0.0)
 
 
+def test_bootstrap_pins_the_nominal_grid(tmp_path):
+    """Every replica must share ONE lattice, fixed from the nominal counts.
+
+    solve_voxels otherwise auto-derives its grid from t_reach(), which shifts
+    with which sky bins survive Poisson resampling; a replica landing on a
+    different shape would break np.stack and desync downstream SNR/views.
+    """
+    from megido.baseline import solve_baseline
+    from megido.reconstruct import solve_voxels
+
+    cfg = _cfg(tmp_path)
+    g = _grid()
+    nominal_sol = solve_baseline(g, cfg, n_iter=30)
+    nominal_grid = solve_voxels(nominal_sol, cfg, cache_dir=None,
+                                holdouts=False)["full"].grid
+
+    r = voxel_bootstrap(g, cfg, n_replicas=3, cache_dir=None,
+                        solve_kwargs={"n_iter": 30})
+
+    assert r.grid.origin == nominal_grid.origin
+    assert r.grid.spacing == nominal_grid.spacing
+    assert r.grid.shape == nominal_grid.shape
+    assert r.mean.shape == nominal_grid.shape
+    assert r.sigma.shape == nominal_grid.shape
+
+
 def test_bootstrap_sigma_is_not_identically_zero(tmp_path):
     """Zero sigma everywhere means the replicas were not actually resampled."""
     r = voxel_bootstrap(_grid(), _cfg(tmp_path), n_replicas=4,
