@@ -33,7 +33,10 @@ class SyntheticScene:
 def make_synthetic_scene(cfg: SiteConfig, *, n_bins: int = 30,
                          sky: SkyGrid | None = None,
                          basis: SmoothBasis | None = None,
-                         scale: float = 4.0e5, seed: int = 0,
+                         # geometric_acceptance peaks near 1475 cm^2, so this
+                         # lands counts in the real data's range (median
+                         # 176-429 per occupied core bin).
+                         scale: float = 10.0, seed: int = 0,
                          opacity_amplitude: float = 0.4,
                          flux_index: float = 2.0) -> SyntheticScene:
     rng = np.random.default_rng(seed)

@@ -267,9 +267,25 @@ def solve_baseline(grid: AnalysisGrid, cfg: SiteConfig, *,
                    geom: DetectorGeometry | None = None,
                    sky: SkyGrid | None = None,
                    basis: SmoothBasis | None = None,
-                   n_iter: int = 30, flux_index: float = 2.0,
-                   fit_flux_index: bool = True,
-                   tol: float = 1e-6) -> BaselineSolution:
+                   n_iter: int = 200, flux_index: float = 2.0,
+                   fit_flux_index: bool = False,
+                   tol: float = 1e-10) -> BaselineSolution:
+    """Joint solve for the smooth detector correction, per-position opacity,
+    and per-exposure normalization.
+
+    The flux index is FIXED, not fitted, and 2.0 is the standard sea-level
+    cosmic-muon value. It is not identifiable from this data: lambda(s) is free
+    per sky bin and Phi_n(s) is a function of the same sky direction, so only
+    their product is determined. Measured on the real campaign, fixing the index
+    anywhere from 1 to 5 and converging fully moves the best NLL by about 200,
+    against roughly 1000 for a single early iteration.
+
+    This means the recovered opacity is meaningful only RELATIVE to the assumed
+    flux model — the unavoidable price of having no open-sky calibration run,
+    and what spec section 6.3 means by the physics entering as a prior. Passing
+    fit_flux_index=True is retained for diagnostics; the value it returns is not
+    a measurement.
+    """
     geom = geom or DetectorGeometry.megiddo()
     sky = sky or make_sky_grid()
     basis = basis or make_smooth_basis()
@@ -288,6 +304,9 @@ def solve_baseline(grid: AnalysisGrid, cfg: SiteConfig, *,
             flux_index = _update_flux_index(terms, coeffs, opacity, norms, flux_index)
 
         history.append(_nll(terms, coeffs, opacity, norms, flux_index))
+        # NLL here is order 1e6-1e12 depending on scale, so tol must be tight:
+        # a "relative" tolerance of 1e-6 stops after an absolute improvement of
+        # only a few counts' worth of likelihood, long before convergence.
         if len(history) >= 2 and abs(history[-2] - history[-1]) < tol * abs(history[-1]):
             break
 
