@@ -1,4 +1,4 @@
-"""python -m megido.cli validate|ingest"""
+"""python -m megido.cli validate|ingest|solve|reconstruct|export|compare"""
 from __future__ import annotations
 
 import argparse
@@ -9,13 +9,20 @@ import numpy as np
 
 from megido import validate as V
 from megido.angular import load_analysis_grid
-from megido.baseline import solve_baseline
+from megido.backproject import backproject_plane, plane_axes
+from megido.baseline import BaselineSolution, solve_baseline
 from megido.calib import calibrate
 from megido.config import load_site_config
 from megido.detector import DetectorGeometry
+from megido.fitdata import build_fit_data
+from megido.forward import build_forward_model
 from megido.pipeline import process_all
 from megido.reader import EventChunk, read_chunks
-from megido.validate2 import format_report2, leave_one_out, nll_per_bin_check
+from megido.reconstruct import VoxelSolution, solve_voxels
+from megido.resolution import campaign_resolution, format_resolution, views_per_voxel
+from megido.validate2 import format_report2, leave_one_out, nll_per_bin_check, opacity_uncertainty
+from megido.volexport import compare_volumes, export_volume
+from megido.voxuncert import systematic_map, voxel_bootstrap
 
 
 def _cmd_validate(args) -> int:
@@ -100,6 +107,121 @@ def _cmd_solve(args) -> int:
     return 0 if all(c.passed for c in checks) else 1
 
 
+_SKY_SIGMA_T = 0.05     # Phase 2 sky grid bin width; see megido.sky.make_sky_grid
+
+
+def _cmd_reconstruct(args) -> int:
+    cfg = load_site_config(args.config)
+    baseline = Path(args.solve) / "baseline.npz"
+    if not baseline.exists():
+        print(f"no baseline.npz under {args.solve}; run `megido solve` first")
+        return 1
+    if args.bootstrap and not args.run:
+        print("--bootstrap needs --run: replicas are resampled from the ingested "
+              "counts, and the saved baseline does not carry them")
+        return 1
+
+    sol = BaselineSolution.load(baseline)
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+
+    res = campaign_resolution(cfg, sigma_t=_SKY_SIGMA_T,
+                              feature_pitch_m=max(2.0, 4 * cfg.volume.spacing_m))
+    print(format_resolution(res))
+    print()
+
+    sigma = None
+    counts_grid = None
+    if args.run:
+        exposure_ids = [e.id for e in cfg.exposures]
+        counts_grid = load_analysis_grid(Path(args.run), exposure_ids, factor=args.rebin)
+        if args.bootstrap:
+            print(f"bootstrapping sky opacity sigma ({args.bootstrap} replicas)...",
+                  flush=True)
+            sigma = opacity_uncertainty(counts_grid, cfg, n_replicas=args.bootstrap,
+                                        n_iter=args.iters)
+
+    fits = solve_voxels(sol, cfg, sigma=sigma, cache_dir=args.cache,
+                        holdouts=not args.no_holdouts)
+    for tag, v in fits.items():
+        v.save(out / f"volume_{tag}.npz")
+
+    full = fits["full"]
+    data = build_fit_data(sol, cfg, sigma=sigma)
+    fwd = build_forward_model(data.rows, cfg, cache_dir=args.cache)
+    np.save(out / "views.npy", views_per_voxel(fwd))
+
+    print(f"grid            {full.grid.shape} at {full.grid.spacing:.3f} m, "
+          f"origin {tuple(round(v, 2) for v in full.grid.origin)}")
+    print(f"rows            {data.rows.n_rows} over "
+          f"{len(data.rows.position_ids)} positions")
+    print(f"chi2            {full.info.get('best_chi2', float('nan')):.4f}")
+    print("offsets         " + "  ".join(f"{k}={v:+.4f}"
+                                         for k, v in sorted(full.offsets.items())))
+    rho = full.rho3()
+    print(f"opacity density median {np.median(rho[rho > 0]) if (rho > 0).any() else 0:.4f}"
+          f"  p95 {np.percentile(rho, 95):.4f}  max {rho.max():.4f} 1/m")
+
+    if args.bootstrap and counts_grid is not None:
+        boot = voxel_bootstrap(counts_grid, cfg, n_replicas=args.bootstrap,
+                               cache_dir=args.cache,
+                               solve_kwargs={"n_iter": args.iters})
+        boot.save(out / "uncertainty.npz")
+        snr = boot.snr()
+        ok = np.isfinite(snr)
+        print(f"bootstrap       {args.bootstrap} replicas; "
+              f"{int((np.abs(snr[ok]) > 3).sum())} of {int(ok.sum())} voxels above SNR 3")
+
+    if not args.no_systematic:
+        sysmap = systematic_map(sol, cfg, cache_dir=args.cache)
+        np.save(out / "systematic.npy", sysmap.astype(np.float32))
+        print(f"gauge systematic  max |delta rho| {np.abs(sysmap).max():.4f} 1/m "
+              f"({np.abs(sysmap).max() / max(rho.max(), 1e-12):.1%} of the peak)")
+
+    if args.backproject_z is not None:
+        # The plane's pixel pitch is matched to where the rays actually land, not
+        # to the voxel spacing. Rays leave the sky grid at ~0.05 tan spacing, so
+        # at height z they land ~0.05*z apart; a finer plane than that is mostly
+        # empty pixels (a nearest-scatter anchor at voxel pitch fills only ~40%).
+        bp_res = max(full.grid.spacing, 0.05 * args.backproject_z)
+        xs, ys = plane_axes(cfg, args.backproject_z, data.rows.t_reach(),
+                            res_m=bp_res)
+        _, mean = backproject_plane(data, cfg, args.backproject_z, xs, ys)
+        np.save(out / "backprojection.npy", mean.astype(np.float32))
+        print(f"backprojection  plane z={args.backproject_z:.2f} m, "
+              f"{mean.shape} at {bp_res:.2f} m")
+
+    print(f"\nwritten to {out}")
+    return 0
+
+
+def _cmd_export(args) -> int:
+    cfg = load_site_config(args.config)
+    run = Path(args.run)
+    if not (run / "volume_full.npz").exists():
+        print(f"no volume_full.npz under {run}; run `megido reconstruct` first")
+        return 1
+    p = export_volume(run, cfg, out_dir=args.out)
+    print(f"exported {p} (+ meta.json)")
+    return 0
+
+
+def _cmd_compare(args) -> int:
+    paths = [Path(args.a) / "volume_full.npz", Path(args.b) / "volume_full.npz"]
+    missing = [str(p) for p in paths if not p.exists()]
+    if missing:
+        print("missing volume_full.npz: " + ", ".join(missing))
+        return 1
+    a, b = (VoxelSolution.load(p) for p in paths)
+    r = compare_volumes(a, b)
+    print(f"correlation     {r['corr']:.6f}")
+    print(f"rms delta       {r['rms_delta']:.6g}  (scale {r['scale']:.6g})")
+    print(f"max |delta|     {r['max_abs_delta']:.6g}")
+    print(f"total mass      {r['mass_change_frac']:+.3%}")
+    print(f"verdict         {r['verdict']}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="megido")
     sub = p.add_subparsers(dest="command", required=True)
@@ -127,6 +249,35 @@ def main(argv: list[str] | None = None) -> int:
                    help="outer iterations; the alternating solve converges "
                         "slowly, see solve_baseline")
     s.set_defaults(func=_cmd_solve)
+
+    r = sub.add_parser("reconstruct", help="Phase 3 voxel inversion")
+    r.add_argument("--config", default="configs/megido.yaml")
+    r.add_argument("--solve", default="runs/solve", help="directory holding baseline.npz")
+    r.add_argument("--run", default=None,
+                   help="ingest directory; required for --bootstrap")
+    r.add_argument("--out", default="runs/voxels")
+    r.add_argument("--cache", default="runs/.cache")
+    r.add_argument("--rebin", type=int, default=10)
+    r.add_argument("--iters", type=int, default=5000,
+                   help="baseline iterations per bootstrap replica")
+    r.add_argument("--bootstrap", type=int, default=0,
+                   help="Poisson replicas for per-voxel sigma; 0 disables")
+    r.add_argument("--no-holdouts", action="store_true")
+    r.add_argument("--no-systematic", action="store_true")
+    r.add_argument("--backproject-z", type=float, default=None,
+                   help="also write a model-free backprojection at this height (m)")
+    r.set_defaults(func=_cmd_reconstruct)
+
+    e = sub.add_parser("export", help="write volume.npy + meta.json for the viewer")
+    e.add_argument("--config", default="configs/megido.yaml")
+    e.add_argument("--run", default="runs/voxels")
+    e.add_argument("--out", default=None)
+    e.set_defaults(func=_cmd_export)
+
+    c = sub.add_parser("compare", help="what changed between two reconstructions")
+    c.add_argument("--a", required=True)
+    c.add_argument("--b", required=True)
+    c.set_defaults(func=_cmd_compare)
 
     args = p.parse_args(argv)
     return int(args.func(args))
