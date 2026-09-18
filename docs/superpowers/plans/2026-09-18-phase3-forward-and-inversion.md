@@ -1366,16 +1366,24 @@ def test_zero_weight_rows_do_not_influence_the_fit():
 
 def test_offsets_absorb_a_constant_shift_per_position():
     """lambda has a free additive constant per position: Phase 2's gauge is
-    pinned per position, so an overall level is not measured."""
+    pinned per position, so an overall level is not measured.
+
+    The comparison is between the shifted and unshifted fits, not against zero.
+    The unshifted fit already carries nonzero offsets absorbing the mean of
+    A @ truth, so the absolute offsets say nothing; only their DIFFERENCE should
+    track the injected shift.
+    """
     fwd, truth, data = _toy()
     shift = np.where(data.rows.pos_of_row == 0, 0.7, -0.4)
     shifted = FitData(lam=data.lam + shift, w=data.w, rows=data.rows)
 
     rc = Reconstruction(algorithm="sirt", n_iter=400, chi2_target=1e-12)
-    x, info = sirt(fwd, shifted, rc)
-    assert info["offsets"]["pos0"] == pytest.approx(0.7, abs=0.15)
-    assert info["offsets"]["pos1"] == pytest.approx(-0.4, abs=0.15)
-    assert np.corrcoef(x, truth)[0, 1] > 0.9
+    x0, base = sirt(fwd, data, rc)
+    x1, moved = sirt(fwd, shifted, rc)
+
+    assert moved["offsets"]["pos0"] - base["offsets"]["pos0"] == pytest.approx(0.7, abs=0.15)
+    assert moved["offsets"]["pos1"] - base["offsets"]["pos1"] == pytest.approx(-0.4, abs=0.15)
+    assert np.corrcoef(x1, truth)[0, 1] > 0.9
 
 
 def test_tv_denoises_a_piecewise_constant_volume_better_than_plain_sirt():
@@ -1408,14 +1416,21 @@ def test_tv_returns_the_best_iterate_not_the_last():
     assert info["best_chi2"] <= min(info["chi2_history"])
 
 
-def test_tv_with_zero_alpha_matches_plain_sirt_without_early_stopping():
+def test_tv_with_zero_alpha_tracks_plain_sirt():
+    """With tv_alpha = 0 the proximal step is just the nonnegativity clip, so the
+    two solvers follow the same trajectory.
+
+    They do NOT end on the same array: chi2 is evaluated before each update, so
+    sirt_tv's best iterate is at most the one after n_iter - 1 updates while sirt
+    returns the one after n_iter. The gap is one sweep, by construction.
+    """
     fwd, truth, data = _toy()
-    rc_s = Reconstruction(algorithm="sirt", n_iter=50, chi2_target=-1.0)
-    rc_t = Reconstruction(algorithm="tv", n_iter=50, tv_alpha=0.0)
-    a, _ = sirt(fwd, data, rc_s)
-    b, info = sirt_tv(fwd, data, rc_t)
-    # sirt_tv keeps the BEST iterate, which for a converging run is the last.
-    np.testing.assert_allclose(b, a, rtol=1e-6, atol=1e-9)
+    a, _ = sirt(fwd, data, Reconstruction(algorithm="sirt", n_iter=50,
+                                          chi2_target=-1.0))
+    b, _ = sirt_tv(fwd, data, Reconstruction(algorithm="tv", n_iter=50,
+                                             tv_alpha=0.0))
+    assert np.corrcoef(a, b)[0, 1] > 0.999
+    assert np.linalg.norm(b - a) < 0.05 * np.linalg.norm(a)
 
 
 def test_solve_dispatches_on_the_algorithm_name():
@@ -1949,25 +1964,27 @@ from megido.voxels import VoxelGrid
 
 TOPO = Path("/home/hadar/Cloud/Work/Postdoc/01_data/raw/topography.csv")
 
-# Three detectors 16 m apart under a surface up to 20 m away: generous parallax,
-# the opposite of the Megiddo campaign. Deliberately so — this task gates the
-# CODE, Task 8 gates the campaign.
+# The topography dataset's OWN geometry, from 01_data/raw/detector_config.csv:
+# two detectors 50 m apart at z = 2, under a dome rising from about 5 m at the
+# edges to 50 m at the centre. Generous parallax — the opposite of the Megiddo
+# campaign, deliberately so. This task gates the CODE; Task 9 gates the campaign.
+#
+# The grid spans xy +-60 m because that is where the surface actually varies:
+# inside +-20 m the dome is a solid 32-50 m everywhere, so a grid confined there
+# would be entirely filled and the gate would be vacuous.
 FAVOURABLE = """
 site: phantom
 data_dir: /tmp
-volume: {z_min_m: 0.0, z_max_m: 20.0, spacing_m: 1.0, n_aperture_sub: 2,
-         xy_m: [[-20.0, 20.0], [-20.0, 20.0]]}
+volume: {z_min_m: 0.0, z_max_m: 50.0, spacing_m: 2.0, n_aperture_sub: 2,
+         xy_m: [[-60.0, 60.0], [-60.0, 60.0]]}
 reconstruction: {algorithm: tv, n_iter: 120, tv_alpha: 0.02, tv_z_weight: 0.5}
 exposures:
   - id: D0
     runs: DET1-DET2
-    pose: {x: -8.0, y: -8.0, z: 0.0, tilt_deg: 0, az_deg: 0}
+    pose: {x: -25.0, y: -25.0, z: 2.0, tilt_deg: 0, az_deg: 0}
   - id: D1
     runs: DET3-DET4
-    pose: {x: 8.0, y: -8.0, z: 0.0, tilt_deg: 0, az_deg: 0}
-  - id: D2
-    runs: DET5-DET6
-    pose: {x: 0.0, y: 8.0, z: 0.0, tilt_deg: 0, az_deg: 0}
+    pose: {x: 25.0, y: -25.0, z: 2.0, tilt_deg: 0, az_deg: 0}
 """
 
 
@@ -2003,7 +2020,7 @@ def test_sky_rows_covers_every_position_and_bin():
 
 
 def test_project_is_the_forward_model_plus_noise(tmp_path):
-    rows = sky_rows(("pos0", "pos1", "pos2"), t_max=0.8, n_bins=6)
+    rows = sky_rows(("pos0", "pos1"), t_max=0.8, n_bins=6)
     fwd = build_forward_model(rows, _cfg(tmp_path), cache_dir=None)
     truth = np.full(fwd.grid.n_voxels, 0.1)
 
@@ -2045,26 +2062,29 @@ def test_score_of_a_perfect_reconstruction_is_perfect():
 def test_favourable_geometry_recovers_the_topography_surface(tmp_path):
     """THE TASK 7 GATE.
 
-    Three detectors 16 m apart looking up at a surface up to 20 m away. Truth is
-    built and projected on a grid HALF the inversion spacing, so this is not an
-    inverse crime: the solver never sees the lattice the data was made on.
+    Two detectors 50 m apart looking up at a dome rising to 50 m — the
+    topography dataset's own configuration. Expected depth resolution is about
+    3.4 m, under two voxels at the 2 m spacing, so the interface test is
+    informative rather than vacuous.
 
     If this fails, the ray-casting or the solver is wrong. Do NOT loosen the
     thresholds to make it pass; a failure here is a defect to report.
     """
+    import dataclasses
+
     cfg = _cfg(tmp_path)
     xs, ys, z_topo = load_topography(TOPO)
-    rows = sky_rows(("pos0", "pos1", "pos2"), t_max=0.9, n_bins=24)
+    rows = sky_rows(("pos0", "pos1"), t_max=0.9, n_bins=24)
 
-    fine_cfg = cfg.__class__(**{**vars(cfg),
-                                "volume": cfg.volume.__class__(
-                                    **{**vars(cfg.volume), "spacing_m": 0.5})})
+    # Truth is built and projected on a grid HALF the inversion spacing, so the
+    # solver never sees the lattice the data was made on — not an inverse crime.
+    fine_cfg = dataclasses.replace(
+        cfg, volume=dataclasses.replace(cfg.volume, spacing_m=1.0))
     fine = build_forward_model(rows, fine_cfg, cache_dir=None)
     coarse = build_forward_model(rows, cfg, cache_dir=None)
 
     truth_fine = surface_volume(fine.grid, xs, ys, z_topo, density=1.0)
-    data = project(fine, truth_fine, sigma=0.15, seed=7)
-    data = FitData(lam=data.lam, w=data.w, rows=rows)
+    data = project(fine, truth_fine, sigma=0.5, seed=7)
 
     from megido.inversion import solve
     x, info = solve(coarse, data, cfg.reconstruction)
@@ -3496,10 +3516,14 @@ def workspace(tmp_path):
     shape = np.exp(-(t[:, None] ** 2 + t[None, :] ** 2))
     counts = {e.id: rng.poisson(3000 * shape).astype(np.int64) for e in cfg.exposures}
 
+    # These are the exact keys megido.anghist.load_counts reads. Writing
+    # "counts"/"edges" instead would fail inside the CLI, not in the code under
+    # test.
     ingest = tmp_path / "ingest"
     ingest.mkdir()
     for eid, c in counts.items():
-        np.savez_compressed(ingest / f"counts_{eid}.npz", counts=c, edges=edges)
+        np.savez_compressed(ingest / f"counts_{eid}.npz", values=c,
+                            xedges=edges, yedges=edges, name=np.array("txty"))
 
     solve_dir = tmp_path / "solve"
     sol = solve_baseline(AnalysisGrid(edges=edges, counts=counts), cfg, n_iter=40)
@@ -3532,9 +3556,11 @@ def test_reconstruct_writes_holdout_volumes(workspace):
 def test_reconstruct_with_bootstrap_writes_uncertainty(workspace):
     cfg_path, ingest, solve_dir, tmp = workspace
     out = tmp / "voxels"
+    # --rebin 1: the fixture has 20 bins, and the CLI default factor of 10 would
+    # collapse the analysis grid to 2x2 and make the baseline solve degenerate.
     rc = main(["reconstruct", "--config", str(cfg_path), "--solve", str(solve_dir),
                "--run", str(ingest), "--out", str(out), "--bootstrap", "2",
-               "--iters", "30", "--no-systematic"])
+               "--rebin", "1", "--iters", "30", "--no-systematic"])
     assert rc == 0
     assert (out / "uncertainty.npz").exists()
 
@@ -3542,7 +3568,7 @@ def test_reconstruct_with_bootstrap_writes_uncertainty(workspace):
 def test_bootstrap_without_a_run_directory_fails_loudly(workspace, capsys):
     cfg_path, ingest, solve_dir, tmp = workspace
     rc = main(["reconstruct", "--config", str(cfg_path), "--solve", str(solve_dir),
-               "--out", str(tmp / "v"), "--bootstrap", "3"])
+               "--out", str(tmp / "v"), "--bootstrap", "3", "--rebin", "1"])
     assert rc == 1
     assert "--run" in capsys.readouterr().out
 
