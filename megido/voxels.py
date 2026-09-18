@@ -35,13 +35,17 @@ class VoxelGrid:
 
 
 def auto_grid(vol: Volume, origins: dict[str, tuple[float, float, float]],
-              t_reach: float) -> VoxelGrid:
+              t_reach: float, *, aperture_m: float) -> VoxelGrid:
     """Lattice covering the union of every position's ray footprint.
 
     `t_reach` is the largest |tangent| that carries a constrained measurement —
     supplied by the caller from the live rows, NOT the sky grid's nominal edge.
     The sky grid runs to |t| = 2.5 to catch stray counts; sizing the voxel grid
     by that would quadruple it to hold bins nothing constrains.
+
+    `aperture_m` is required rather than defaulted: the ray bundle's half-width
+    is what pads the grid, and a default would have to name a specific detector,
+    putting site knowledge in a module that otherwise has none.
     """
     if vol.z_max_m <= vol.z_min_m:
         raise ValueError(f"z_max_m ({vol.z_max_m}) must exceed z_min_m ({vol.z_min_m})")
@@ -54,7 +58,7 @@ def auto_grid(vol: Volume, origins: dict[str, tuple[float, float, float]],
     else:
         # A ray of tangent t leaving (px, py, pz) is at px + t*(z1 - pz) by the
         # top of the grid; the bundle spreads half an aperture either side.
-        pad = 0.5 * _APERTURE_PAD_M
+        pad = 0.5 * aperture_m
         xs, ys = [], []
         for px, py, pz in origins.values():
             reach = t_reach * max(z1 - pz, 0.0) + pad
@@ -67,9 +71,3 @@ def auto_grid(vol: Volume, origins: dict[str, tuple[float, float, float]],
     ny = max(1, int(np.ceil((y1 - y0) / sp)))
     nz = max(1, int(np.ceil((z1 - z0) / sp)))
     return VoxelGrid(origin=(float(x0), float(y0), z0), spacing=sp, shape=(nx, ny, nz))
-
-
-# Half-width padding for the ray bundle. Imported here rather than taken from
-# DetectorGeometry so voxels.py stays free of the centimetre-based module; the
-# value is asserted equal to geom.aperture_m in tests/test_voxels.py.
-_APERTURE_PAD_M = 0.384
