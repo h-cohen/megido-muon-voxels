@@ -79,7 +79,7 @@ These resolve conflicts between the spec and what Phase 2 actually built. Each i
   - `SiteConfig.volume: Volume` and `SiteConfig.reconstruction: Reconstruction`, both with defaults so existing configs keep loading
   - `DetectorGeometry.aperture_m -> float`
   - `megido.voxels.VoxelGrid(origin, spacing, shape)` with `n_voxels`, `axis_centers(axis)`, `extent(axis)`, `key()`
-  - `megido.voxels.auto_grid(vol: Volume, origins: dict[str, tuple[float, float, float]], t_reach: float) -> VoxelGrid`
+  - `megido.voxels.auto_grid(vol: Volume, origins: dict[str, tuple[float, float, float]], t_reach: float, *, aperture_m: float) -> VoxelGrid`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -112,7 +112,7 @@ def test_auto_grid_covers_every_ray_footprint():
     bundle adds half an aperture. The grid must contain the union over poses."""
     vol = Volume(z_min_m=1.0, z_max_m=5.0, spacing_m=0.5)
     origins = {"pos0": (0.0, 0.0, 0.0), "pos1": (2.2, 0.0, 0.0)}
-    g = auto_grid(vol, origins, t_reach=1.0)
+    g = auto_grid(vol, origins, t_reach=1.0, aperture_m=0.384)
 
     x0, x1 = g.extent(0)
     assert x0 <= -5.0 - 0.192 + 1e-9     # pos0, t = -1 at z = 5, minus half aperture
@@ -123,7 +123,7 @@ def test_auto_grid_covers_every_ray_footprint():
 def test_auto_grid_honours_an_explicit_xy_box():
     vol = Volume(z_min_m=1.0, z_max_m=3.0, spacing_m=0.5,
                  xy_m=((-2.0, 2.0), (-1.0, 1.0)))
-    g = auto_grid(vol, {"pos0": (0.0, 0.0, 0.0)}, t_reach=10.0)
+    g = auto_grid(vol, {"pos0": (0.0, 0.0, 0.0)}, t_reach=10.0, aperture_m=0.384)
     assert g.origin[0] == pytest.approx(-2.0)
     assert g.shape[:2] == (8, 4)
 
@@ -131,7 +131,7 @@ def test_auto_grid_honours_an_explicit_xy_box():
 def test_auto_grid_rejects_an_inverted_z_range():
     vol = Volume(z_min_m=5.0, z_max_m=1.0, spacing_m=0.5)
     with pytest.raises(ValueError, match="z_max_m"):
-        auto_grid(vol, {"pos0": (0.0, 0.0, 0.0)}, t_reach=1.0)
+        auto_grid(vol, {"pos0": (0.0, 0.0, 0.0)}, t_reach=1.0, aperture_m=0.384)
 ```
 
 Add to `tests/test_config.py`:
@@ -307,13 +307,17 @@ class VoxelGrid:
 
 
 def auto_grid(vol: Volume, origins: dict[str, tuple[float, float, float]],
-              t_reach: float) -> VoxelGrid:
+              t_reach: float, *, aperture_m: float) -> VoxelGrid:
     """Lattice covering the union of every position's ray footprint.
 
     `t_reach` is the largest |tangent| that carries a constrained measurement —
     supplied by the caller from the live rows, NOT the sky grid's nominal edge.
     The sky grid runs to |t| = 2.5 to catch stray counts; sizing the voxel grid
     by that would quadruple it to hold bins nothing constrains.
+
+    `aperture_m` is required rather than defaulted: the ray bundle's half-width
+    is what pads the grid, and a default would have to name a specific detector,
+    putting site knowledge in a module that otherwise has none.
     """
     if vol.z_max_m <= vol.z_min_m:
         raise ValueError(f"z_max_m ({vol.z_max_m}) must exceed z_min_m ({vol.z_min_m})")
@@ -326,7 +330,7 @@ def auto_grid(vol: Volume, origins: dict[str, tuple[float, float, float]],
     else:
         # A ray of tangent t leaving (px, py, pz) is at px + t*(z1 - pz) by the
         # top of the grid; the bundle spreads half an aperture either side.
-        pad = 0.5 * _APERTURE_PAD_M
+        pad = 0.5 * aperture_m
         xs, ys = [], []
         for px, py, pz in origins.values():
             reach = t_reach * max(z1 - pz, 0.0) + pad
@@ -339,22 +343,6 @@ def auto_grid(vol: Volume, origins: dict[str, tuple[float, float, float]],
     ny = max(1, int(np.ceil((y1 - y0) / sp)))
     nz = max(1, int(np.ceil((z1 - z0) / sp)))
     return VoxelGrid(origin=(float(x0), float(y0), z0), spacing=sp, shape=(nx, ny, nz))
-
-
-# Half-width padding for the ray bundle. Imported here rather than taken from
-# DetectorGeometry so voxels.py stays free of the centimetre-based module; the
-# value is asserted equal to geom.aperture_m in tests/test_voxels.py.
-_APERTURE_PAD_M = 0.384
-```
-
-Also add to `tests/test_voxels.py`, so the duplicated constant can never drift:
-
-```python
-def test_aperture_pad_matches_the_detector():
-    from megido.detector import DetectorGeometry
-    from megido.voxels import _APERTURE_PAD_M
-
-    assert _APERTURE_PAD_M == pytest.approx(DetectorGeometry.megiddo().aperture_m)
 ```
 
 - [ ] **Step 6: Add the config blocks to `configs/megido.yaml`**
@@ -1256,7 +1244,8 @@ def build_forward_model(rows: RowIndex, cfg: SiteConfig, *,
     geom = geom or DetectorGeometry.megiddo()
     origins = position_origins(cfg)
     if grid is None:
-        grid = auto_grid(cfg.volume, origins, t_reach=rows.t_reach())
+        grid = auto_grid(cfg.volume, origins, t_reach=rows.t_reach(),
+                         aperture_m=geom.aperture_m)
     A = build_system_matrix(rows, origins, grid,
                             aperture_m=geom.aperture_m,
                             n_sub=cfg.volume.n_aperture_sub,
