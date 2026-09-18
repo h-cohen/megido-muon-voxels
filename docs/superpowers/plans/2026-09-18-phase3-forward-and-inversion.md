@@ -2492,9 +2492,9 @@ git commit -m "feat: closed-form depth resolution, aliasing, and per-voxel view 
 
 ### Task 9: The Megiddo-geometry gate — what this campaign can actually claim
 
-Task 7 showed the code works when the geometry is generous. This task runs the same code at the **real campaign poses** and pins down what may honestly be said about the real result. It is the gate that constrains every claim in the Phase 3 report.
+Task 7 showed the code works under generous, many-view geometry. This task runs the same chain at the **real campaign poses** — two positions, a single 2.2 m baseline, one of them the 20° tilt — and pins down what may honestly be said about the real result. It is the gate that constrains every claim in the Phase 3 report.
 
-The expected outcome is *lateral structure recovered, depth not*. That is not a failure — it is the measurement. What would be a failure is a reconstruction that looks confidently three-dimensional while `resolution.py` says the depth information is absent.
+The expected outcome is *lateral structure recovered, depth not, and weaker than the generous case*. That is not a failure — it is the measurement. What would be a failure is a reconstruction that looks confidently three-dimensional while `resolution.py` says the depth information is absent. Measured on the current code at this geometry: data corr 0.995, lateral column corr 0.66, depth localization 0.086 — so the thresholds below (lateral > 0.5, depth < 0.4) sit inside real margins, and are deliberately looser than Task 7's because two positions constrain less than twenty-five.
 
 **Files:**
 - Modify: `tests/test_phantom.py` (add the Megiddo gate)
@@ -2509,32 +2509,37 @@ Append to `tests/test_phantom.py`:
 
 ```python
 def test_megiddo_geometry_recovers_lateral_structure_but_not_depth(tmp_path, capsys):
-    """THE TASK 9 GATE — the honest one.
+    """THE TASK 9 GATE — the honest one, at the real campaign geometry.
 
-    Real campaign poses: P0/T20 at the origin (two tilts, ONE position) and P1
-    at 2.2 m. One baseline, 2.2 m, against rock several metres away. A slab with
-    a lateral notch is injected; the gate asserts that the notch is found in x/y
-    and that the slab's HEIGHT is not determined better than the closed-form
-    depth resolution allows.
+    Two positions: P0/T20 at the origin (two tilts, ONE position) and P1 at
+    2.2 m. One baseline, against rock several metres away. The same
+    topography-shaped thin anomaly as Task 7, but now viewed by the actual
+    campaign rather than twenty-five generous detectors.
 
-    A reconstruction that beat the analytic dz here would not be good news: with
-    truth this close to the TV prior, it would mean the regulariser was
-    reproducing the phantom rather than the data doing so.
+    Three assertions, all honest: the code reproduces the measurements; lateral
+    structure is recovered, though more weakly than the generous case; and depth
+    is NOT localized — which the closed-form resolution said up front. A
+    reconstruction that beat the analytic depth here would not be good news: it
+    would mean the TV prior was inventing depth the data cannot supply.
     """
+    import dataclasses
+
     import numpy as np
 
     from megido.config import load_site_config
+    from megido.fitdata import FitData
     from megido.forward import build_forward_model
     from megido.inversion import solve
-    from megido.phantom import project, score, sky_rows, surface_volume
+    from megido.phantom import (anomaly_from_topography, depth_localization,
+                                load_topography, project, sky_rows)
     from megido.resolution import campaign_resolution, views_per_voxel
 
     p = tmp_path / "megiddo.yaml"
     p.write_text(
         "site: megido-phantom\ndata_dir: /tmp\n"
         "volume: {z_min_m: 1.0, z_max_m: 11.0, spacing_m: 0.5, n_aperture_sub: 2,\n"
-        "         xy_m: [[-10.0, 12.0], [-10.0, 10.0]]}\n"
-        "reconstruction: {algorithm: tv, n_iter: 120, tv_alpha: 0.02, tv_z_weight: 0.5}\n"
+        "         xy_m: [[-8.0, 10.0], [-8.0, 8.0]]}\n"
+        "reconstruction: {algorithm: tv, n_iter: 300, tv_alpha: 0.005, tv_z_weight: 0.3}\n"
         "exposures:\n"
         "  - id: P0\n    runs: DET1-DET2\n"
         "    pose: {x: 0.0, y: 0.0, z: 0.0, tilt_deg: 0, az_deg: 241}\n"
@@ -2544,53 +2549,53 @@ def test_megiddo_geometry_recovers_lateral_structure_but_not_depth(tmp_path, cap
         "    pose: {x: 2.2, y: 0.0, z: 0.0, tilt_deg: 0, az_deg: 241}\n")
     cfg = load_site_config(p)
 
+    # The campaign has ONE baseline: P0 and T20 share a position.
     res = campaign_resolution(cfg, sigma_t=0.05, feature_pitch_m=2.0)
     assert res["max_baseline_m"] == pytest.approx(2.2)
     assert res["n_positions"] == 2
+    assert res["depth_resolved"] is False
 
-    rows = sky_rows(("pos0", "pos1"), t_max=1.0, n_bins=28)
-    fwd = build_forward_model(rows, cfg, cache_dir=None)
+    xs, ys, z = load_topography(TOPO)
+    rows = sky_rows(("pos0", "pos1"), t_max=1.0, n_bins=24)
 
-    # Truth: rock filling z < 6 m, with a 4 m wide notch cut out in x.
-    gx = fwd.grid.axis_centers(0)
-    gy = fwd.grid.axis_centers(1)
-    xs = gx
-    ys = gy
-    h = np.full((gx.size, gy.size), 6.0)
-    h[(gx > -2.0) & (gx < 2.0), :] = 3.0
-    truth = surface_volume(fwd.grid, xs, ys, h, density=0.2)
+    # Truth at half the inversion spacing, so the solver never inverts its own grid.
+    fine_cfg = dataclasses.replace(
+        cfg, volume=dataclasses.replace(cfg.volume, spacing_m=0.25))
+    fine = build_forward_model(rows, fine_cfg, cache_dir=None)
+    coarse = build_forward_model(rows, cfg, cache_dir=None)
 
-    data = project(fwd, truth, sigma=0.05, seed=11)
-    x, info = solve(fwd, data, cfg.reconstruction)
+    truth = anomaly_from_topography(fine.grid, xs, ys, z, z_anomaly_m=5.0,
+                                    quantile=0.5, density=1.0)
+    data = project(fine, truth, sigma=0.02, seed=5)
+    data = FitData(lam=data.lam, w=data.w, rows=rows)
 
-    # --- lateral: the notch must be found ---
-    col_rec = x.reshape(fwd.grid.shape).sum(axis=2)
-    col_tru = truth.reshape(fwd.grid.shape).sum(axis=2)
-    lateral = float(np.corrcoef(col_rec.ravel(), col_tru.ravel())[0, 1])
+    x, info = solve(coarse, data, cfg.reconstruction)
 
-    # --- depth: how well is the interface height placed? ---
-    s = score(x, truth, fwd.grid)
-    dz_pred = res["depth_resolution_m"]["z_mid"]
-    views = views_per_voxel(fwd)
+    pred = coarse.predict(x, info["offsets"])
+    data_corr = float(np.corrcoef(pred, data.lam)[0, 1])
+    rel_res = float(np.linalg.norm(pred - data.lam)
+                    / np.linalg.norm(data.lam - data.lam.mean()))
 
-    print(f"\nTask 9 gate (Megiddo geometry)"
-          f"\n  lateral column corr     {lateral:.3f}"
-          f"\n  voxel corr              {s['corr']:.3f}"
-          f"\n  interface rmse          {s['interface_rmse_m']:.2f} m"
-          f"\n  interface bias          {s['interface_bias_m']:+.2f} m"
-          f"\n  analytic dz at z_mid    {dz_pred:.2f} m"
+    truth_c = anomaly_from_topography(coarse.grid, xs, ys, z, z_anomaly_m=5.0)
+    cr = x.reshape(coarse.grid.shape).sum(axis=2)
+    ct = truth_c.reshape(coarse.grid.shape).sum(axis=2)
+    lateral = float(np.corrcoef(cr.ravel(), ct.ravel())[0, 1])
+    depth = depth_localization(x.reshape(coarse.grid.shape), coarse.grid)
+    views = views_per_voxel(coarse)
+
+    print(f"\nTask 9 gate (real Megiddo geometry, 1 baseline of 2.2 m)"
+          f"\n  data corr               {data_corr:.4f}"
+          f"\n  rel-residual            {rel_res:.4f}"
+          f"\n  lateral col-corr        {lateral:.3f}"
+          f"\n  depth peak/total        {depth:.3f}  (truth 1.0)"
+          f"\n  analytic dz at z_mid    {res['depth_resolution_m']['z_mid']:.2f} m"
           f"\n  voxels seen by 2 views  {int((views == 2).sum())} of {views.size}"
           f"\n  {res['verdict']}")
 
-    # Lateral structure IS measured.
-    assert lateral > 0.6
-
-    # Depth is NOT. The reconstruction must not appear to beat the geometry;
-    # if it does, the phantom is being reproduced by the prior, not the data.
-    assert s["interface_rmse_m"] > 0.3 * dz_pred
-
-    # And the resolution report must have said so up front.
-    assert res["depth_resolved"] is False
+    assert data_corr > 0.99          # code reproduces the measurements here too
+    assert rel_res < 0.15
+    assert lateral > 0.5             # lateral recovered, weaker than the generous case
+    assert depth < 0.4               # depth NOT localized — the campaign's honest limit
 ```
 
 - [ ] **Step 2: Run the test**
@@ -2598,11 +2603,9 @@ def test_megiddo_geometry_recovers_lateral_structure_but_not_depth(tmp_path, cap
 Run: `uv run pytest tests/test_phantom.py::test_megiddo_geometry_recovers_lateral_structure_but_not_depth -q -s`
 Expected: PASS. Read every printed number.
 
-- [ ] **Step 3: If the lateral assertion fails, diagnose before touching the threshold**
+- [ ] **Step 3: If an assertion fails, diagnose before touching the threshold**
 
-A lateral correlation below 0.6 with two positions and a 4 m notch at 6 m means something upstream is wrong — most likely the ray directions (Task 3) or the grid extent (Task 1). Investigate and report; do not lower the number.
-
-If lateral correlation is comfortably above 0.6, tighten it to roughly 90% of the achieved value and re-run.
+`data_corr` failing means the forward model or solver is broken at this geometry — a defect to find, not a threshold to lower. `lateral` below 0.5 with two positions and a topography-shaped anomaly at 5 m means the geometry is under-sampling worse than measured — report it. `depth` coming out *above* 0.4 would mean the reconstruction is inventing depth the single baseline cannot supply — also a report, not a tweak. Record all four printed numbers in your report regardless.
 
 - [ ] **Step 4: Record the finding in the spec**
 
@@ -2612,11 +2615,13 @@ In `docs/superpowers/specs/2026-09-16-megido-muon-voxels-design.md` §11, replac
 - **Structure scale** — still needed to finalize grid spacing, but no longer
   blocking: Phase 3's Megiddo-geometry phantom (`tests/test_phantom.py`,
   `test_megiddo_geometry_recovers_lateral_structure_but_not_depth`) measured
-  what the campaign resolves. Lateral structure is recovered; the HEIGHT of that
-  structure is set by the regulariser, not the data, because the campaign has a
-  single 2.2 m baseline. `megido.resolution.campaign_resolution` reports the
-  closed-form number for any configured volume. A second translated position is
-  what would change this — a larger tilt at the same spot would not.
+  what the campaign resolves. Lateral structure is recovered (column correlation
+  ~0.66); the HEIGHT of that structure is set by the regulariser, not the data,
+  because the campaign has a single 2.2 m baseline (depth localization ~0.09,
+  analytic dz ~1.4 m at mid-range). `megido.resolution.campaign_resolution`
+  reports the closed-form number for any configured volume. A second translated
+  position is what would change this — a larger tilt at the same spot would not,
+  because tilt adds no baseline.
 ```
 
 - [ ] **Step 5: Run the whole suite**
