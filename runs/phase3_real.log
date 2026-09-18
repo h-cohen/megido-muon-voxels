@@ -1,0 +1,26 @@
+positions            2
+  pos0-pos1=2.200 m
+max baseline         2.200 m
+angular bin sigma_t  0.0500
+z range              1.00 - 12.00 m
+depth resolution     z_min=0.03 m  z_mid=1.36 m  z_max=4.63 m
+alias period         5.91 m (assuming 2.00 m feature pitch)
+
+depth NOT resolved: dz = 1.36 m at z = 6.5 m is 5x the 0.25 m voxel spacing. Lateral structure is still measured; the height of that structure is set by the regulariser, not by the data.
+
+bootstrapping sky opacity sigma (6 replicas)...
+/home/hadar/Cloud/Work/Postdoc/03_projects/megido-muon-voxels/.venv/lib/python3.12/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+grid            (128, 120, 44) at 0.250 m, origin (-14.89, -14.89, 1.0)
+rows            2915 over 2 positions
+chi2            0.4029
+offsets         pos0=+0.6967  pos1=+0.0921
+opacity density median 0.0025  p95 0.1217  max 2.3690 1/m
+bootstrap       6 replicas
+  viewed>=1     197067 of 675840 voxels (29.2% of grid); 123096 of 197067 above SNR 3 (62.5%)
+  viewed==2     121616 of 675840 voxels (18.0% of grid, depth-informative); 84533 of 121616 above SNR 3 (69.5%)
+gauge systematic  max |delta rho| 0.9528 1/m (40.2% of the peak)
+backprojection  plane z=6.00 m, (58, 50) at 0.30 m
+
+written to runs/voxels
+DONE_RC=0
