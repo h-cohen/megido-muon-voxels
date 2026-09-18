@@ -1,0 +1,133 @@
+import numpy as np
+import pytest
+import yaml
+
+from megido.baseline import solve_baseline
+from megido.basis import make_smooth_basis
+from megido.config import load_site_config
+from megido.simbaseline import make_synthetic_scene
+from megido.sky import make_sky_grid
+
+
+@pytest.fixture
+def cfg(tmp_path):
+    p = tmp_path / "site.yaml"
+    p.write_text(yaml.safe_dump({
+        "site": "test",
+        "data_dir": str(tmp_path),
+        "frame": {"origin": "P0", "x_axis_bearing_deg": 241},
+        "binning": {"t_max": 1.25, "n_bins": 500},
+        "exposures": [
+            {"id": "P0", "runs": "DET100001-DET100001",
+             "pose": {"x": 0.0, "y": 0.0, "z": 0.0, "tilt_deg": 0, "az_deg": 241}},
+            {"id": "T20a", "runs": "DET100002-DET100002",
+             "pose": {"x": 0.0, "y": 0.0, "z": 0.0, "tilt_deg": 20, "az_deg": 241}},
+            {"id": "T20b", "runs": "DET100003-DET100003",
+             "pose": {"x": 0.0, "y": 0.0, "z": 0.0, "tilt_deg": 20, "az_deg": 241}},
+            {"id": "P1", "runs": "DET100004-DET100004",
+             "pose": {"x": 2.2, "y": 0.0, "z": 0.0, "tilt_deg": 0, "az_deg": 241}},
+        ],
+    }))
+    return load_site_config(p)
+
+
+def test_scene_produces_counts_for_every_exposure(cfg):
+    scene = make_synthetic_scene(cfg, seed=0)
+    assert set(scene.grid.counts) == {"P0", "T20a", "T20b", "P1"}
+    for v in scene.grid.counts.values():
+        assert v.dtype == np.int64
+        assert v.sum() > 10_000
+
+
+def test_counts_are_higher_where_opacity_is_lower(cfg):
+    """Sanity: absorption must actually suppress counts."""
+    scene = make_synthetic_scene(cfg, opacity_amplitude=1.5, seed=1)
+    p0 = scene.grid.counts["P0"].astype(float)
+    n = p0.shape[0]
+    assert p0[n // 2, n // 2] > 0
+
+
+def test_solver_recovers_the_injected_detector_response(cfg):
+    """THE GATE. B(d) must come back, up to the overall scale that is
+    degenerate with the per-exposure normalisation."""
+    sky = make_sky_grid(t_max=1.6, n_bins=24)
+    basis = make_smooth_basis(n_per_axis=5)
+    scene = make_synthetic_scene(cfg, n_bins=30, sky=sky, basis=basis, seed=2)
+
+    sol = solve_baseline(scene.grid, cfg, sky=sky, basis=basis,
+                         n_iter=40, fit_flux_index=False,
+                         flux_index=scene.true_flux_index)
+
+    tx, ty = scene.grid.tan_mesh()
+    inside = np.hypot(tx, ty) < 0.8
+    truth = basis.evaluate(scene.true_coeffs, tx, ty)[inside]
+    got = basis.evaluate(sol.coeffs, tx, ty)[inside]
+
+    # only shape is identifiable; a constant offset trades against the norms
+    truth = truth - truth.mean()
+    got = got - got.mean()
+    assert np.corrcoef(truth, got)[0, 1] > 0.9
+    assert np.std(got - truth) < 0.3 * np.std(truth) + 0.05
+
+
+def test_solver_recovers_the_injected_opacity_structure(cfg):
+    sky = make_sky_grid(t_max=1.6, n_bins=24)
+    basis = make_smooth_basis(n_per_axis=5)
+    scene = make_synthetic_scene(cfg, n_bins=30, sky=sky, basis=basis,
+                                 opacity_amplitude=0.6, seed=3)
+
+    sol = solve_baseline(scene.grid, cfg, sky=sky, basis=basis,
+                         n_iter=40, fit_flux_index=False,
+                         flux_index=scene.true_flux_index)
+
+    pid = sorted(sol.opacity)[0]
+    truth = scene.true_opacity[pid]
+    got = sol.opacity[pid]
+    both = np.isfinite(truth) & np.isfinite(got)
+    assert both.sum() > 50
+
+    t = truth[both] - truth[both].mean()
+    g = got[both] - got[both].mean()
+    assert np.corrcoef(t, g)[0, 1] > 0.8
+
+
+def test_a_flat_sky_is_recovered_as_flat(cfg):
+    """Negative control: with no absorption injected, the solve must not
+    manufacture structure by pushing scene features into the opacity map."""
+    sky = make_sky_grid(t_max=1.6, n_bins=24)
+    basis = make_smooth_basis(n_per_axis=5)
+    scene = make_synthetic_scene(cfg, n_bins=30, sky=sky, basis=basis,
+                                 opacity_amplitude=0.0, seed=4)
+
+    sol = solve_baseline(scene.grid, cfg, sky=sky, basis=basis,
+                         n_iter=40, fit_flux_index=False,
+                         flux_index=scene.true_flux_index)
+
+    pid = sorted(sol.opacity)[0]
+    lam = sol.opacity[pid]
+    lam = lam[np.isfinite(lam)]
+    assert np.std(lam) < 0.15, f"flat sky came back with structure, std={np.std(lam):.3f}"
+
+
+def test_solver_recovers_the_injected_flux_index(cfg):
+    """The tilt is supposed to separate a sky-frame exponent from a
+    detector-frame correction. This is the test that says whether it does.
+
+    Phi_n rotates with the detector; S does not. If the solver cannot tell them
+    apart, the fitted index drifts to whatever leaves the smooth correction most
+    comfortable, and the separation the whole phase rests on is weaker than
+    assumed.
+    """
+    sky = make_sky_grid(t_max=1.8, n_bins=36)
+    basis = make_smooth_basis(n_per_axis=5)
+    scene = make_synthetic_scene(cfg, n_bins=30, sky=sky, basis=basis,
+                                 flux_index=3.0, opacity_amplitude=0.3, seed=9)
+
+    sol = solve_baseline(scene.grid, cfg, sky=sky, basis=basis,
+                         n_iter=40, flux_index=2.0, fit_flux_index=True)
+
+    assert abs(sol.flux_index - 3.0) < 0.6, (
+        f"injected flux index 3.0, recovered {sol.flux_index:.3f} — "
+        "the sky-frame exponent and the detector-frame correction are not "
+        "being separated"
+    )
