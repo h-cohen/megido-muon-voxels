@@ -85,12 +85,16 @@ def _cmd_solve(args) -> int:
     for pid in sorted(sol.opacity):
         lam = sol.opacity[pid]
         seen = np.isfinite(lam)
-        print(f"opacity {pid}: {int(seen.sum())} sky bins constrained, "
-              f"median {np.nanmedian(lam):+.4f}, p5..p95 "
-              f"{np.nanpercentile(lam, 5):+.4f}..{np.nanpercentile(lam, 95):+.4f}")
+        norm = sol.normalized_opacity(pid)
+        print(f"opacity {pid}: {int(seen.sum())} sky bins constrained")
+        print(f"    gauge-pinned (median 0, internal): "
+              f"p5..p95 {np.nanpercentile(lam, 5):+.4f}..{np.nanpercentile(lam, 95):+.4f}")
+        print(f"    referenced to the most transparent direction (physical): "
+              f"median {np.nanmedian(norm):.4f}  p95 {np.nanpercentile(norm, 95):.4f}  "
+              f"max {np.nanmax(norm):.4f}")
 
     checks = [nll_per_bin_check(sol, grid)]
-    checks += leave_one_out(grid, cfg, n_iter=max(args.iters // 2, 4))
+    checks += leave_one_out(grid, cfg, n_iter=args.iters)
     print()
     print(format_report2(checks))
     return 0 if all(c.passed for c in checks) else 1

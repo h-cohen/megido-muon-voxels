@@ -343,6 +343,10 @@ def solve_baseline(grid: AnalysisGrid, cfg: SiteConfig, *,
         norms = _update_norms(terms, coeffs, opacity, flux_index)
         coeffs = _update_coeffs(terms, coeffs, opacity, norms, flux_index)
         if fit_flux_index:
+            # Diagnostic only. The flux index is not identifiable — lambda is free
+            # per sky bin and the flux shape is a function of the same sky
+            # direction, so only their product is determined. The value this
+            # returns is not a measurement; see the docstring.
             flux_index = _update_flux_index(terms, coeffs, opacity, norms, flux_index)
 
         history.append(_nll(terms, coeffs, opacity, norms, flux_index))

@@ -2,13 +2,14 @@
 
 ## Three things to know before reading any number below
 
-1. **The deviance of 1.04 is per live bin, not per degree of freedom.** Opacity
+1. **The deviance of 1.0367 is per live bin, not per degree of freedom.** Opacity
    contributes roughly one free parameter per constrained sky bin — about 3400
-   against 7169 bins — so per degree of freedom it is about 1.98. The fit is
-   good, not as good as 1.04 alone suggests.
+   against 7169 bins — so per degree of freedom it is about 1.98 (7432.4 over
+   roughly 3759 effective dof). The fit is good, not as good as 1.0367 alone
+   suggests.
 2. **Only one of the three leave-one-out scores is a strong test.** Holding out
    T20a leaves T20b at an almost identical pose, so 0.99 is nearly
-   self-prediction. P0's 0.9229 is the meaningful number.
+   self-prediction. P0's 0.9683 is the meaningful number.
 3. **Opacity is relative, not absolute.** The flux index is fixed at 2.0 because
    it is not identifiable from this data, so every opacity value is meaningful
    only against that assumed flux model.
@@ -39,16 +40,28 @@ between them.
 python -m megido.cli solve --config configs/megido.yaml --run runs/ingest --out runs/solve
 ```
 
-Runtime: about 11 s for the solve itself.
+Runtime: the solve itself (`solve_baseline`) takes about 27 s at the default 5000
+iterations — the CLI's `--iters` default was raised from 30 to 5000 between the
+first draft of this report and this revision, and every number below is from the
+converged run. The full `solve` command, including the three leave-one-out
+refits at the same iteration budget (see section 3), takes about 33 s wall time.
 
-Solver output on real data:
+Solver output on real data (actual CLI output, current code):
 
-- flux index: 2.000 (fixed, not fitted — see section 7)
-- normalizations: P0 0.8402, T20a 0.4371, T20b 0.7407, P1 0.3069
-- opacity, pos0: 2076 constrained sky bins, median 0 by gauge choice, p5-p95 range
-  -1.80 to +0.78
-- opacity, pos1: 1266 constrained sky bins, median 0 by gauge, p5-p95 range -1.08 to
-  +0.62
+```
+flux index      2.000
+NLL             -4038940.8 after 5000 iterations
+normalizations  P0=0.6571  P1=0.2482  T20a=0.3895  T20b=0.66
+opacity pos0: 2076 sky bins constrained
+    gauge-pinned (median 0, internal): p5..p95 -1.4929..+0.6979
+    referenced to the most transparent direction (physical): median 1.4929  p95 2.1907  max 3.3339
+opacity pos1: 1266 sky bins constrained
+    gauge-pinned (median 0, internal): p5..p95 -0.9853..+0.5438
+    referenced to the most transparent direction (physical): median 0.9853  p95 1.5291  max 2.3847
+```
+
+See section 3a for what "gauge-pinned" vs. "referenced to the most transparent
+direction" mean and which one Phase 3 should use.
 
 ## 3. Validation: 5/5 checks pass
 
@@ -57,13 +70,42 @@ and ask whether the fit — which never saw that exposure's counts — correctly
 its angular shape. A high correlation means the response/opacity split generalizes;
 it is not just curve-fitting each exposure to itself.
 
+Leave-one-out is fit at the same iteration budget as the main solve (`--iters`,
+default 5000) — it used to run at half that budget as an economy, but given how
+convergence-sensitive this method proved to be during earlier fix rounds, that
+economy was the wrong one to take. It costs about 6 extra seconds of wall time
+(see section 2), which is not a real budget concern.
+
 | Check | Measured | Bound |
 |---|---|---|
-| deviance_per_bin | 1.0412 (7464.2 over 7169 live bins) | 0.2 - 3.0 |
-| loo.P0 | 0.9229 over 1800 bins | > 0.90 |
-| loo.T20a | 0.9917 | > 0.90 |
-| loo.T20b | 0.9908 | > 0.90 |
+| deviance_per_bin | 1.0367 (7432.4 over 7169 live bins) | 0.2 - 3.0 |
+| loo.P0 | 0.9683 over 1800 bins | > 0.90 |
+| loo.T20a | 0.9915 over 1945 bins | > 0.90 |
+| loo.T20b | 0.9909 over 1945 bins | > 0.90 |
 | loo.P1 | skipped — P1 is the sole exposure at its position, nothing to hold it out against | - |
+
+## 3a. Two opacity conventions, and which one to use
+
+`sol.opacity` (what `BaselineSolution` stores and what the CLI prints as
+"gauge-pinned") is pinned to a median of zero. That pin is an internal
+identifiability device, not a physical statement: the absolute level of lambda is
+degenerate with the per-exposure normalization, nothing in the data fixes where
+zero is, and forcing the median to zero necessarily puts half the sky at negative
+opacity. Negative opacity would mean more flux than open sky, which is not
+physical — so this map is for solver bookkeeping and for comparing runs, not for
+reading off a number and calling it "the opacity in this direction."
+
+`BaselineSolution.normalized_opacity()` implements the convention a physicist can
+actually read: it shifts lambda so the most transparent directions (the 5th
+percentile, by default) sit at zero and clips the rest to be non-negative. That is
+the quantity printed as "referenced to the most transparent direction (physical)"
+above, and it is the one **Phase 3 should consume**.
+
+The two positions' normalized maps are pinned independently — pos0's zero point
+and pos1's zero point are each anchored to that position's own most-transparent
+direction, and nothing ties the two together. **Do not naively difference the
+pos0 and pos1 normalized opacity maps** expecting comparable absolute levels;
+only within-position spatial variation is meaningful across the two.
 
 ## 4. Bootstrap: 10 replicas, 23 s
 
@@ -95,14 +137,14 @@ not a flaw in the method.
 
 - **Deviance is per live bin, not per degree of freedom.** Opacity contributes
   roughly one free parameter per constrained sky bin — about 3400 parameters against
-  7169 live bins. Per degree of freedom the deviance is closer to 1.98, not the 1.04
-  quoted above. Both numbers are real; the per-bin one alone overstates the fit
-  quality.
+  7169 live bins. Per degree of freedom the deviance is closer to 1.98 (7432.4 over
+  roughly 3759 effective dof), not the 1.0367 quoted above. Both numbers are real;
+  the per-bin one alone overstates the fit quality.
 - **T20a and T20b leave-one-out scores are the weakest evidence, not the strongest,
   despite being the highest numbers.** Holding out T20a leaves T20b in the fit at an
   almost identical pose (same position, tilt direction close in the same 20 degree
   family), so predicting T20a from "everything else" is close to predicting it from
-  itself. **P0's 0.9229 is the meaningful score** — P0 is predicted from exposures at
+  itself. **P0's 0.9683 is the meaningful score** — P0 is predicted from exposures at
   a different tilt and, more importantly, from... itself only via T20a/T20b, i.e. a
   genuinely different geometric view.
 - **The held-out bin selection is not perfectly blind.** Which sky bins get scored in
