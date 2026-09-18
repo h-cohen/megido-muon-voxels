@@ -572,9 +572,13 @@ def test_t_reach_is_the_largest_live_tangent(tmp_path):
 
 
 def test_row_index_key_changes_with_the_rows(tmp_path):
+    # At n = 6 the sky centres are +-0.4167, +-1.25, +-2.083. max_tan must
+    # straddle a tier boundary to change the row set at all: 1.0 keeps the
+    # innermost tier, 1.3 keeps two. Anything below 0.4167 keeps NOTHING and
+    # raises the "no constrained" ValueError.
     n = 6
     a = build_fit_data(_solution({"pos0": np.zeros(n * n)}, n), _cfg(tmp_path), max_tan=1.0)
-    b = build_fit_data(_solution({"pos0": np.zeros(n * n)}, n), _cfg(tmp_path), max_tan=0.4)
+    b = build_fit_data(_solution({"pos0": np.zeros(n * n)}, n), _cfg(tmp_path), max_tan=1.3)
     assert a.rows.key() != b.rows.key()
 
 
