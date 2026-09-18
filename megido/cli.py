@@ -220,6 +220,18 @@ def _cmd_export(args) -> int:
     return 0
 
 
+def _cmd_view(args) -> int:
+    import webbrowser
+
+    from megido.viewerbuild import build
+
+    out = build(Path("viewer"))
+    print(f"viewer built: {out}")
+    if not args.no_open:
+        webbrowser.open(out.resolve().as_uri())
+    return 0
+
+
 def _cmd_compare(args) -> int:
     paths = [Path(args.a) / "volume_full.npz", Path(args.b) / "volume_full.npz"]
     missing = [str(p) for p in paths if not p.exists()]
@@ -287,6 +299,11 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--run", default="runs/voxels")
     e.add_argument("--out", default=None)
     e.set_defaults(func=_cmd_export)
+
+    vw = sub.add_parser("view", help="build and open the S5 viewer")
+    vw.add_argument("--no-open", action="store_true",
+                     help="build viewer/dist/index.html but don't open a browser")
+    vw.set_defaults(func=_cmd_view)
 
     c = sub.add_parser("compare", help="what changed between two reconstructions")
     c.add_argument("--a", required=True)

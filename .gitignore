@@ -222,3 +222,4 @@ __marimo__/
 .venv/
 runs/
 cache/
+viewer/dist/
