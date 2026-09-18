@@ -3633,12 +3633,17 @@ def _cmd_reconstruct(args) -> int:
               f"({np.abs(sysmap).max() / max(rho.max(), 1e-12):.1%} of the peak)")
 
     if args.backproject_z is not None:
+        # The plane's pixel pitch is matched to where the rays actually land, not
+        # to the voxel spacing. Rays leave the sky grid at ~0.05 tan spacing, so
+        # at height z they land ~0.05*z apart; a finer plane than that is mostly
+        # empty pixels (a nearest-scatter anchor at voxel pitch fills only ~40%).
+        bp_res = max(full.grid.spacing, 0.05 * args.backproject_z)
         xs, ys = plane_axes(cfg, args.backproject_z, data.rows.t_reach(),
-                            res_m=full.grid.spacing)
+                            res_m=bp_res)
         _, mean = backproject_plane(data, cfg, args.backproject_z, xs, ys)
         np.save(out / "backprojection.npy", mean.astype(np.float32))
         print(f"backprojection  plane z={args.backproject_z:.2f} m, "
-              f"{mean.shape} at {full.grid.spacing:.2f} m")
+              f"{mean.shape} at {bp_res:.2f} m")
 
     print(f"\nwritten to {out}")
     return 0
