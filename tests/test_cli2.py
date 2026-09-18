@@ -52,6 +52,33 @@ def test_solve_returns_nonzero_when_the_data_fails_validation(site):
                  "--out", str(out), "--iters", "4"]) == 1
 
 
+def test_solve_returns_zero_when_every_check_passes(site, monkeypatch):
+    """The positive path. The noise fixture cannot pass physics validation, so
+    the checks are stubbed — what is under test is the CLI's exit contract, not
+    the physics, which the synthetic gates cover.
+    """
+    from megido import cli as C
+    from megido.validate2 import Check2
+
+    monkeypatch.setattr(C, "nll_per_bin_check",
+                        lambda sol, grid: Check2("stub", True, 1.0, "stub", "stub"))
+    monkeypatch.setattr(C, "leave_one_out",
+                        lambda grid, cfg, **kw: [Check2("stub.loo", True, 1.0, "stub", "stub")])
+
+    cfg, run_dir, out = site
+    assert main(["solve", "--config", str(cfg), "--run", str(run_dir),
+                 "--out", str(out), "--iters", "4"]) == 0
+
+
+def test_solve_reports_missing_counts_artifacts(site, capsys):
+    """A run directory that exists but lacks an exposure's counts file."""
+    cfg, run_dir, out = site
+    (run_dir / "counts_T20.npz").unlink()
+    assert main(["solve", "--config", str(cfg), "--run", str(run_dir),
+                 "--out", str(out), "--iters", "4"]) == 1
+    assert "T20" in capsys.readouterr().out
+
+
 def test_solve_prints_the_validation_report(site, capsys):
     cfg, run_dir, out = site
     main(["solve", "--config", str(cfg), "--run", str(run_dir),

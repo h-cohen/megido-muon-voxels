@@ -1,5 +1,20 @@
 # Phase 2 baseline report
 
+## Three things to know before reading any number below
+
+1. **The deviance of 1.04 is per live bin, not per degree of freedom.** Opacity
+   contributes roughly one free parameter per constrained sky bin — about 3400
+   against 7169 bins — so per degree of freedom it is about 1.98. The fit is
+   good, not as good as 1.04 alone suggests.
+2. **Only one of the three leave-one-out scores is a strong test.** Holding out
+   T20a leaves T20b at an almost identical pose, so 0.99 is nearly
+   self-prediction. P0's 0.9229 is the meaningful number.
+3. **Opacity is relative, not absolute.** The flux index is fixed at 2.0 because
+   it is not identifiable from this data, so every opacity value is meaningful
+   only against that assumed flux model.
+
+Each is expanded below.
+
 ## 1. What Phase 2 does, and why it is hard
 
 There is no open-sky calibration run for this detector: every exposure we have looks
@@ -76,7 +91,7 @@ These are separated deliberately into two kinds:
 The gap between the high-count and campaign numbers is the price of real statistics,
 not a flaw in the method.
 
-## 6. Caveats — read these before the headline numbers
+## 6. Caveats, in full
 
 - **Deviance is per live bin, not per degree of freedom.** Opacity contributes
   roughly one free parameter per constrained sky bin — about 3400 parameters against

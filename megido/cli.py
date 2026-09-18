@@ -8,11 +8,15 @@ from pathlib import Path
 import numpy as np
 
 from megido import validate as V
+from megido.angular import load_analysis_grid
+from megido.baseline import solve_baseline
 from megido.calib import calibrate
 from megido.config import load_site_config
 from megido.detector import DetectorGeometry
 from megido.pipeline import process_all
 from megido.reader import EventChunk, read_chunks
+from megido.validate2 import format_report2, leave_one_out, nll_per_bin_check
+
 
 def _cmd_validate(args) -> int:
     cfg = load_site_config(args.config)
@@ -56,12 +60,6 @@ def _cmd_ingest(args) -> int:
 
 
 def _cmd_solve(args) -> int:
-    from pathlib import Path
-
-    from megido.angular import load_analysis_grid
-    from megido.baseline import solve_baseline
-    from megido.validate2 import format_report2, leave_one_out, nll_per_bin_check
-
     cfg = load_site_config(args.config)
     run_dir = Path(args.run)
     if not run_dir.is_dir():
