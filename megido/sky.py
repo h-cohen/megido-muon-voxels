@@ -88,7 +88,19 @@ class SkyGrid:
         return flat.astype(np.int64), ok
 
 
-def make_sky_grid(t_max: float = 1.75, n_bins: int = 70) -> SkyGrid:
-    """Default span covers the detector's own 1.219 acceptance limit plus the
-    0.364 displacement a 20 degree tilt introduces, with margin."""
+def make_sky_grid(t_max: float = 2.5, n_bins: int = 100) -> SkyGrid:
+    """Sky-frame tangent grid, at the same 0.05 resolution as the analysis grid.
+
+    Sizing this by `detector_max_tan + tan(tilt)` is wrong: that assumes the tilt
+    displaces directions along an axis. At an oblique azimuth the tangent-plane
+    blowup near grazing incidence is far larger — for the campaign's 20 degree
+    tilt at azimuth 241, the acceptance corner (1.208, -1.208) maps to sky
+    (-3.37, -1.34).
+
+    Containing every geometric corner would need t_max above 3.4 and leave most
+    of the grid empty, so the span is set by where the COUNTS are instead.
+    Measured on the real campaign data, the fraction of counts falling outside
+    the grid for the tilted exposures is 0.66-0.83% at t_max=1.75, and
+    0.007-0.010% at 2.5. Untilted exposures lose nothing at any setting.
+    """
     return SkyGrid(edges=np.linspace(-t_max, t_max, n_bins + 1))
