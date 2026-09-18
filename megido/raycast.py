@@ -26,7 +26,7 @@ from megido.voxels import VoxelGrid
 # Bumped whenever ray-casting logic changes. It is part of the cache key: in
 # Phase 1 a cache that ignored the code version silently served artifacts built
 # before a reconstruction fix, and the same trap is live here.
-INVERSION_VERSION = 1
+INVERSION_VERSION = 2
 
 _SAMPLES_PER_VOXEL = 3          # sampling step along a ray = spacing / this
 _ROW_BLOCK = 512                # rows processed per vectorised block
@@ -83,10 +83,16 @@ def build_system_matrix(rows: RowIndex,
     z0, z1 = grid.extent(2)
 
     # Entry and exit of the grid's z slab along each ray, measured from its own
-    # start. dz > 0 always: a row's direction is normalize(sx, sy, 1).
+    # start. dz > 0 always: a row's direction is normalize(sx, sy, 1). A
+    # detector below the grid (the usual case) enters at z0; a detector already
+    # inside the grid (embedded in the volume, looking up through it) starts
+    # its path at t=0, not at z0 — using z0 unconditionally would count the
+    # region behind the detector as if the ray had travelled through it.
     dz = dirs[:, 2]
-    t_in = (z0 - starts[:, :, 2].mean(axis=1)) / dz
-    length = (z1 - z0) / dz
+    start_z = starts[:, :, 2].mean(axis=1)
+    t_in = np.maximum((z0 - start_z) / dz, 0.0)
+    t_out = (z1 - start_z) / dz
+    length = t_out - t_in
     step = grid.spacing / _SAMPLES_PER_VOXEL
     n_samp = np.maximum(np.ceil(length / step).astype(np.int64), 1)
 
