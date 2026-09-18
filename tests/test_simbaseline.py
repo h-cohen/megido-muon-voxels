@@ -56,7 +56,7 @@ def test_solver_recovers_the_injected_detector_response(cfg):
                                  scale=1000.0, seed=2)
 
     sol = solve_baseline(scene.grid, cfg, sky=sky, basis=basis,
-                         n_iter=300, tol=0.0, fit_flux_index=False,
+                         n_iter=5000, tol=0.0, fit_flux_index=False,
                          flux_index=scene.true_flux_index)
 
     tx, ty = scene.grid.tan_mesh()
@@ -78,29 +78,31 @@ def test_solver_recovers_opacity_in_the_high_count_limit(cfg):
     scene = make_synthetic_scene(cfg, n_bins=30, sky=sky, basis=basis,
                                  scale=1000.0, opacity_amplitude=0.6, seed=3)
     sol = solve_baseline(scene.grid, cfg, sky=sky, basis=basis,
-                         n_iter=300, tol=0.0, flux_index=2.0, fit_flux_index=False)
+                         n_iter=5000, tol=0.0, flux_index=2.0, fit_flux_index=False)
 
     pid = sorted(sol.opacity)[0]
     truth, got = scene.true_opacity[pid], sol.opacity[pid]
     both = np.isfinite(truth) & np.isfinite(got)
     corr = np.corrcoef(truth[both] - truth[both].mean(),
                        got[both] - got[both].mean())[0, 1]
-    assert corr > 0.75, f"high-count opacity correlation {corr:.3f}"
+    assert corr > 0.90, f"high-count opacity correlation {corr:.3f}"
 
 
 def test_opacity_recovery_at_campaign_statistics(cfg):
     """Reality check: what this campaign's actual counts deliver.
 
     scale=10 puts roughly 400 counts in a core bin, matching the real data
-    (medians 176-429). Recovery is markedly weaker than the high-count limit,
-    and that is the honest expectation for Phase 3 to inherit — not a defect.
+    (medians 176-429). The gap to the high-count limit is a COUNTING-STATISTICS
+    limit, not a geometry one: it responds to exposure time, not to more
+    viewpoints, and that is the honest expectation for Phase 3 to inherit —
+    not a defect.
     """
     sky = make_sky_grid(t_max=1.8, n_bins=36)
     basis = make_smooth_basis(n_per_axis=5)
     scene = make_synthetic_scene(cfg, n_bins=30, sky=sky, basis=basis,
                                  scale=10.0, opacity_amplitude=0.6, seed=3)
     sol = solve_baseline(scene.grid, cfg, sky=sky, basis=basis,
-                         n_iter=300, tol=0.0, flux_index=2.0, fit_flux_index=False)
+                         n_iter=5000, tol=0.0, flux_index=2.0, fit_flux_index=False)
 
     pid = sorted(sol.opacity)[0]
     truth, got = scene.true_opacity[pid], sol.opacity[pid]
@@ -111,25 +113,21 @@ def test_opacity_recovery_at_campaign_statistics(cfg):
 
 
 def test_a_flat_sky_is_recovered_as_flat_in_the_high_count_limit(cfg):
-    """Negative control, method version: with noise removed, how much sky
-    structure does the solve manufacture from nothing?
-
-    The residual is the detector-frame/sky-frame leak: for the two untilted
-    exposures those frames differ only by a fixed yaw, so S and lambda are
-    nearly degenerate there, and one 20 degree tilt breaks it incompletely.
-    Measured floor is about 0.12 and does not fall with more counts or a
-    smaller basis.
+    """Negative control: with noise removed, the solve must not manufacture sky
+    structure from nothing. Converged, the residual is std 0.046 — small enough
+    that the earlier apparent "leakage floor" near 0.12 was an artefact of
+    stopping the solver too early, not a property of the method.
     """
     sky = make_sky_grid(t_max=1.8, n_bins=36)
     basis = make_smooth_basis(n_per_axis=5)
     scene = make_synthetic_scene(cfg, n_bins=30, sky=sky, basis=basis,
                                  scale=1000.0, opacity_amplitude=0.0, seed=4)
     sol = solve_baseline(scene.grid, cfg, sky=sky, basis=basis,
-                         n_iter=300, tol=0.0, flux_index=2.0, fit_flux_index=False)
+                         n_iter=5000, tol=0.0, flux_index=2.0, fit_flux_index=False)
 
     lam = sol.opacity[sorted(sol.opacity)[0]]
     lam = lam[np.isfinite(lam)]
-    assert np.std(lam) < 0.20, f"manufactured sky structure, std={np.std(lam):.3f}"
+    assert np.std(lam) < 0.10, f"manufactured sky structure, std={np.std(lam):.3f}"
 
 
 def test_flat_sky_leakage_at_campaign_statistics_is_bounded(cfg):
@@ -140,11 +138,11 @@ def test_flat_sky_leakage_at_campaign_statistics_is_bounded(cfg):
     scene = make_synthetic_scene(cfg, n_bins=30, sky=sky, basis=basis,
                                  scale=10.0, opacity_amplitude=0.0, seed=4)
     sol = solve_baseline(scene.grid, cfg, sky=sky, basis=basis,
-                         n_iter=300, tol=0.0, flux_index=2.0, fit_flux_index=False)
+                         n_iter=5000, tol=0.0, flux_index=2.0, fit_flux_index=False)
 
     lam = sol.opacity[sorted(sol.opacity)[0]]
     lam = lam[np.isfinite(lam)]
-    assert np.std(lam) < 0.45, f"campaign-statistics leakage std={np.std(lam):.3f}"
+    assert np.std(lam) < 0.40, f"campaign-statistics leakage std={np.std(lam):.3f}"
 
 
 def test_flux_index_is_not_identifiable_which_is_why_it_is_fixed(cfg):

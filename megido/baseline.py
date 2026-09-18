@@ -267,9 +267,9 @@ def solve_baseline(grid: AnalysisGrid, cfg: SiteConfig, *,
                    geom: DetectorGeometry | None = None,
                    sky: SkyGrid | None = None,
                    basis: SmoothBasis | None = None,
-                   n_iter: int = 200, flux_index: float = 2.0,
+                   n_iter: int = 5000, flux_index: float = 2.0,
                    fit_flux_index: bool = False,
-                   tol: float = 1e-10) -> BaselineSolution:
+                   tol: float = 1e-12) -> BaselineSolution:
     """Joint solve for the smooth detector correction, per-position opacity,
     and per-exposure normalization.
 
@@ -304,9 +304,12 @@ def solve_baseline(grid: AnalysisGrid, cfg: SiteConfig, *,
             flux_index = _update_flux_index(terms, coeffs, opacity, norms, flux_index)
 
         history.append(_nll(terms, coeffs, opacity, norms, flux_index))
-        # NLL here is order 1e6-1e12 depending on scale, so tol must be tight:
-        # a "relative" tolerance of 1e-6 stops after an absolute improvement of
-        # only a few counts' worth of likelihood, long before convergence.
+        # The alternating scheme converges slowly: on a synthetic scene, opacity
+        # recovery runs 0.54 -> 0.74 -> 0.90 -> 0.94 -> 0.955 at 100, 300, 600, 1200
+        # and 4800 iterations. Stopping early does not merely lose precision, it
+        # changes the answer — a 300-iteration run reads as an intrinsic bias floor
+        # that is not there. Five thousand iterations cost a few seconds, so the
+        # budget is generous and the tolerance deliberately tight.
         if len(history) >= 2 and abs(history[-2] - history[-1]) < tol * abs(history[-1]):
             break
 
