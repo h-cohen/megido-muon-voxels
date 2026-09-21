@@ -9,6 +9,7 @@ import { availableLayers } from './layers.mjs';
 import { computeDelta, deltaVerdict } from './delta.mjs';
 import { initDock } from './dock.mjs';
 import { COLORMAP_NAMES, colormapStops } from './colormap.mjs';
+import { captureView, loadViews, saveViews } from './views.mjs';
 
 const VERTEX_SRC = `#version 300 es
 out vec2 vUv;
@@ -370,6 +371,22 @@ export function initViewer(root) {
     return file.arrayBuffer();
   }
 
+  // Frame the camera on the grid's world-space center, sized to the volume's
+  // diagonal. Shared by loadRun (on every fresh run) and #frame-all-btn (to
+  // recover the view after the user has panned/zoomed away), so the framing
+  // math lives in exactly one place.
+  function frameAll() {
+    if (!state.meta) return;
+    const { shape, spacing_m, origin_m } = state.meta;
+    state.camera.target = [
+      origin_m[0] + 0.5 * shape[0] * spacing_m,
+      origin_m[1] + 0.5 * shape[1] * spacing_m,
+      origin_m[2] + 0.5 * shape[2] * spacing_m,
+    ];
+    const diag = Math.hypot(shape[0] * spacing_m, shape[1] * spacing_m, shape[2] * spacing_m);
+    state.camera.distance = 1.3 * diag;
+  }
+
   async function loadRun(files) {
     state.ready = false;
     const byName = new Map();
@@ -414,14 +431,7 @@ export function initViewer(root) {
     // volume's diagonal, instead of the fixed target=[0,0,0]/distance=3
     // defaults, which orphan the (typically off-origin, many-metre) real
     // campaign volume off-screen or reduced to a speck.
-    const { shape, spacing_m, origin_m } = meta;
-    state.camera.target = [
-      origin_m[0] + 0.5 * shape[0] * spacing_m,
-      origin_m[1] + 0.5 * shape[1] * spacing_m,
-      origin_m[2] + 0.5 * shape[2] * spacing_m,
-    ];
-    const diag = Math.hypot(shape[0] * spacing_m, shape[1] * spacing_m, shape[2] * spacing_m);
-    state.camera.distance = 1.3 * diag;
+    frameAll();
 
     state.activeLayer = 'volume';
     state.volumeTex = makeVolumeTexture(gl, meta.shape, state.layerData.get('volume'));
@@ -589,6 +599,60 @@ export function initViewer(root) {
       render();
     });
   }
+
+  root.querySelector('#frame-all-btn').addEventListener('click', () => {
+    frameAll();
+    render();
+  });
+
+  function renderViewList() {
+    const list = loadViews();
+    const ul = root.querySelector('#saved-views');
+    ul.innerHTML = '';
+    list.forEach((view, i) => {
+      const li = document.createElement('li');
+      li.textContent = view.name + ' ';
+      const applyBtn = document.createElement('button');
+      applyBtn.textContent = 'Apply';
+      applyBtn.addEventListener('click', () => {
+        if (!state.meta) return;
+        state.camera = {
+          yaw: view.camera.yaw,
+          pitch: view.camera.pitch,
+          distance: view.camera.distance,
+          target: [...view.camera.target],
+        };
+        state.window = [view.window[0], view.window[1]];
+        if (view.activeLayer && state.setActiveLayer) {
+          state.setActiveLayer(view.activeLayer);
+        } else {
+          render();
+        }
+      });
+      const deleteBtn = document.createElement('button');
+      deleteBtn.textContent = 'Delete';
+      deleteBtn.addEventListener('click', () => {
+        const current = loadViews();
+        current.splice(i, 1);
+        saveViews(current);
+        renderViewList();
+      });
+      li.appendChild(applyBtn);
+      li.appendChild(deleteBtn);
+      ul.appendChild(li);
+    });
+  }
+
+  root.querySelector('#save-view-btn').addEventListener('click', () => {
+    if (!state.meta || !state.setActiveLayer) return;
+    const nameInput = root.querySelector('#view-name');
+    const list = loadViews();
+    list.push(captureView(state, nameInput.value || 'view ' + (list.length + 1)));
+    saveViews(list);
+    renderViewList();
+  });
+
+  renderViewList();
 
   const histCanvas = root.querySelector('#histogram-canvas');
   let draggingWindowEdge = null; // 'lo' | 'hi' | null, local to this control

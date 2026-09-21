@@ -23,6 +23,7 @@ _MODULE_ORDER = [
     "delta.mjs",
     "dock.mjs",
     "colormap.mjs",
+    "views.mjs",
     "app.mjs",
 ]
 
