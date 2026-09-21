@@ -4,6 +4,7 @@ import { modelMatrixFromMeta } from './grid.mjs';
 import { buildTransferLUT, defaultStops } from './transfer.mjs';
 import { orbitToEye, CAMERA_PRESETS } from './camera.mjs';
 import { computeHistogram } from './histogram.mjs';
+import { availableLayers } from './layers.mjs';
 
 const VERTEX_SRC = `#version 300 es
 out vec2 vUv;
@@ -299,6 +300,31 @@ export function initViewer(root) {
     if (state.layerData.has('sigma')) {
       state.sigmaTex = makeVolumeTexture(gl, meta.shape, state.layerData.get('sigma'));
     }
+    function setActiveLayer(key) {
+      state.activeLayer = key;
+      state.volumeTex = makeVolumeTexture(gl, meta.shape, state.layerData.get(key));
+      drawHistogram();
+      render();
+    }
+    state.setActiveLayer = setActiveLayer;
+
+    const panel = root.querySelector('#layer-panel');
+    panel.innerHTML = '';
+    for (const layer of availableLayers([...state.layerData.keys()])) {
+      const id = `layer-${layer.key}`;
+      const label = document.createElement('label');
+      label.style.display = 'block';
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = 'active-layer';
+      radio.id = id;
+      radio.checked = layer.key === 'volume';
+      radio.addEventListener('change', () => setActiveLayer(layer.key));
+      label.appendChild(radio);
+      label.appendChild(document.createTextNode(' ' + layer.label));
+      panel.appendChild(label);
+    }
+
     const [lo, hi] = meta.value_range;
     state.window = [lo, hi];
     drawHistogram();
