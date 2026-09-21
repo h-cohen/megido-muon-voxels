@@ -4,7 +4,7 @@ import { worldToVoxel, sampleNearest } from './grid.mjs';
 import { insideClipBox, insideClipPlane } from './clip.mjs';
 import { buildTransferLUT, defaultStops } from './transfer.mjs';
 import { orbitToEye, CAMERA_PRESETS } from './camera.mjs';
-import { computeHistogram } from './histogram.mjs';
+import { computeHistogram, robustWindow } from './histogram.mjs';
 import { availableLayers } from './layers.mjs';
 import { computeDelta, deltaVerdict } from './delta.mjs';
 
@@ -310,6 +310,27 @@ export function initViewer(root) {
       state.layerData.set(name, data);
     }
 
+    // Reset any stale delta from a previously loaded compare run: a new
+    // primary load makes the old 'B minus A' comparison meaningless.
+    state.layerData.delete('delta');
+    const staleDeltaRadio = root.querySelector('#layer-delta');
+    if (staleDeltaRadio) staleDeltaRadio.closest('label')?.remove();
+    const deltaVerdictEl = root.querySelector('#delta-verdict');
+    if (deltaVerdictEl) deltaVerdictEl.textContent = '';
+
+    // Frame the camera on the grid's world-space center, sized to the
+    // volume's diagonal, instead of the fixed target=[0,0,0]/distance=3
+    // defaults, which orphan the (typically off-origin, many-metre) real
+    // campaign volume off-screen or reduced to a speck.
+    const { shape, spacing_m, origin_m } = meta;
+    state.camera.target = [
+      origin_m[0] + 0.5 * shape[0] * spacing_m,
+      origin_m[1] + 0.5 * shape[1] * spacing_m,
+      origin_m[2] + 0.5 * shape[2] * spacing_m,
+    ];
+    const diag = Math.hypot(shape[0] * spacing_m, shape[1] * spacing_m, shape[2] * spacing_m);
+    state.camera.distance = 1.3 * diag;
+
     state.activeLayer = 'volume';
     state.volumeTex = makeVolumeTexture(gl, meta.shape, state.layerData.get('volume'));
     if (state.layerData.has('sigma')) {
@@ -323,10 +344,38 @@ export function initViewer(root) {
     } else {
       state.sigmaMax = 1;
     }
+
+    // Window each layer to ITS OWN robust range (see histogram.mjs
+    // robustWindow), not meta.value_range: value_range[1] is a single
+    // outlier voxel on the real campaign (median 0.0025, p95 0.12,
+    // value_range[1] 2.369), so windowing to [min,max] renders near-black.
+    function syncWindowSliders() {
+      const loInput = root.querySelector('#window-lo');
+      const hiInput = root.querySelector('#window-hi');
+      const max = state.layerMax || 0;
+      loInput.value = max > 0 ? String(state.window[0] / max) : '0';
+      hiInput.value = max > 0 ? String(state.window[1] / max) : '1';
+    }
+    function applyWindowForLayer(key) {
+      const data = state.layerData.get(key);
+      let max = 0;
+      if (data) {
+        for (let i = 0; i < data.length; i++) {
+          const v = data[i];
+          if (!Number.isNaN(v) && v > max) max = v;
+        }
+      }
+      state.layerMax = max;
+      state.window = data ? robustWindow(data) : [0, 1];
+      syncWindowSliders();
+    }
+    state.applyWindowForLayer = applyWindowForLayer;
+
     function setActiveLayer(key) {
       state.activeLayer = key;
       gl.deleteTexture(state.volumeTex);
       state.volumeTex = makeVolumeTexture(gl, meta.shape, state.layerData.get(key));
+      applyWindowForLayer(key);
       drawHistogram();
       render();
     }
@@ -349,8 +398,7 @@ export function initViewer(root) {
       panel.appendChild(label);
     }
 
-    const [lo, hi] = meta.value_range;
-    state.window = [lo, hi];
+    applyWindowForLayer('volume');
     drawHistogram();
     drawXferEditor();
     render();
@@ -453,11 +501,11 @@ export function initViewer(root) {
   }
 
   root.querySelector('#window-lo').addEventListener('input', (ev) => {
-    state.window[0] = parseFloat(ev.target.value) * (state.meta ? state.meta.value_range[1] : 1);
+    state.window[0] = parseFloat(ev.target.value) * (state.layerMax || 1);
     drawHistogram(); render();
   });
   root.querySelector('#window-hi').addEventListener('input', (ev) => {
-    state.window[1] = parseFloat(ev.target.value) * (state.meta ? state.meta.value_range[1] : 1);
+    state.window[1] = parseFloat(ev.target.value) * (state.layerMax || 1);
     drawHistogram(); render();
   });
 
