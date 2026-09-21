@@ -10,6 +10,18 @@ def test_save_apply_delete_view(page, dist_path, run_fixture):
     page.locator("#camera-preset-top").click()
     saved_yaw = page.evaluate("() => window.__viewerState.camera.yaw")
 
+    # Set a distinctive window, distinct from the layer's robust default,
+    # so a saved view exercises window restoration, not just camera.
+    page.evaluate("""
+        () => {
+            const s = window.__viewerState;
+            s.window = [0.01, 0.02];
+            if (s.drawHistogram) s.drawHistogram();
+            s.render();
+        }
+    """)
+    saved_window = page.evaluate("() => window.__viewerState.window.slice()")
+
     page.locator("#view-name").fill("my view")
     page.locator("#save-view-btn").click()
 
@@ -28,10 +40,25 @@ def test_save_apply_delete_view(page, dist_path, run_fixture):
     rotated_yaw = page.evaluate("() => window.__viewerState.camera.yaw")
     assert abs(rotated_yaw - saved_yaw) > 1e-6
 
-    # Applying the saved view restores the camera.
+    # Also move the window away from the saved value, the way applying a
+    # view would if it re-ran the layer's robust-window default afterward
+    # (the regression this test guards against).
+    page.evaluate("""
+        () => {
+            const s = window.__viewerState;
+            s.window = [0.5, 0.9];
+            if (s.drawHistogram) s.drawHistogram();
+            s.render();
+        }
+    """)
+
+    # Applying the saved view restores the camera AND the window.
     items.locator("button", has_text="Apply").click()
     restored_yaw = page.evaluate("() => window.__viewerState.camera.yaw")
     assert abs(restored_yaw - saved_yaw) < 1e-6
+    restored_window = page.evaluate("() => window.__viewerState.window.slice()")
+    assert abs(restored_window[0] - saved_window[0]) < 1e-9
+    assert abs(restored_window[1] - saved_window[1]) < 1e-9
 
     # Deleting empties the list.
     items.locator("button", has_text="Delete").click()

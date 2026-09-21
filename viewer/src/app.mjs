@@ -622,10 +622,17 @@ export function initViewer(root) {
           distance: view.camera.distance,
           target: [...view.camera.target],
         };
-        state.window = [view.window[0], view.window[1]];
+        // setActiveLayer rebuilds the layer texture AND resets state.window
+        // to that layer's own robust default as a side effect, so it must
+        // run BEFORE the saved window is applied, not after — otherwise the
+        // saved window is silently clobbered by the robust default.
         if (view.activeLayer && state.setActiveLayer) {
           state.setActiveLayer(view.activeLayer);
+          state.window = [view.window[0], view.window[1]];
+          if (state.drawHistogram) state.drawHistogram();
+          render();
         } else {
+          state.window = [view.window[0], view.window[1]];
           render();
         }
       });
