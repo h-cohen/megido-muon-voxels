@@ -302,6 +302,7 @@ export function initViewer(root) {
     }
     function setActiveLayer(key) {
       state.activeLayer = key;
+      gl.deleteTexture(state.volumeTex);
       state.volumeTex = makeVolumeTexture(gl, meta.shape, state.layerData.get(key));
       drawHistogram();
       render();
