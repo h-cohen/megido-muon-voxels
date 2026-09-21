@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeHistogram, robustWindow } from '../src/histogram.mjs';
+import { computeHistogram, robustWindow, windowToBandPx, bandPxToWindow } from '../src/histogram.mjs';
 
 test('computeHistogram counts values within the window', () => {
   const data = new Float32Array([0, 0.1, 0.5, 0.9, 1.0, 2.0]);
@@ -51,4 +51,16 @@ test('robustWindow falls back on all-zero data', () => {
   const [lo, hi] = robustWindow(data, 0.99);
   assert.equal(lo, 0);
   assert.equal(hi, 0);
+});
+
+test('windowToBandPx maps window onto pixel span', () => {
+  const { loPx, hiPx } = windowToBandPx([0, 0.5], 1.0, 200);
+  assert.equal(loPx, 0);
+  assert.equal(hiPx, 100);
+});
+
+test('bandPxToWindow is the inverse', () => {
+  assert.ok(Math.abs(bandPxToWindow(100, 1.0, 200) - 0.5) < 1e-9);
+  assert.equal(bandPxToWindow(-5, 1.0, 200), 0);      // clamped low
+  assert.equal(bandPxToWindow(999, 1.0, 200), 1.0);   // clamped to layerMax
 });

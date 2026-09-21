@@ -30,3 +30,24 @@ def test_dragging_a_transfer_stop_changes_the_render(page, dist_path, run_fixtur
     """)
     hist_now = page.evaluate("() => document.querySelector('#histogram-canvas').toDataURL()")
     assert hist_now != hist_blank
+
+
+def test_dragging_the_histogram_band_edge_changes_the_window(page, dist_path, run_fixture):
+    run_dir = run_fixture()
+    page.goto(dist_path.resolve().as_uri())
+    page.wait_for_selector("#gl-canvas")
+
+    page.locator("#load-run-input").set_input_files(str(run_dir))
+    page.wait_for_function("() => window.__viewerState && window.__viewerState.ready")
+
+    before_render = page.evaluate("() => document.querySelector('#gl-canvas').toDataURL()")
+    box = page.locator("#histogram-canvas").bounding_box()
+    page.mouse.move(box["x"] + box["width"] * 0.15, box["y"] + box["height"] / 2)
+    page.mouse.down()
+    page.mouse.move(box["x"] + box["width"] * 0.35, box["y"] + box["height"] / 2)
+    page.mouse.up()
+    after_render = page.evaluate("() => document.querySelector('#gl-canvas').toDataURL()")
+    assert before_render != after_render
+
+    readout = page.locator("#window-readout").text_content()
+    assert readout and readout.strip(), "window readout must be populated after a drag"

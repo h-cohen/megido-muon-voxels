@@ -60,10 +60,13 @@ def test_real_campaign_output_renders_with_every_control_operable(page, dist_pat
     page.mouse.move(box["x"] + box["width"] * 0.6, box["y"] + box["height"] * 0.5)
     page.mouse.up()
 
-    page.locator("#window-lo").fill("0.1")
-    page.locator("#window-lo").dispatch_event("input")
-    page.locator("#window-hi").fill("0.9")
-    page.locator("#window-hi").dispatch_event("input")
+    hist_box = page.locator("#histogram-canvas").bounding_box()
+    page.mouse.move(hist_box["x"] + hist_box["width"] * 0.15, hist_box["y"] + hist_box["height"] / 2)
+    page.mouse.down()
+    page.mouse.move(hist_box["x"] + hist_box["width"] * 0.35, hist_box["y"] + hist_box["height"] / 2)
+    page.mouse.up()
+    readout = page.locator("#window-readout").text_content()
+    assert readout and readout.strip(), "window readout must reflect the dragged window"
 
     page.locator("#clip-x-max").fill("0.6")
     page.locator("#clip-x-max").dispatch_event("input")

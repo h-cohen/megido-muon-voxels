@@ -29,6 +29,24 @@ export function robustWindow(data, percentile = 0.99) {
   return [0, dataMax];
 }
 
+// Map the current [lo, hi] density window onto pixel offsets within a
+// histogram canvas of the given width, so the window can be drawn as a band
+// over the bars.
+export function windowToBandPx(window, layerMax, widthPx) {
+  const max = layerMax > 0 ? layerMax : 1;
+  const loPx = (window[0] / max) * widthPx;
+  const hiPx = (window[1] / max) * widthPx;
+  return { loPx, hiPx };
+}
+
+// Inverse of windowToBandPx for one edge: a canvas pixel x -> a density in
+// [0, layerMax], clamped to the canvas bounds.
+export function bandPxToWindow(px, layerMax, widthPx) {
+  const max = layerMax > 0 ? layerMax : 1;
+  const frac = Math.max(0, Math.min(1, px / widthPx));
+  return frac * max;
+}
+
 export function computeHistogram(data, lo, hi, nbins) {
   const out = new Uint32Array(nbins);
   const span = hi - lo;

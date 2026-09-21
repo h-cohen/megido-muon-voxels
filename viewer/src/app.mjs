@@ -4,7 +4,7 @@ import { worldToVoxel, sampleNearest } from './grid.mjs';
 import { insideClipBox, insideClipPlane } from './clip.mjs';
 import { buildTransferLUT } from './transfer.mjs';
 import { orbitToEye, CAMERA_PRESETS } from './camera.mjs';
-import { computeHistogram, robustWindow } from './histogram.mjs';
+import { computeHistogram, robustWindow, windowToBandPx, bandPxToWindow } from './histogram.mjs';
 import { availableLayers } from './layers.mjs';
 import { computeDelta, deltaVerdict } from './delta.mjs';
 import { initDock } from './dock.mjs';
@@ -244,6 +244,7 @@ export function initViewer(root) {
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     const data = state.layerData.get(state.activeLayer);
+    const readout = root.querySelector('#window-readout');
     if (!data || !state.window) return;
     const [lo, hi] = state.window;
     const hist = computeHistogram(data, lo, hi, 64);
@@ -253,6 +254,20 @@ export function initViewer(root) {
     for (let i = 0; i < hist.length; i++) {
       const h = (hist[i] / max) * canvas.height;
       ctx.fillRect(i * barW, canvas.height - h, barW - 1, h);
+    }
+
+    // The window band IS the control: draw it as a translucent accent
+    // rectangle with two edge handles over the bars, in the same pixel
+    // space #histogram-canvas pointer events are converted into below.
+    const { loPx, hiPx } = windowToBandPx(state.window, state.layerMax, canvas.width);
+    ctx.fillStyle = 'rgba(140, 204, 255, 0.18)';
+    ctx.fillRect(loPx, 0, hiPx - loPx, canvas.height);
+    ctx.fillStyle = 'rgba(140, 204, 255, 0.9)';
+    ctx.fillRect(loPx - 1.5, 0, 3, canvas.height);
+    ctx.fillRect(hiPx - 1.5, 0, 3, canvas.height);
+
+    if (readout) {
+      readout.textContent = `${state.window[0].toFixed(3)} – ${state.window[1].toFixed(3)} 1/m`;
     }
   }
 
@@ -353,11 +368,9 @@ export function initViewer(root) {
     // outlier voxel on the real campaign (median 0.0025, p95 0.12,
     // value_range[1] 2.369), so windowing to [min,max] renders near-black.
     function syncWindowSliders() {
-      const loInput = root.querySelector('#window-lo');
-      const hiInput = root.querySelector('#window-hi');
-      const max = state.layerMax || 0;
-      loInput.value = max > 0 ? String(state.window[0] / max) : '0';
-      hiInput.value = max > 0 ? String(state.window[1] / max) : '1';
+      // The histogram canvas's window band is the control now (see
+      // drawHistogram); there are no sliders left to sync.
+      drawHistogram();
     }
     function applyWindowForLayer(key) {
       const data = state.layerData.get(key);
@@ -503,12 +516,27 @@ export function initViewer(root) {
     });
   }
 
-  root.querySelector('#window-lo').addEventListener('input', (ev) => {
-    state.window[0] = parseFloat(ev.target.value) * (state.layerMax || 1);
-    drawHistogram(); render();
+  const histCanvas = root.querySelector('#histogram-canvas');
+  let draggingWindowEdge = null; // 'lo' | 'hi' | null, local to this control
+  function histCanvasPx(ev) {
+    const rect = histCanvas.getBoundingClientRect();
+    return (ev.clientX - rect.left) * (histCanvas.width / rect.width);
+  }
+  histCanvas.addEventListener('pointerdown', (ev) => {
+    const px = histCanvasPx(ev);
+    const { loPx, hiPx } = windowToBandPx(state.window, state.layerMax, histCanvas.width);
+    draggingWindowEdge = Math.abs(px - loPx) <= Math.abs(px - hiPx) ? 'lo' : 'hi';
   });
-  root.querySelector('#window-hi').addEventListener('input', (ev) => {
-    state.window[1] = parseFloat(ev.target.value) * (state.layerMax || 1);
+  window.addEventListener('pointerup', () => { draggingWindowEdge = null; });
+  window.addEventListener('pointermove', (ev) => {
+    if (!draggingWindowEdge) return;
+    const px = histCanvasPx(ev);
+    const value = bandPxToWindow(px, state.layerMax, histCanvas.width);
+    if (draggingWindowEdge === 'lo') {
+      state.window[0] = Math.min(value, state.window[1]);
+    } else {
+      state.window[1] = Math.max(value, state.window[0]);
+    }
     drawHistogram(); render();
   });
 
