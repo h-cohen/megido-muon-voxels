@@ -24,6 +24,7 @@ _MODULE_ORDER = [
     "dock.mjs",
     "colormap.mjs",
     "views.mjs",
+    "shortcuts.mjs",
     "app.mjs",
 ]
 

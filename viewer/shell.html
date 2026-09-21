@@ -101,7 +101,31 @@
     position:absolute;background:var(--panel-2);border:1px solid var(--line);color:var(--text);
     border-radius:6px;padding:2px 6px;transform:translate(12px,12px);
   }
-  #overlay-onboarding{position:absolute;inset:0;z-index:3;pointer-events:none;}
+  #overlay-onboarding{
+    position:absolute;inset:0;z-index:7;display:grid;place-items:center;
+    pointer-events:none;
+  }
+  #overlay-onboarding[hidden]{display:none;}
+  #onboarding-card{
+    pointer-events:auto;background:var(--panel);border:1px solid var(--line);
+    border-radius:var(--radius);padding:20px 24px;max-width:36ch;
+  }
+  #onboarding-card h2{margin:0 0 10px;font-size:15px;}
+  #onboarding-card ul{margin:0 0 14px;padding-left:1.2em;color:var(--text-dim);}
+  #onboarding-card li{margin:4px 0;}
+  #overlay-shortcuts{
+    position:absolute;inset:0;z-index:8;display:grid;place-items:center;
+    background:rgba(0,0,0,0.4);
+  }
+  #overlay-shortcuts[hidden]{display:none;}
+  #shortcuts-card{
+    background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:20px 24px;min-width:26ch;
+  }
+  #shortcuts-card h2{margin:0 0 10px;font-size:15px;}
+  #shortcuts-card table{border-collapse:collapse;}
+  #shortcuts-card td{padding:3px 8px 3px 0;color:var(--text-dim);}
+  #shortcuts-card td.keys{font-family:var(--mono);color:var(--text);white-space:nowrap;}
 </style>
 </head>
 <body>
@@ -211,8 +235,23 @@
       <div id="legend-ticks" class="mono dim"></div>
     </div>
     <div id="overlay-hover"><div id="hover-readout" class="mono" hidden></div></div>
-    <div id="overlay-onboarding"></div>
-    <div id="overlay-shortcuts" hidden></div>
+    <div id="overlay-onboarding">
+      <div id="onboarding-card">
+        <h2>Load a run to begin</h2>
+        <ul>
+          <li>Load run &rarr; pick a run directory (e.g. runs/voxels)</li>
+          <li>Drag to orbit, scroll to zoom</li>
+          <li>Press ? for shortcuts</li>
+        </ul>
+        <button id="onboarding-dismiss-btn">Got it</button>
+      </div>
+    </div>
+    <div id="overlay-shortcuts" hidden>
+      <div id="shortcuts-card">
+        <h2>Keyboard shortcuts</h2>
+        <table id="shortcuts-table"></table>
+      </div>
+    </div>
   </div>
 </div>
 <script>

@@ -10,6 +10,7 @@ import { computeDelta, deltaVerdict } from './delta.mjs';
 import { initDock } from './dock.mjs';
 import { COLORMAP_NAMES, colormapStops } from './colormap.mjs';
 import { captureView, loadViews, saveViews } from './views.mjs';
+import { SHORTCUTS, keyToAction } from './shortcuts.mjs';
 
 const VERTEX_SRC = `#version 300 es
 out vec2 vUv;
@@ -389,6 +390,8 @@ export function initViewer(root) {
 
   async function loadRun(files) {
     state.ready = false;
+    const onboardingEl = root.querySelector('#overlay-onboarding');
+    if (onboardingEl) onboardingEl.hidden = true;
     const byName = new Map();
     for (const f of files) byName.set(f.name, f);
 
@@ -852,6 +855,71 @@ export function initViewer(root) {
   }
   cmapSel.addEventListener('change', (ev) => applyColormap(ev.target.value));
   applyColormap(cmapSel.value);
+
+  // ---- shortcuts cheatsheet + onboarding card (Task 7) ----
+  const shortcutsTable = root.querySelector('#shortcuts-table');
+  if (shortcutsTable) {
+    for (const s of SHORTCUTS) {
+      const tr = document.createElement('tr');
+      const keysTd = document.createElement('td');
+      keysTd.className = 'keys';
+      keysTd.textContent = s.keys;
+      const labelTd = document.createElement('td');
+      labelTd.textContent = s.label;
+      tr.appendChild(keysTd);
+      tr.appendChild(labelTd);
+      shortcutsTable.appendChild(tr);
+    }
+  }
+
+  const ONBOARDED_KEY = 'megido-viewer:onboarded';
+  const onboardingOverlay = root.querySelector('#overlay-onboarding');
+  const shortcutsOverlay = root.querySelector('#overlay-shortcuts');
+  let onboarded = false;
+  try { onboarded = localStorage.getItem(ONBOARDED_KEY) === '1'; } catch { /* ignore */ }
+  if (onboardingOverlay) onboardingOverlay.hidden = onboarded;
+
+  const onboardingDismissBtn = root.querySelector('#onboarding-dismiss-btn');
+  if (onboardingDismissBtn) {
+    onboardingDismissBtn.addEventListener('click', () => {
+      try { localStorage.setItem(ONBOARDED_KEY, '1'); } catch { /* ignore */ }
+      if (onboardingOverlay) onboardingOverlay.hidden = true;
+    });
+  }
+
+  window.addEventListener('keydown', (ev) => {
+    const targetTag = ev.target && ev.target.tagName;
+    if (targetTag === 'INPUT' || targetTag === 'SELECT' || targetTag === 'TEXTAREA') return;
+    const action = keyToAction(ev);
+    if (!action) return;
+    if (action.startsWith('layer')) {
+      const n = Number(action.slice('layer'.length));
+      const radios = root.querySelectorAll('#layer-panel input[type="radio"]');
+      const radio = radios[n - 1];
+      if (radio) radio.click();
+      return;
+    }
+    if (action.startsWith('preset-')) {
+      const key = action.slice('preset-'.length);
+      const btn = root.querySelector(`#camera-preset-${key}`);
+      if (btn) btn.click();
+      return;
+    }
+    if (action === 'frame-all') {
+      frameAll();
+      render();
+      return;
+    }
+    if (action === 'toggle-help') {
+      if (shortcutsOverlay) shortcutsOverlay.hidden = !shortcutsOverlay.hidden;
+      return;
+    }
+    if (action === 'close-overlay') {
+      if (shortcutsOverlay) shortcutsOverlay.hidden = true;
+      if (onboardingOverlay) onboardingOverlay.hidden = true;
+      return;
+    }
+  });
 
   window.__viewerState = state; // inspected by Playwright tests
 }
