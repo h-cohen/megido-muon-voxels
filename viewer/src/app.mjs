@@ -299,7 +299,15 @@ export function initViewer(root) {
     state.activeLayer = 'volume';
     state.volumeTex = makeVolumeTexture(gl, meta.shape, state.layerData.get('volume'));
     if (state.layerData.has('sigma')) {
-      state.sigmaTex = makeVolumeTexture(gl, meta.shape, state.layerData.get('sigma'));
+      const sig = state.layerData.get('sigma');
+      state.sigmaTex = makeVolumeTexture(gl, meta.shape, sig);
+      // Plain loop, not Math.max(...sig): a spread blows the call stack on
+      // the real campaign's 675,840-element sigma array.
+      let smax = 0;
+      for (let i = 0; i < sig.length; i++) if (sig[i] > smax) smax = sig[i];
+      state.sigmaMax = smax;
+    } else {
+      state.sigmaMax = 1;
     }
     function setActiveLayer(key) {
       state.activeLayer = key;
@@ -441,8 +449,7 @@ export function initViewer(root) {
   });
   root.querySelector('#sigma-gate-value').addEventListener('input', (ev) => {
     const frac = parseFloat(ev.target.value);
-    const sigmaData = state.layerData.get('sigma');
-    const max = sigmaData ? Math.max(...sigmaData) : 1;
+    const max = state.sigmaMax || 1;
     state.sigmaGateValue = frac * max;
     render();
   });
@@ -479,11 +486,11 @@ export function initViewer(root) {
 
     const steps = 200;
     const stepLen = len / steps;
+    const { min, extent } = worldBounds();
     for (let s = 0; s < steps; s++) {
       const world = [nearP[0] + step[0] * stepLen * s,
                      nearP[1] + step[1] * stepLen * s,
                      nearP[2] + step[2] * stepLen * s];
-      const { min, extent } = worldBounds();
       const tex = [
         (world[0] - min[0]) / extent[0],
         (world[1] - min[1]) / extent[1],
