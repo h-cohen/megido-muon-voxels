@@ -3,6 +3,7 @@ import { identity, multiply, perspective, lookAt, invert } from './mat4.mjs';
 import { modelMatrixFromMeta } from './grid.mjs';
 import { buildTransferLUT, defaultStops } from './transfer.mjs';
 import { orbitToEye, CAMERA_PRESETS } from './camera.mjs';
+import { computeHistogram } from './histogram.mjs';
 
 const VERTEX_SRC = `#version 300 es
 out vec2 vUv;
@@ -228,6 +229,50 @@ export function initViewer(root) {
   }
   state.render = render;
 
+  function rebuildLut() {
+    gl.deleteTexture(state.lutTex);
+    state.lutTex = makeLutTexture(gl, buildTransferLUT(state.transferStops));
+    render();
+  }
+
+  function drawHistogram() {
+    const canvas = root.querySelector('#histogram-canvas');
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const data = state.layerData.get(state.activeLayer);
+    if (!data || !state.window) return;
+    const [lo, hi] = state.window;
+    const hist = computeHistogram(data, lo, hi, 64);
+    const max = Math.max(...hist, 1);
+    const barW = canvas.width / hist.length;
+    ctx.fillStyle = '#8cf';
+    for (let i = 0; i < hist.length; i++) {
+      const h = (hist[i] / max) * canvas.height;
+      ctx.fillRect(i * barW, canvas.height - h, barW - 1, h);
+    }
+  }
+
+  function drawXferEditor() {
+    const canvas = root.querySelector('#xfer-canvas');
+    const ctx = canvas.getContext('2d');
+    const lut = buildTransferLUT(state.transferStops, canvas.width);
+    const img = ctx.createImageData(canvas.width, canvas.height);
+    for (let x = 0; x < canvas.width; x++) {
+      for (let y = 0; y < canvas.height; y++) {
+        const idx = (y * canvas.width + x) * 4;
+        img.data[idx] = lut[x * 4]; img.data[idx + 1] = lut[x * 4 + 1];
+        img.data[idx + 2] = lut[x * 4 + 2]; img.data[idx + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    ctx.fillStyle = '#fff';
+    for (const s of state.transferStops) {
+      ctx.fillRect(s.t * canvas.width - 2, 0, 4, canvas.height);
+    }
+  }
+  state.drawHistogram = drawHistogram;
+  state.drawXferEditor = drawXferEditor;
+
   async function readFile(file) {
     return file.arrayBuffer();
   }
@@ -256,6 +301,8 @@ export function initViewer(root) {
     }
     const [lo, hi] = meta.value_range;
     state.window = [lo, hi];
+    drawHistogram();
+    drawXferEditor();
     render();
   }
 
@@ -293,6 +340,33 @@ export function initViewer(root) {
       render();
     });
   }
+
+  root.querySelector('#window-lo').addEventListener('input', (ev) => {
+    state.window[0] = parseFloat(ev.target.value) * (state.meta ? state.meta.value_range[1] : 1);
+    drawHistogram(); render();
+  });
+  root.querySelector('#window-hi').addEventListener('input', (ev) => {
+    state.window[1] = parseFloat(ev.target.value) * (state.meta ? state.meta.value_range[1] : 1);
+    drawHistogram(); render();
+  });
+
+  const xferCanvas = root.querySelector('#xfer-canvas');
+  let draggingStop = null;
+  xferCanvas.addEventListener('pointerdown', (ev) => {
+    const rect = xferCanvas.getBoundingClientRect();
+    const t = (ev.clientX - rect.left) / rect.width;
+    draggingStop = state.transferStops.reduce((best, s) =>
+      Math.abs(s.t - t) < Math.abs(best.t - t) ? s : best);
+  });
+  window.addEventListener('pointerup', () => { draggingStop = null; });
+  window.addEventListener('pointermove', (ev) => {
+    if (!draggingStop) return;
+    const rect = xferCanvas.getBoundingClientRect();
+    const t = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
+    draggingStop.t = t;
+    rebuildLut();
+    drawXferEditor();
+  });
 
   render();
   window.__viewerState = state; // inspected by Playwright tests
