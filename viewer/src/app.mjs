@@ -2,6 +2,7 @@ import { parseNpy } from './npy.mjs';
 import { identity, multiply, perspective, lookAt, invert } from './mat4.mjs';
 import { modelMatrixFromMeta } from './grid.mjs';
 import { buildTransferLUT, defaultStops } from './transfer.mjs';
+import { orbitToEye, CAMERA_PRESETS } from './camera.mjs';
 
 const VERTEX_SRC = `#version 300 es
 out vec2 vUv;
@@ -189,11 +190,7 @@ export function initViewer(root) {
     gl.clear(gl.COLOR_BUFFER_BIT);
 
     const { yaw, pitch, distance, target } = state.camera;
-    const eye = [
-      target[0] + distance * Math.cos(pitch) * Math.sin(yaw),
-      target[1] + distance * Math.sin(pitch),
-      target[2] + distance * Math.cos(pitch) * Math.cos(yaw),
-    ];
+    const eye = orbitToEye(target, yaw, pitch, distance);
     const view = lookAt(eye, target, [0, 1, 0]);
     const proj = perspective(Math.PI / 4, canvas.width / canvas.height, 0.05, 100);
     const viewProj = multiply(proj, view);
@@ -268,6 +265,34 @@ export function initViewer(root) {
       window.__viewerError = String(err);
     });
   });
+
+  let dragging = false, lastX = 0, lastY = 0;
+  canvas.addEventListener('pointerdown', (ev) => {
+    dragging = true; lastX = ev.clientX; lastY = ev.clientY;
+  });
+  window.addEventListener('pointerup', () => { dragging = false; });
+  window.addEventListener('pointermove', (ev) => {
+    if (!dragging) return;
+    const dx = ev.clientX - lastX, dy = ev.clientY - lastY;
+    lastX = ev.clientX; lastY = ev.clientY;
+    state.camera.yaw += dx * 0.01;
+    state.camera.pitch = Math.max(-1.5, Math.min(1.5, state.camera.pitch + dy * 0.01));
+    render();
+  });
+  canvas.addEventListener('wheel', (ev) => {
+    ev.preventDefault();
+    state.camera.distance = Math.max(0.5, state.camera.distance * (1 + ev.deltaY * 0.001));
+    render();
+  }, { passive: false });
+
+  for (const key of Object.keys(CAMERA_PRESETS)) {
+    const btn = root.querySelector(`#camera-preset-${key}`);
+    btn.addEventListener('click', () => {
+      state.camera.yaw = CAMERA_PRESETS[key].yaw;
+      state.camera.pitch = CAMERA_PRESETS[key].pitch;
+      render();
+    });
+  }
 
   render();
   window.__viewerState = state; // inspected by Playwright tests

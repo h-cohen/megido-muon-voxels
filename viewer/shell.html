@@ -12,6 +12,12 @@
 <div id="app-root">
   <input id="load-run-input" type="file" webkitdirectory multiple
          style="position:absolute;top:8px;left:8px;z-index:2" />
+  <div id="camera-presets" style="position:absolute;top:8px;right:8px;z-index:2">
+    <button id="camera-preset-top">Top</button>
+    <button id="camera-preset-front">Front</button>
+    <button id="camera-preset-side">Side</button>
+    <button id="camera-preset-iso">Iso</button>
+  </div>
   <canvas id="gl-canvas" style="display:block;width:100vw;height:100vh"></canvas>
 </div>
 <script>
