@@ -362,7 +362,13 @@ export function initViewer(root) {
     const metaFile = byName.get('meta.json');
     if (!metaFile) return;
     const secondMeta = JSON.parse(await metaFile.text());
-    if (JSON.stringify(secondMeta.shape) !== JSON.stringify(state.meta.shape)) {
+    // Full grid match, mirroring megido/volexport.py's compare_volumes,
+    // which keys the grid on shape + spacing + origin, not shape alone.
+    const gridMismatch =
+      JSON.stringify(secondMeta.shape) !== JSON.stringify(state.meta.shape) ||
+      secondMeta.spacing_m !== state.meta.spacing_m ||
+      JSON.stringify(secondMeta.origin_m) !== JSON.stringify(state.meta.origin_m);
+    if (gridMismatch) {
       root.querySelector('#delta-verdict').textContent = 'grid mismatch: cannot diff';
       return;
     }
