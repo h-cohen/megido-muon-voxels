@@ -6,6 +6,7 @@ import { buildTransferLUT, defaultStops } from './transfer.mjs';
 import { orbitToEye, CAMERA_PRESETS } from './camera.mjs';
 import { computeHistogram } from './histogram.mjs';
 import { availableLayers } from './layers.mjs';
+import { computeDelta, deltaVerdict } from './delta.mjs';
 
 const VERTEX_SRC = `#version 300 es
 out vec2 vUv;
@@ -288,6 +289,12 @@ export function initViewer(root) {
     const meta = JSON.parse(await metaFile.text());
     state.meta = meta;
 
+    const banner = root.querySelector('#resolution-banner');
+    const res = meta.resolution || {};
+    banner.textContent = res.verdict || '';
+    banner.style.background = res.depth_resolved ? '#2a6' : '#a33';
+    banner.style.color = '#fff';
+
     state.layerData.clear();
     for (const name of meta.layers) {
       const file = byName.get(`${name}.npy`);
@@ -346,6 +353,56 @@ export function initViewer(root) {
     loadRun(Array.from(ev.target.files)).catch((err) => {
       console.error(err);
       window.__viewerError = String(err);
+    });
+  });
+
+  root.querySelector('#load-second-run-input').addEventListener('change', async (ev) => {
+    const files = Array.from(ev.target.files);
+    const byName = new Map(files.map((f) => [f.name, f]));
+    const metaFile = byName.get('meta.json');
+    if (!metaFile) return;
+    const secondMeta = JSON.parse(await metaFile.text());
+    if (JSON.stringify(secondMeta.shape) !== JSON.stringify(state.meta.shape)) {
+      root.querySelector('#delta-verdict').textContent = 'grid mismatch: cannot diff';
+      return;
+    }
+    const volFile = byName.get('volume.npy');
+    const { data: secondVolume } = parseNpy(await readFile(volFile));
+    const primary = state.layerData.get('volume');
+    const delta = computeDelta(primary, secondVolume);
+    state.layerData.set('delta', delta);
+
+    // Percentile scale, not Math.max(...primary): a call-arg spread of the
+    // full 675,840-element real volume overflows the call stack.
+    const abs = new Array(primary.length);
+    for (let i = 0; i < primary.length; i++) abs[i] = Math.abs(primary[i]);
+    abs.sort((a, b) => a - b);
+    const scale = abs[Math.floor(abs.length * 0.95)] || 1e-12;
+    let sumSq = 0;
+    for (let i = 0; i < delta.length; i++) sumSq += delta[i] * delta[i];
+    const rms = Math.sqrt(sumSq / delta.length);
+    root.querySelector('#delta-verdict').textContent =
+      `delta: ${deltaVerdict(rms, scale)} (rms ${rms.toFixed(4)})`;
+
+    const deltaOption = document.createElement('label');
+    deltaOption.style.display = 'block';
+    const radio = document.createElement('input');
+    radio.type = 'radio'; radio.name = 'active-layer'; radio.id = 'layer-delta';
+    radio.addEventListener('change', () => state.setActiveLayer('delta'));
+    deltaOption.appendChild(radio);
+    deltaOption.appendChild(document.createTextNode(' Run delta (B minus A)'));
+    root.querySelector('#layer-panel').appendChild(deltaOption);
+  });
+
+  root.querySelector('#export-png-btn').addEventListener('click', () => {
+    render();
+    canvas.toBlob((blob) => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'megiddo-voxel-view.png';
+      a.click();
+      URL.revokeObjectURL(url);
     });
   });
 
