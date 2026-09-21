@@ -22,7 +22,7 @@ def test_banner_delta_and_export(page, dist_path, run_fixture, tmp_path):
     page.wait_for_selector("#gl-canvas")
 
     page.locator("#load-run-input").set_input_files(str(run_a))
-    page.wait_for_function("() => window.__viewerState && window.__viewerState.meta")
+    page.wait_for_function("() => window.__viewerState && window.__viewerState.ready")
 
     banner_text = page.locator("#resolution-banner").text_content()
     assert "depth NOT resolved" in banner_text
@@ -57,7 +57,7 @@ def test_grid_mismatch_blocks_delta(page, dist_path, run_fixture, tmp_path):
     page.wait_for_selector("#gl-canvas")
 
     page.locator("#load-run-input").set_input_files(str(run_a))
-    page.wait_for_function("() => window.__viewerState && window.__viewerState.meta")
+    page.wait_for_function("() => window.__viewerState && window.__viewerState.ready")
 
     page.locator("#load-second-run-input").set_input_files(str(run_c))
     page.wait_for_function(

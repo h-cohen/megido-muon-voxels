@@ -7,7 +7,7 @@ def test_clip_box_and_plane_change_the_render(page, dist_path, run_fixture):
     # webkitdirectory input; pass the run directory itself (see
     # tests/viewer/test_camera.py for the same pattern).
     page.locator("#load-run-input").set_input_files(str(run_dir))
-    page.wait_for_function("() => window.__viewerState && window.__viewerState.meta")
+    page.wait_for_function("() => window.__viewerState && window.__viewerState.ready")
 
     before = page.evaluate("() => document.querySelector('#gl-canvas').toDataURL()")
     page.locator("#clip-x-max").fill("0.3")

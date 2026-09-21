@@ -10,7 +10,7 @@ def test_camera_presets_change_the_render(page, dist_path, run_fixture):
     # webkitdirectory input; pass the run directory itself (see
     # tests/viewer/test_raymarch.py for the same pattern).
     page.locator("#load-run-input").set_input_files(str(run_dir))
-    page.wait_for_function("() => window.__viewerState && window.__viewerState.meta")
+    page.wait_for_function("() => window.__viewerState && window.__viewerState.ready")
 
     front = page.evaluate("""
         () => { window.__viewerState.camera.yaw = 0; window.__viewerState.camera.pitch = 0;

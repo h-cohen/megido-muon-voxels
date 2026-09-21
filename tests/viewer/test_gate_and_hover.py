@@ -7,7 +7,7 @@ def test_sigma_gate_changes_render_and_hover_shows_a_voxel(page, dist_path, run_
     # webkitdirectory input; pass the run directory itself (see
     # tests/viewer/test_clip.py for the same pattern).
     page.locator("#load-run-input").set_input_files(str(run_dir))
-    page.wait_for_function("() => window.__viewerState && window.__viewerState.meta")
+    page.wait_for_function("() => window.__viewerState && window.__viewerState.ready")
 
     before = page.evaluate("() => document.querySelector('#gl-canvas').toDataURL()")
     page.locator("#sigma-gate-enabled").check()

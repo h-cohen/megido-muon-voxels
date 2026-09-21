@@ -7,7 +7,7 @@ def test_dragging_a_transfer_stop_changes_the_render(page, dist_path, run_fixtur
     # webkitdirectory input; pass the run directory itself (see
     # tests/viewer/test_raymarch.py / test_camera.py for the same pattern).
     page.locator("#load-run-input").set_input_files(str(run_dir))
-    page.wait_for_function("() => window.__viewerState && window.__viewerState.meta")
+    page.wait_for_function("() => window.__viewerState && window.__viewerState.ready")
 
     before = page.evaluate("() => document.querySelector('#gl-canvas').toDataURL()")
     box = page.locator("#xfer-canvas").bounding_box()

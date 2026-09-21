@@ -1,6 +1,6 @@
 import { parseNpy } from './npy.mjs';
 import { identity, multiply, perspective, lookAt, invert } from './mat4.mjs';
-import { modelMatrixFromMeta, worldToVoxel, sampleNearest } from './grid.mjs';
+import { worldToVoxel, sampleNearest } from './grid.mjs';
 import { insideClipBox, insideClipPlane } from './clip.mjs';
 import { buildTransferLUT, defaultStops } from './transfer.mjs';
 import { orbitToEye, CAMERA_PRESETS } from './camera.mjs';
@@ -172,7 +172,6 @@ export function initViewer(root) {
     clipPlaneD: 0,
     sigmaGateEnabled: false,
     sigmaGateValue: 1e9,
-    secondRun: null,
     volumeTex: dummyVolume,
     sigmaTex: dummyVolume,
     lutTex: makeLutTexture(gl, buildTransferLUT(defaultStops())),
@@ -370,6 +369,10 @@ export function initViewer(root) {
     const byName = new Map(files.map((f) => [f.name, f]));
     const metaFile = byName.get('meta.json');
     if (!metaFile) return;
+    if (!state.meta) {
+      root.querySelector('#delta-verdict').textContent = 'load a primary run first';
+      return;
+    }
     const secondMeta = JSON.parse(await metaFile.text());
     // Full grid match, mirroring megido/volexport.py's compare_volumes,
     // which keys the grid on shape + spacing + origin, not shape alone.
