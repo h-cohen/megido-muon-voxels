@@ -76,3 +76,30 @@ test('perspective is invertible and non-degenerate', () => {
   const round = multiply(m, inv);
   assert.ok(matClose(round, identity(), 1e-4));
 });
+
+test('lookAt transforms a general (non-axis-aligned) point correctly', () => {
+  // eye = [3,4,0], center = origin, up = +y. Hand-derived basis:
+  //   zAxis = normalize(eye - center)        = [0.6, 0.8, 0]
+  //   xAxis = normalize(cross(up, zAxis))    = [0, 0, -1]
+  //   yAxis = cross(zAxis, xAxis)            = [-0.8, 0.6, 0]
+  // World point [1,1,1] relative to eye is [-2,-3,1]; dotting with the
+  // basis above gives the expected view-space coordinates below. A
+  // swapped cross product (handedness flip) changes the basis and would
+  // break this assertion, unlike a check that only reads the z row.
+  const m = lookAt([3, 4, 0], [0, 0, 0], [0, 1, 0]);
+  const p = apply(m, [1, 1, 1]);
+  assert.ok(closeTo(p[0], -1) && closeTo(p[1], -0.2) && closeTo(p[2], -3.6));
+});
+
+test('perspective maps the near plane to NDC z=-1 and the far plane to z=+1', () => {
+  // Standard GL convention: a point on the frustum axis at eye-space
+  // z = -near projects to NDC z = -1, and z = -far projects to z = +1.
+  // A sign-flipped out[11] or out[14] would break one or both of these.
+  const near = 0.1;
+  const far = 100;
+  const m = perspective(Math.PI / 4, 1.5, near, far);
+  const atNear = apply(m, [0, 0, -near]);
+  const atFar = apply(m, [0, 0, -far]);
+  assert.ok(closeTo(atNear[2], -1));
+  assert.ok(closeTo(atFar[2], 1));
+});
