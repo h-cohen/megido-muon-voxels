@@ -13,5 +13,4 @@ def test_build_produces_single_html_with_no_export_or_import(tmp_path):
     assert "export const" not in text
     assert "import {" not in text
     assert "parseNpy" in text
-    # Task 3 adds app.mjs (defining initViewer) and re-adds this assertion:
-    # assert 'initViewer(document.body)' in text
+    assert "initViewer(document.body)" in text
