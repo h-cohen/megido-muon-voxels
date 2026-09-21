@@ -18,5 +18,8 @@ Writes `viewer/dist/index.html` and opens it. `--no-open` skips the browser.
 
 ## Using it
 
-"Load run" picks a run directory (e.g. `runs/voxels`) via a directory file
-picker; the viewer reads `meta.json` and every `.npy` file it names.
+"Load run" picks a run directory (e.g. `runs/voxels`, produced by
+`uv run python -m megido.cli reconstruct ...`) via a directory file picker;
+the viewer reads `meta.json` and every `.npy` file it names. The resolution
+banner at the top always shows whether depth is resolved for that run —
+for the current campaign it is not, and the viewer will say so in red.

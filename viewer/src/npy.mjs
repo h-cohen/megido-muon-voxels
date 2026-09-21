@@ -29,15 +29,39 @@ export function parseNpy(buffer) {
     .filter((s) => s.length > 0)
     .map(Number);
 
-  if (dtype !== '<f4' || fortranOrder) {
+  // Every supported dtype is decoded into its native typed array, then
+  // converted to Float32Array: makeVolumeTexture always uploads R32F/FLOAT,
+  // so there is no reason to keep the original width past this point. The
+  // exporter (megido/volexport.py) writes plain counts (e.g. per-voxel view
+  // counts) as smaller integer dtypes for size, not because the viewer wants
+  // integer precision.
+  const TYPED_CTORS = {
+    '<f4': [Float32Array, 4],
+    '<f8': [Float64Array, 8],
+    '<i2': [Int16Array, 2],
+    '<i4': [Int32Array, 4],
+    '|u1': [Uint8Array, 1],
+    '|i1': [Int8Array, 1],
+  };
+
+  if (fortranOrder) {
     throw new Error(
       `unsupported npy dtype/order: descr=${dtype} fortran_order=${fortranOrder} ` +
-      `(this viewer only reads little-endian float32, C-order arrays)`
+      `(this viewer only reads little-endian, C-order arrays)`
     );
   }
+  const entry = TYPED_CTORS[dtype];
+  if (!entry) {
+    throw new Error(
+      `unsupported npy dtype/order: descr=${dtype} fortran_order=${fortranOrder} ` +
+      `(this viewer reads: ${Object.keys(TYPED_CTORS).join(', ')})`
+    );
+  }
+  const [Ctor, itemSize] = entry;
 
   const dataStart = headerStart + headerLen;
   const count = shape.reduce((a, b) => a * b, 1);
-  const data = new Float32Array(buffer.slice(dataStart, dataStart + count * 4));
+  const raw = new Ctor(buffer.slice(dataStart, dataStart + count * itemSize));
+  const data = dtype === '<f4' ? raw : Float32Array.from(raw);
   return { shape, dtype, data };
 }

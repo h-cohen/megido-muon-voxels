@@ -281,6 +281,7 @@ export function initViewer(root) {
   }
 
   async function loadRun(files) {
+    state.ready = false;
     const byName = new Map();
     for (const f of files) byName.set(f.name, f);
 
@@ -295,11 +296,18 @@ export function initViewer(root) {
     banner.style.background = res.depth_resolved ? '#2a6' : '#a33';
     banner.style.color = '#fff';
 
+    // Only layers whose element count matches the volume grid (nx*ny*nz) are
+    // raymarch-able. The exporter also writes lower-dimensional diagnostic
+    // layers (e.g. a 2D backprojection plane) under the same meta.layers
+    // list; those are silently skipped here, not offered as a radio, and
+    // never treated as an error — they are correctly not volume layers.
+    const voxelCount = meta.shape[0] * meta.shape[1] * meta.shape[2];
     state.layerData.clear();
     for (const name of meta.layers) {
       const file = byName.get(`${name}.npy`);
       if (!file) continue;
       const { data } = parseNpy(await readFile(file));
+      if (data.length !== voxelCount) continue;
       state.layerData.set(name, data);
     }
 
@@ -347,6 +355,7 @@ export function initViewer(root) {
     drawHistogram();
     drawXferEditor();
     render();
+    state.ready = true;
   }
 
   fileInput.addEventListener('change', (ev) => {

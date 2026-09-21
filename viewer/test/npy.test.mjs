@@ -32,6 +32,37 @@ test('parseNpy recovers shape and float32 data', () => {
   assert.ok(data instanceof Float32Array);
 });
 
+function makeTypedNpy(descr, shape, values, writeValue, itemSize) {
+  // Same minimal NPY v1.0 writer as makeNpy, parameterized on dtype so it
+  // can write the non-float32 dtypes the real exporter also produces
+  // (e.g. int16 per-voxel view counts).
+  const header = `{'descr': '${descr}', 'fortran_order': False, 'shape': (${shape.join(', ')}${shape.length === 1 ? ',' : ''}), }`;
+  const magic = [0x93, 0x4e, 0x55, 0x4d, 0x50, 0x59, 1, 0];
+  const preLen = magic.length + 2;
+  let padded = header;
+  while ((preLen + padded.length + 1) % 16 !== 0) padded += ' ';
+  padded += '\n';
+  const headerBytes = new TextEncoder().encode(padded);
+  const buf = new ArrayBuffer(preLen + headerBytes.length + values.length * itemSize);
+  const view = new DataView(buf);
+  magic.forEach((b, i) => view.setUint8(i, b));
+  view.setUint16(8, headerBytes.length, true);
+  new Uint8Array(buf, preLen, headerBytes.length).set(headerBytes);
+  const dataStart = preLen + headerBytes.length;
+  values.forEach((v, i) => writeValue(view, dataStart + i * itemSize, v));
+  return buf;
+}
+
+test('parseNpy converts int16 data to Float32Array', () => {
+  const buf = makeTypedNpy('<i2', [2, 2], [1, -2, 300, -32768],
+    (view, offset, v) => view.setInt16(offset, v, true), 2);
+  const { shape, dtype, data } = parseNpy(buf);
+  assert.deepEqual(shape, [2, 2]);
+  assert.equal(dtype, '<i2');
+  assert.ok(data instanceof Float32Array);
+  assert.deepEqual(Array.from(data), [1, -2, 300, -32768]);
+});
+
 test('parseNpy rejects fortran-ordered arrays', () => {
   const buf = makeNpy([2, 2], [1, 2, 3, 4]);
   const bytes = new Uint8Array(buf);

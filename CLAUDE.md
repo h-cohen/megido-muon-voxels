@@ -67,8 +67,11 @@ Built in four phases, each with its own spec-referenced plan under
 - **Phase 2** (done): S2 — the baseline solve. This is the project core.
 - **Phase 3** (in progress): S3, S4 — tilt-aware forward model, voxel inversion,
   uncertainty.
-- **Phase 4** (not started): S5 — the viewer, rebuilt from scratch (GPU
-  raymarching; the cafeteria viewer is reference only).
+- **Phase 4** (done): S5 — the viewer. `viewer/src/*.mjs` (WebGL2
+  raymarching, zero runtime dependencies) built by `megido/viewerbuild.py`
+  into one self-contained `viewer/dist/index.html`. Loads any run directory
+  at runtime via a local file picker; never bakes data into the shipped
+  page.
 
 ## Repo conventions — non-negotiable
 
@@ -191,5 +194,6 @@ uv run pytest -q                                   # the suite
 uv run python -m megido.cli validate --exposure P0 # S0-det falsification checks
 uv run python -m megido.cli ingest                 # S0-exp + S1 for every exposure
 uv run python -m megido.cli solve                  # S2 baseline + opacity
+uv run python -m megido.cli view                  # Phase 4 viewer: build + open
 # Phase 3 (in progress): reconstruct / export / compare subcommands
 ```
