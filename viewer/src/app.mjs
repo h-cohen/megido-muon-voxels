@@ -1,6 +1,7 @@
 import { parseNpy } from './npy.mjs';
 import { identity, multiply, perspective, lookAt, invert } from './mat4.mjs';
-import { modelMatrixFromMeta } from './grid.mjs';
+import { modelMatrixFromMeta, worldToVoxel, sampleNearest } from './grid.mjs';
+import { insideClipBox, insideClipPlane } from './clip.mjs';
 import { buildTransferLUT, defaultStops } from './transfer.mjs';
 import { orbitToEye, CAMERA_PRESETS } from './camera.mjs';
 import { computeHistogram } from './histogram.mjs';
@@ -432,6 +433,79 @@ export function initViewer(root) {
   root.querySelector('#clip-plane-d').addEventListener('input', (ev) => {
     state.clipPlaneD = parseFloat(ev.target.value);
     render();
+  });
+
+  root.querySelector('#sigma-gate-enabled').addEventListener('change', (ev) => {
+    state.sigmaGateEnabled = ev.target.checked;
+    render();
+  });
+  root.querySelector('#sigma-gate-value').addEventListener('input', (ev) => {
+    const frac = parseFloat(ev.target.value);
+    const sigmaData = state.layerData.get('sigma');
+    const max = sigmaData ? Math.max(...sigmaData) : 1;
+    state.sigmaGateValue = frac * max;
+    render();
+  });
+
+  function castHoverRay(clientX, clientY) {
+    if (!state.meta) return null;
+    const rect = canvas.getBoundingClientRect();
+    const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
+    const ndcY = -(((clientY - rect.top) / rect.height) * 2 - 1);
+
+    const { yaw, pitch, distance, target } = state.camera;
+    const eye = orbitToEye(target, yaw, pitch, distance);
+    const view = lookAt(eye, target, [0, 1, 0]);
+    const proj = perspective(Math.PI / 4, canvas.width / canvas.height, 0.05, 100);
+    const invViewProj = invert(multiply(proj, view));
+    if (!invViewProj) return null;
+
+    function unproject(z) {
+      const clip = [ndcX, ndcY, z, 1];
+      const m = invViewProj;
+      const w = m[3] * clip[0] + m[7] * clip[1] + m[11] * clip[2] + m[15] * clip[3];
+      return [
+        (m[0] * clip[0] + m[4] * clip[1] + m[8] * clip[2] + m[12] * clip[3]) / w,
+        (m[1] * clip[0] + m[5] * clip[1] + m[9] * clip[2] + m[13] * clip[3]) / w,
+        (m[2] * clip[0] + m[6] * clip[1] + m[10] * clip[2] + m[14] * clip[3]) / w,
+      ];
+    }
+    const nearP = unproject(-1), farP = unproject(1);
+    const dir = [farP[0] - nearP[0], farP[1] - nearP[1], farP[2] - nearP[2]];
+    const len = Math.hypot(...dir);
+    const step = [dir[0] / len, dir[1] / len, dir[2] / len];
+    const data = state.layerData.get(state.activeLayer);
+    if (!data) return null;
+
+    const steps = 200;
+    const stepLen = len / steps;
+    for (let s = 0; s < steps; s++) {
+      const world = [nearP[0] + step[0] * stepLen * s,
+                     nearP[1] + step[1] * stepLen * s,
+                     nearP[2] + step[2] * stepLen * s];
+      const { min, extent } = worldBounds();
+      const tex = [
+        (world[0] - min[0]) / extent[0],
+        (world[1] - min[1]) / extent[1],
+        (world[2] - min[2]) / extent[2],
+      ];
+      if (!insideClipBox(tex, state.clipMin, state.clipMax)) continue;
+      if (state.clipPlaneEnabled && !insideClipPlane(tex, state.clipPlaneNormal, state.clipPlaneD)) continue;
+      const [i, j, k] = worldToVoxel(world, state.meta);
+      const value = sampleNearest(data, state.meta.shape, i, j, k);
+      if (!Number.isNaN(value) && value > (state.window ? state.window[0] : 0)) {
+        return { i: Math.round(i), j: Math.round(j), k: Math.round(k), value };
+      }
+    }
+    return null;
+  }
+
+  canvas.addEventListener('pointermove', (ev) => {
+    const hit = castHoverRay(ev.clientX, ev.clientY);
+    const el = root.querySelector('#hover-readout');
+    el.textContent = hit
+      ? `voxel (${hit.i}, ${hit.j}, ${hit.k})  value ${hit.value.toFixed(4)}`
+      : '';
   });
 
   render();
