@@ -230,8 +230,50 @@ export function initViewer(root) {
     gl.uniform1i(uniforms.uTransferLUT, 2);
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+    drawGizmo();
   }
   state.render = render;
+
+  // Axis-orientation gizmo (bottom-left): projects the three world axes
+  // into view space using the SAME yaw/pitch as render()'s camera, so the
+  // triad always matches what's on screen. Distance/target don't affect
+  // direction, so we reuse orbitToEye/lookAt with target=[0,0,0],
+  // distance=1 purely to get the rotation basis.
+  function drawGizmo() {
+    const gizmoCanvas = root.querySelector('#gizmo-canvas');
+    if (!gizmoCanvas) return;
+    const ctx = gizmoCanvas.getContext('2d');
+    const w = gizmoCanvas.width, h = gizmoCanvas.height;
+    ctx.clearRect(0, 0, w, h);
+    const cx = w / 2, cy = h / 2, r = Math.min(w, h) * 0.32;
+
+    const { yaw, pitch } = state.camera;
+    const eye = orbitToEye([0, 0, 0], yaw, pitch, 1);
+    const view = lookAt(eye, [0, 0, 0], [0, 1, 0]);
+    // view[0..2] = view-space coords of world X axis, view[4..6] of world
+    // Y, view[8..10] of world Z (see mat4.mjs lookAt column layout).
+    const axes = [
+      { label: 'X', color: '#e5484d', dx: view[0], dy: view[1] },
+      { label: 'Y', color: '#3fb950', dx: view[4], dy: view[5] },
+      { label: 'Z', color: '#4d9de5', dx: view[8], dy: view[9] },
+    ];
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const axis of axes) {
+      // Canvas y grows downward; view-space y grows upward.
+      const ex = cx + axis.dx * r, ey = cy - axis.dy * r;
+      ctx.strokeStyle = axis.color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(ex, ey);
+      ctx.stroke();
+      ctx.fillStyle = axis.color;
+      ctx.fillText(axis.label, cx + axis.dx * (r + 10), cy - axis.dy * (r + 10));
+    }
+  }
+  state.drawGizmo = drawGizmo;
 
   function rebuildLut() {
     gl.deleteTexture(state.lutTex);
@@ -269,7 +311,38 @@ export function initViewer(root) {
     if (readout) {
       readout.textContent = `${state.window[0].toFixed(3)} – ${state.window[1].toFixed(3)} 1/m`;
     }
+    drawLegend();
   }
+
+  // Colorbar legend (bottom-right): fills #legend-canvas with the current
+  // transfer LUT and labels #legend-ticks with the active window's lo/mid/hi.
+  // Called from drawHistogram()/drawXferEditor() so it stays in sync with
+  // every place the LUT or window changes (colormap, window drag, layer
+  // switch, initial load).
+  function drawLegend() {
+    const canvas = root.querySelector('#legend-canvas');
+    const ticksEl = root.querySelector('#legend-ticks');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const lut = buildTransferLUT(state.transferStops, canvas.width);
+    const img = ctx.createImageData(canvas.width, canvas.height);
+    for (let x = 0; x < canvas.width; x++) {
+      for (let y = 0; y < canvas.height; y++) {
+        const idx = (y * canvas.width + x) * 4;
+        img.data[idx] = lut[x * 4]; img.data[idx + 1] = lut[x * 4 + 1];
+        img.data[idx + 2] = lut[x * 4 + 2]; img.data[idx + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    if (ticksEl) {
+      const w = state.window || [0, 1];
+      const mid = (w[0] + w[1]) / 2;
+      const unit = state.activeLayer === 'volume' ? ' 1/m' : '';
+      const fmt = (v) => v.toFixed(3) + unit;
+      ticksEl.textContent = `${fmt(w[0])}  ${fmt(mid)}  ${fmt(w[1])}`;
+    }
+  }
+  state.drawLegend = drawLegend;
 
   function drawXferEditor() {
     const canvas = root.querySelector('#xfer-canvas');
@@ -288,6 +361,7 @@ export function initViewer(root) {
     for (const s of state.transferStops) {
       ctx.fillRect(s.t * canvas.width - 2, 0, 4, canvas.height);
     }
+    drawLegend();
   }
   state.drawHistogram = drawHistogram;
   state.drawXferEditor = drawXferEditor;
@@ -676,6 +750,10 @@ export function initViewer(root) {
   canvas.addEventListener('pointermove', (ev) => {
     const hit = castHoverRay(ev.clientX, ev.clientY);
     const el = root.querySelector('#hover-readout');
+    const wrapRect = root.querySelector('#canvas-wrap').getBoundingClientRect();
+    el.style.left = (ev.clientX - wrapRect.left) + 'px';
+    el.style.top = (ev.clientY - wrapRect.top) + 'px';
+    el.hidden = !hit;
     el.textContent = hit
       ? `voxel (${hit.i}, ${hit.j}, ${hit.k})  value ${hit.value.toFixed(4)}`
       : '';

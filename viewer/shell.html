@@ -90,12 +90,16 @@
     color:var(--warn);border:1px solid var(--warn);background:var(--warn-bg);
   }
 
-  #overlay-gizmo{position:absolute;top:10px;right:10px;z-index:4;pointer-events:none;}
-  #overlay-legend{position:absolute;bottom:10px;right:10px;z-index:4;pointer-events:none;}
-  #overlay-hover{position:absolute;bottom:10px;left:10px;z-index:4;}
+  #overlay-gizmo{position:absolute;left:12px;bottom:12px;z-index:5;pointer-events:none;}
+  #overlay-legend{
+    position:absolute;right:12px;bottom:12px;z-index:5;pointer-events:none;
+    background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:6px;
+  }
+  #overlay-hover{position:absolute;inset:0;z-index:6;pointer-events:none;}
   #hover-readout{
-    background:var(--panel);border:1px solid var(--line);color:var(--text);
-    padding:4px 8px;border-radius:var(--radius);
+    position:absolute;background:var(--panel-2);border:1px solid var(--line);color:var(--text);
+    border-radius:6px;padding:2px 6px;transform:translate(12px,12px);
   }
   #overlay-onboarding{position:absolute;inset:0;z-index:3;pointer-events:none;}
 </style>
@@ -198,9 +202,12 @@
   <div id="canvas-wrap">
     <canvas id="gl-canvas"></canvas>
     <div id="overlay-banner"><div id="resolution-banner"></div></div>
-    <div id="overlay-gizmo"></div>
-    <div id="overlay-legend"></div>
-    <div id="overlay-hover"><div id="hover-readout" class="mono"></div></div>
+    <div id="overlay-gizmo"><canvas id="gizmo-canvas" width="80" height="80"></canvas></div>
+    <div id="overlay-legend">
+      <canvas id="legend-canvas" width="200" height="24"></canvas>
+      <div id="legend-ticks" class="mono dim"></div>
+    </div>
+    <div id="overlay-hover"><div id="hover-readout" class="mono" hidden></div></div>
     <div id="overlay-onboarding"></div>
     <div id="overlay-shortcuts" hidden></div>
   </div>
