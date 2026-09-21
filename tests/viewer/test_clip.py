@@ -14,6 +14,7 @@ def test_clip_box_and_plane_change_the_render(page, dist_path, run_fixture):
     page.locator("#clip-x-max").dispatch_event("input")
     after_clip = page.evaluate("() => document.querySelector('#gl-canvas').toDataURL()")
     assert before != after_clip
+    assert page.locator("#clip-x-max-val").text_content() == "0.3"
 
     page.locator("#clip-plane-enabled").check()
     after_plane = page.evaluate("() => document.querySelector('#gl-canvas').toDataURL()")

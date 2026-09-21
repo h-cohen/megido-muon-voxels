@@ -52,6 +52,11 @@
   }
   label{display:block;margin:4px 0;color:var(--text-dim);}
 
+  .clip-row{display:flex;align-items:center;gap:6px;margin:4px 0;}
+  .clip-row .axis-name{flex:0 0 auto;width:1em;color:var(--text-dim);}
+  .clip-row input[type="range"]{flex:1 1 auto;width:auto;min-width:0;}
+  .val{flex:0 0 auto;min-width:3.4em;text-align:right;color:var(--text);}
+
   .dock-section{border-bottom:1px solid var(--line);}
   .section-header{
     padding:10px 12px;cursor:pointer;user-select:none;
@@ -129,12 +134,27 @@
       <div class="section-header">Clip &amp; slice</div>
       <div class="section-body">
         <div class="dim">Clip box</div>
-        <label>x min <input id="clip-x-min" type="range" min="0" max="1" step="0.01" value="0"></label>
-        <label>x max <input id="clip-x-max" type="range" min="0" max="1" step="0.01" value="1"></label>
-        <label>y min <input id="clip-y-min" type="range" min="0" max="1" step="0.01" value="0"></label>
-        <label>y max <input id="clip-y-max" type="range" min="0" max="1" step="0.01" value="1"></label>
-        <label>z min <input id="clip-z-min" type="range" min="0" max="1" step="0.01" value="0"></label>
-        <label>z max <input id="clip-z-max" type="range" min="0" max="1" step="0.01" value="1"></label>
+        <div class="clip-row">
+          <span class="axis-name">x</span>
+          <input id="clip-x-min" type="range" min="0" max="1" step="0.01" value="0">
+          <span class="mono val" id="clip-x-min-val">0.00</span>
+          <input id="clip-x-max" type="range" min="0" max="1" step="0.01" value="1">
+          <span class="mono val" id="clip-x-max-val">1.00</span>
+        </div>
+        <div class="clip-row">
+          <span class="axis-name">y</span>
+          <input id="clip-y-min" type="range" min="0" max="1" step="0.01" value="0">
+          <span class="mono val" id="clip-y-min-val">0.00</span>
+          <input id="clip-y-max" type="range" min="0" max="1" step="0.01" value="1">
+          <span class="mono val" id="clip-y-max-val">1.00</span>
+        </div>
+        <div class="clip-row">
+          <span class="axis-name">z</span>
+          <input id="clip-z-min" type="range" min="0" max="1" step="0.01" value="0">
+          <span class="mono val" id="clip-z-min-val">0.00</span>
+          <input id="clip-z-max" type="range" min="0" max="1" step="0.01" value="1">
+          <span class="mono val" id="clip-z-max-val">1.00</span>
+        </div>
         <div class="dim">Slice</div>
         <select id="slice-axis">
           <option value="none">none</option>
@@ -145,7 +165,11 @@
         <input id="slice-pos" type="range" min="0" max="1" step="0.01" value="0.5">
         <div class="dim">Clip plane</div>
         <label><input id="clip-plane-enabled" type="checkbox" style="width:auto"> enabled</label>
-        <label>d <input id="clip-plane-d" type="range" min="-0.87" max="0.87" step="0.01" value="0"></label>
+        <div class="clip-row">
+          <span class="axis-name">d</span>
+          <input id="clip-plane-d" type="range" min="-0.87" max="0.87" step="0.01" value="0">
+          <span class="mono val" id="clip-plane-d-val">0.00</span>
+        </div>
       </div>
     </section>
 

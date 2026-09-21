@@ -560,12 +560,20 @@ export function initViewer(root) {
 
   const axes = { x: 0, y: 1, z: 2 };
   for (const axis of Object.keys(axes)) {
-    root.querySelector(`#clip-${axis}-min`).addEventListener('input', (ev) => {
+    const minInput = root.querySelector(`#clip-${axis}-min`);
+    const minVal = root.querySelector(`#clip-${axis}-min-val`);
+    minVal.textContent = minInput.value;
+    minInput.addEventListener('input', (ev) => {
       state.clipMin[axes[axis]] = parseFloat(ev.target.value);
+      minVal.textContent = ev.target.value;
       render();
     });
-    root.querySelector(`#clip-${axis}-max`).addEventListener('input', (ev) => {
+    const maxInput = root.querySelector(`#clip-${axis}-max`);
+    const maxVal = root.querySelector(`#clip-${axis}-max-val`);
+    maxVal.textContent = maxInput.value;
+    maxInput.addEventListener('input', (ev) => {
       state.clipMax[axes[axis]] = parseFloat(ev.target.value);
+      maxVal.textContent = ev.target.value;
       render();
     });
   }
@@ -592,8 +600,12 @@ export function initViewer(root) {
     state.clipPlaneEnabled = ev.target.checked;
     render();
   });
-  root.querySelector('#clip-plane-d').addEventListener('input', (ev) => {
+  const clipPlaneDInput = root.querySelector('#clip-plane-d');
+  const clipPlaneDVal = root.querySelector('#clip-plane-d-val');
+  clipPlaneDVal.textContent = parseFloat(clipPlaneDInput.value).toFixed(2);
+  clipPlaneDInput.addEventListener('input', (ev) => {
     state.clipPlaneD = parseFloat(ev.target.value);
+    clipPlaneDVal.textContent = state.clipPlaneD.toFixed(2);
     render();
   });
 
