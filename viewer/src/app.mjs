@@ -2,12 +2,13 @@ import { parseNpy } from './npy.mjs';
 import { identity, multiply, perspective, lookAt, invert } from './mat4.mjs';
 import { worldToVoxel, sampleNearest } from './grid.mjs';
 import { insideClipBox, insideClipPlane } from './clip.mjs';
-import { buildTransferLUT, defaultStops } from './transfer.mjs';
+import { buildTransferLUT } from './transfer.mjs';
 import { orbitToEye, CAMERA_PRESETS } from './camera.mjs';
 import { computeHistogram, robustWindow } from './histogram.mjs';
 import { availableLayers } from './layers.mjs';
 import { computeDelta, deltaVerdict } from './delta.mjs';
 import { initDock } from './dock.mjs';
+import { COLORMAP_NAMES, colormapStops } from './colormap.mjs';
 
 const VERTEX_SRC = `#version 300 es
 out vec2 vUv;
@@ -165,7 +166,7 @@ export function initViewer(root) {
     activeLayer: null,
     gl, program, uniforms,
     camera: { yaw: 0.6, pitch: 0.5, distance: 3, target: [0, 0, 0] },
-    transferStops: defaultStops(),
+    transferStops: colormapStops('viridis'),
     clipMin: [0, 0, 0],
     clipMax: [1, 1, 1],
     clipPlaneEnabled: false,
@@ -175,7 +176,7 @@ export function initViewer(root) {
     sigmaGateValue: 1e9,
     volumeTex: dummyVolume,
     sigmaTex: dummyVolume,
-    lutTex: makeLutTexture(gl, buildTransferLUT(defaultStops())),
+    lutTex: makeLutTexture(gl, buildTransferLUT(colormapStops('viridis'))),
   };
 
   function worldBounds() {
@@ -642,5 +643,26 @@ export function initViewer(root) {
 
   render();
   initDock(root);
+
+  const cmapSel = root.querySelector('#colormap-select');
+  for (const name of COLORMAP_NAMES) {
+    const opt = document.createElement('option');
+    opt.value = name; opt.textContent = name;
+    cmapSel.appendChild(opt);
+  }
+  let lastCmap = 'viridis';
+  try { lastCmap = localStorage.getItem('megido-viewer:colormap') || 'viridis'; } catch { /* ignore */ }
+  cmapSel.value = COLORMAP_NAMES.includes(lastCmap) ? lastCmap : 'viridis';
+  function applyColormap(name) {
+    state.transferStops = colormapStops(name);
+    try { localStorage.setItem('megido-viewer:colormap', name); } catch { /* ignore */ }
+    if (state.drawXferEditor) state.drawXferEditor();
+    gl.deleteTexture(state.lutTex);
+    state.lutTex = makeLutTexture(gl, buildTransferLUT(state.transferStops));
+    render();
+  }
+  cmapSel.addEventListener('change', (ev) => applyColormap(ev.target.value));
+  applyColormap(cmapSel.value);
+
   window.__viewerState = state; // inspected by Playwright tests
 }

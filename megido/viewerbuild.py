@@ -22,6 +22,7 @@ _MODULE_ORDER = [
     "layers.mjs",
     "delta.mjs",
     "dock.mjs",
+    "colormap.mjs",
     "app.mjs",
 ]
 
