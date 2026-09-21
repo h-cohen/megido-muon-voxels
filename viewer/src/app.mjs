@@ -395,6 +395,45 @@ export function initViewer(root) {
     drawXferEditor();
   });
 
+  const axes = { x: 0, y: 1, z: 2 };
+  for (const axis of Object.keys(axes)) {
+    root.querySelector(`#clip-${axis}-min`).addEventListener('input', (ev) => {
+      state.clipMin[axes[axis]] = parseFloat(ev.target.value);
+      render();
+    });
+    root.querySelector(`#clip-${axis}-max`).addEventListener('input', (ev) => {
+      state.clipMax[axes[axis]] = parseFloat(ev.target.value);
+      render();
+    });
+  }
+
+  root.querySelector('#slice-axis').addEventListener('change', updateSlice);
+  root.querySelector('#slice-pos').addEventListener('input', updateSlice);
+  function updateSlice() {
+    const axis = root.querySelector('#slice-axis').value;
+    const pos = parseFloat(root.querySelector('#slice-pos').value);
+    if (axis === 'none') {
+      state.clipMin = [0, 0, 0];
+      state.clipMax = [1, 1, 1];
+    } else {
+      const idx = axes[axis];
+      const half = 0.02;
+      state.clipMin = [0, 0, 0]; state.clipMax = [1, 1, 1];
+      state.clipMin[idx] = Math.max(0, pos - half);
+      state.clipMax[idx] = Math.min(1, pos + half);
+    }
+    render();
+  }
+
+  root.querySelector('#clip-plane-enabled').addEventListener('change', (ev) => {
+    state.clipPlaneEnabled = ev.target.checked;
+    render();
+  });
+  root.querySelector('#clip-plane-d').addEventListener('input', (ev) => {
+    state.clipPlaneD = parseFloat(ev.target.value);
+    render();
+  });
+
   render();
   window.__viewerState = state; // inspected by Playwright tests
 }
