@@ -7,6 +7,7 @@ import { orbitToEye, CAMERA_PRESETS } from './camera.mjs';
 import { computeHistogram, robustWindow } from './histogram.mjs';
 import { availableLayers } from './layers.mjs';
 import { computeDelta, deltaVerdict } from './delta.mjs';
+import { initDock } from './dock.mjs';
 
 const VERTEX_SRC = `#version 300 es
 out vec2 vUv;
@@ -292,8 +293,9 @@ export function initViewer(root) {
     const banner = root.querySelector('#resolution-banner');
     const res = meta.resolution || {};
     banner.textContent = res.verdict || '';
-    banner.style.background = res.depth_resolved ? '#2a6' : '#a33';
-    banner.style.color = '#fff';
+    banner.classList.toggle('not-resolved', !res.depth_resolved);
+    const runNameEl = root.querySelector('#run-name');
+    if (runNameEl) runNameEl.textContent = meta.run || '';
 
     // Only layers whose element count matches the volume grid (nx*ny*nz) are
     // raymarch-able. The exporter also writes lower-dimensional diagnostic
@@ -639,5 +641,6 @@ export function initViewer(root) {
   });
 
   render();
+  initDock(root);
   window.__viewerState = state; // inspected by Playwright tests
 }

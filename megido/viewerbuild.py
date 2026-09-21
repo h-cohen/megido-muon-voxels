@@ -21,6 +21,7 @@ _MODULE_ORDER = [
     "camera.mjs",
     "layers.mjs",
     "delta.mjs",
+    "dock.mjs",
     "app.mjs",
 ]
 

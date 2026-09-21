@@ -4,56 +4,179 @@
 <meta charset="utf-8" />
 <title>Megiddo voxel viewer</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #111; color: #eee;
-               font: 13px system-ui, sans-serif; }
+  :root{
+    --bg:#0b0d10; --panel:#14181d; --panel-2:#1a1f26; --line:#232a31;
+    --text:#e6edf3; --text-dim:#9fb0bd; --accent:#2dd4bf; --accent-dim:#1c8b7f;
+    --warn:#e5484d; --warn-bg:#2a1113; --radius:8px; --gap:10px;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:13px/1.45 var(--sans);}
+  *{box-sizing:border-box;}
+  .mono{font-family:var(--mono);font-variant-numeric:tabular-nums;}
+  .dim{color:var(--text-dim);}
+  :focus-visible{outline:2px solid var(--accent);}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;}}
+
+  #app-root{display:flex;height:100%;}
+
+  /* ---- left dock ---- */
+  #dock{
+    width:300px;flex:0 0 300px;background:var(--panel);
+    border-right:1px solid var(--line);overflow-y:auto;
+    display:flex;flex-direction:column;
+  }
+  #dock-header{
+    padding:12px;border-bottom:1px solid var(--line);
+    display:flex;flex-direction:column;gap:6px;
+  }
+  #app-title{font-weight:600;letter-spacing:.02em;}
+  #run-name{min-height:1em;}
+  .row{display:flex;gap:6px;flex-wrap:wrap;}
+  .btn{
+    display:inline-block;padding:5px 10px;border-radius:var(--radius);
+    border:1px solid var(--line);background:var(--panel-2);color:var(--text);
+    font-size:12px;cursor:pointer;transition:background 120ms,border-color 120ms;
+  }
+  .btn:hover{border-color:var(--accent-dim);}
+  button{
+    font:inherit;color:var(--text);background:var(--panel-2);
+    border:1px solid var(--line);border-radius:var(--radius);
+    padding:5px 10px;cursor:pointer;transition:background 120ms,border-color 120ms;
+  }
+  button:hover{border-color:var(--accent-dim);}
+  input[type="range"]{width:100%;accent-color:var(--accent);}
+  select{
+    font:inherit;color:var(--text);background:var(--panel-2);
+    border:1px solid var(--line);border-radius:var(--radius);padding:3px 6px;
+  }
+  label{display:block;margin:4px 0;color:var(--text-dim);}
+
+  .dock-section{border-bottom:1px solid var(--line);}
+  .section-header{
+    padding:10px 12px;cursor:pointer;user-select:none;
+    display:flex;align-items:center;justify-content:space-between;
+    text-transform:uppercase;font-size:11px;letter-spacing:.08em;
+    color:var(--text-dim);font-variant-caps:small-caps;
+    transition:color 120ms;
+  }
+  .section-header:hover{color:var(--text);}
+  .section-header::after{
+    content:"\25BE";display:inline-block;transition:transform 120ms;
+  }
+  .dock-section[data-open="false"] .section-header::after{transform:rotate(-90deg);}
+  .dock-section[data-open="false"] .section-body{display:none;}
+  .section-body{padding:4px 12px 12px;}
+
+  /* ---- right canvas area ---- */
+  #canvas-wrap{position:relative;flex:1 1 auto;min-width:0;}
+  #gl-canvas{display:block;width:100%;height:100%;}
+
+  #overlay-banner{
+    position:absolute;top:10px;left:50%;transform:translateX(-50%);
+    z-index:5;pointer-events:none;
+  }
+  #resolution-banner{
+    display:inline-block;padding:4px 12px;border-radius:999px;
+    font-weight:600;max-width:60ch;background:var(--panel);
+    border:1px solid var(--line);color:var(--text);
+  }
+  #resolution-banner.not-resolved{
+    color:var(--warn);border:1px solid var(--warn);background:var(--warn-bg);
+  }
+
+  #overlay-gizmo{position:absolute;top:10px;right:10px;z-index:4;pointer-events:none;}
+  #overlay-legend{position:absolute;bottom:10px;right:10px;z-index:4;pointer-events:none;}
+  #overlay-hover{position:absolute;bottom:10px;left:10px;z-index:4;}
+  #hover-readout{
+    background:var(--panel);border:1px solid var(--line);color:var(--text);
+    padding:4px 8px;border-radius:var(--radius);
+  }
+  #overlay-onboarding{position:absolute;inset:0;z-index:3;pointer-events:none;}
 </style>
 </head>
 <body>
 <div id="app-root">
-  <div id="resolution-banner" style="position:absolute;top:0;left:0;right:0;z-index:3;padding:6px 12px;font-weight:bold;text-align:center;pointer-events:none"></div>
-  <input id="load-run-input" type="file" webkitdirectory multiple
-         style="position:absolute;top:8px;left:8px;z-index:2" />
-  <input id="load-second-run-input" type="file" webkitdirectory multiple
-         style="position:absolute;top:36px;left:8px;z-index:2" />
-  <div id="delta-verdict" style="position:absolute;top:36px;left:220px;z-index:2;color:#eee"></div>
-  <button id="export-png-btn" style="position:absolute;bottom:8px;right:8px;z-index:4">Export PNG</button>
-  <div id="camera-presets" style="position:absolute;top:8px;right:8px;z-index:2">
-    <button id="camera-preset-top">Top</button>
-    <button id="camera-preset-front">Front</button>
-    <button id="camera-preset-side">Side</button>
-    <button id="camera-preset-iso">Iso</button>
-  </div>
-  <div id="layer-panel" style="position:absolute;top:48px;right:8px;z-index:2;background:#000a;padding:6px;color:#eee"></div>
-  <div id="clip-panel" style="position:absolute;top:48px;left:8px;z-index:2;background:#000a;padding:6px;color:#eee;max-width:230px;width:230px;box-sizing:border-box">
-    <div>Clip box</div>
-    <label style="display:block">x min <input id="clip-x-min" type="range" min="0" max="1" step="0.01" value="0" /></label>
-    <label style="display:block">x max <input id="clip-x-max" type="range" min="0" max="1" step="0.01" value="1" /></label>
-    <label style="display:block">y min <input id="clip-y-min" type="range" min="0" max="1" step="0.01" value="0" /></label>
-    <label style="display:block">y max <input id="clip-y-max" type="range" min="0" max="1" step="0.01" value="1" /></label>
-    <label style="display:block">z min <input id="clip-z-min" type="range" min="0" max="1" step="0.01" value="0" /></label>
-    <label style="display:block">z max <input id="clip-z-max" type="range" min="0" max="1" step="0.01" value="1" /></label>
-    <div>Slice</div>
-    <select id="slice-axis">
-      <option value="none">none</option>
-      <option value="x">x</option>
-      <option value="y">y</option>
-      <option value="z">z</option>
-    </select>
-    <input id="slice-pos" type="range" min="0" max="1" step="0.01" value="0.5" style="display:block;width:100%" />
-    <div>Clip plane</div>
-    <label style="display:block"><input id="clip-plane-enabled" type="checkbox" /> enabled</label>
-    <label style="display:block">d <input id="clip-plane-d" type="range" min="-0.87" max="0.87" step="0.01" value="0" /></label>
-    <div>Uncertainty gate</div>
-    <label style="display:block"><input id="sigma-gate-enabled" type="checkbox" /> hide sigma above</label>
-    <input id="sigma-gate-value" type="range" min="0" max="1" step="0.01" value="1" style="display:block;width:100%" />
-  </div>
-  <div id="hover-readout" style="position:absolute;bottom:180px;left:8px;z-index:2;background:#000a;color:#eee;padding:4px 8px;font-family:monospace"></div>
-  <canvas id="gl-canvas" style="display:block;width:100vw;height:100vh"></canvas>
-  <div id="transfer-panel" style="position:absolute;bottom:8px;left:8px;right:8px;z-index:2;background:#000a;padding:6px">
-    <canvas id="xfer-canvas" width="512" height="40" style="width:100%;height:28px;display:block"></canvas>
-    <canvas id="histogram-canvas" width="512" height="60" style="width:100%;height:72px;display:block"></canvas>
-    <label>Window lo <input id="window-lo" type="range" min="0" max="1" step="0.001" value="0" /></label>
-    <label>Window hi <input id="window-hi" type="range" min="0" max="1" step="0.001" value="1" /></label>
+  <aside id="dock">
+    <header id="dock-header">
+      <div id="app-title">Megiddo &middot; muon voxels</div>
+      <div id="run-name" class="mono dim"></div>
+      <div class="row">
+        <label class="btn">Load run<input id="load-run-input" type="file" webkitdirectory multiple hidden></label>
+        <label class="btn">Load compare<input id="load-second-run-input" type="file" webkitdirectory multiple hidden></label>
+      </div>
+      <div id="delta-verdict" class="mono dim"></div>
+    </header>
+
+    <section class="dock-section" data-section="sec-layers">
+      <div class="section-header">Layers</div>
+      <div class="section-body"><div id="layer-panel"></div></div>
+    </section>
+
+    <section class="dock-section" data-section="sec-transfer">
+      <div class="section-header">Transfer</div>
+      <div class="section-body">
+        <canvas id="xfer-canvas" width="512" height="40" style="width:100%;height:28px;display:block"></canvas>
+        <canvas id="histogram-canvas" width="512" height="60" style="width:100%;height:72px;display:block"></canvas>
+        <label>Window lo <input id="window-lo" type="range" min="0" max="1" step="0.001" value="0"></label>
+        <label>Window hi <input id="window-hi" type="range" min="0" max="1" step="0.001" value="1"></label>
+      </div>
+    </section>
+
+    <section class="dock-section" data-section="sec-clip">
+      <div class="section-header">Clip &amp; slice</div>
+      <div class="section-body">
+        <div class="dim">Clip box</div>
+        <label>x min <input id="clip-x-min" type="range" min="0" max="1" step="0.01" value="0"></label>
+        <label>x max <input id="clip-x-max" type="range" min="0" max="1" step="0.01" value="1"></label>
+        <label>y min <input id="clip-y-min" type="range" min="0" max="1" step="0.01" value="0"></label>
+        <label>y max <input id="clip-y-max" type="range" min="0" max="1" step="0.01" value="1"></label>
+        <label>z min <input id="clip-z-min" type="range" min="0" max="1" step="0.01" value="0"></label>
+        <label>z max <input id="clip-z-max" type="range" min="0" max="1" step="0.01" value="1"></label>
+        <div class="dim">Slice</div>
+        <select id="slice-axis">
+          <option value="none">none</option>
+          <option value="x">x</option>
+          <option value="y">y</option>
+          <option value="z">z</option>
+        </select>
+        <input id="slice-pos" type="range" min="0" max="1" step="0.01" value="0.5">
+        <div class="dim">Clip plane</div>
+        <label><input id="clip-plane-enabled" type="checkbox" style="width:auto"> enabled</label>
+        <label>d <input id="clip-plane-d" type="range" min="-0.87" max="0.87" step="0.01" value="0"></label>
+      </div>
+    </section>
+
+    <section class="dock-section" data-section="sec-uncertainty">
+      <div class="section-header">Uncertainty</div>
+      <div class="section-body">
+        <label><input id="sigma-gate-enabled" type="checkbox" style="width:auto"> hide sigma above</label>
+        <input id="sigma-gate-value" type="range" min="0" max="1" step="0.01" value="1">
+      </div>
+    </section>
+
+    <section class="dock-section" data-section="sec-camera">
+      <div class="section-header">Camera &amp; view</div>
+      <div class="section-body">
+        <div id="camera-presets" class="row">
+          <button id="camera-preset-top">Top</button>
+          <button id="camera-preset-front">Front</button>
+          <button id="camera-preset-side">Side</button>
+          <button id="camera-preset-iso">Iso</button>
+        </div>
+        <button id="export-png-btn">Export PNG</button>
+      </div>
+    </section>
+  </aside>
+
+  <div id="canvas-wrap">
+    <canvas id="gl-canvas"></canvas>
+    <div id="overlay-banner"><div id="resolution-banner"></div></div>
+    <div id="overlay-gizmo"></div>
+    <div id="overlay-legend"></div>
+    <div id="overlay-hover"><div id="hover-readout" class="mono"></div></div>
+    <div id="overlay-onboarding"></div>
+    <div id="overlay-shortcuts" hidden></div>
   </div>
 </div>
 <script>
