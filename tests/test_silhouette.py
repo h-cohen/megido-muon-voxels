@@ -56,20 +56,39 @@ def test_extract_edge_finds_boundary_of_a_block():
 
 
 def test_extract_edge_interior_cell_not_on_edge():
-    # 5x5 all-hill image: no cell borders a non-hill cell except the ones
-    # that border the grid edge (off-grid counts as not-mask), so the
-    # single centre cell (1,1 .. in a 3x3 core) IS on the edge only if it
-    # touches the border. Use a big enough block that a true interior
-    # (all 4 neighbours in-mask) cell exists.
-    image = np.full((5, 5), 10.0)
+    # 7x7: a hill block (rows/cols 1-5) surrounded by a ring of measured
+    # open sky (row/col 0 and 6). A true interior hill cell (all 4
+    # neighbours also hill) is not an edge; a hill cell touching the
+    # open-sky ring is.
+    image = np.zeros((7, 7))
+    image[1:6, 1:6] = 10.0
     class _Sky:
-        centers = np.arange(5, dtype=np.float64)
+        centers = np.arange(7, dtype=np.float64)
     edge = extract_edge(image, _Sky(), level=1.0)
     pts = {tuple(p) for p in edge}
-    # the very centre cell (2,2) has all 4 neighbours in-mask -> not an edge cell
-    assert (2.0, 2.0) not in pts
-    # a corner cell is always an edge cell (off-grid neighbours)
-    assert (0.0, 0.0) in pts
+    assert (3.0, 3.0) not in pts   # true interior, all neighbours are hill
+    assert (1.0, 1.0) in pts       # borders the measured open-sky ring
+
+
+def test_extract_edge_off_grid_and_nan_neighbours_do_not_create_edges():
+    # A hill cell fully surrounded by NaN (unconstrained sky, no measurement)
+    # must NOT be an edge -- off-grid and NaN neighbours never count as
+    # "open sky". A separate hill cell that borders real, measured open sky
+    # (finite, <= level) must be an edge. This must fail against the old
+    # "off-grid/NaN counts as not-mask" definition, which flags the isolated
+    # NaN-surrounded cell as a (spurious) edge too.
+    image = np.full((5, 5), np.nan)
+    image[1, 1] = 10.0   # isolated hill cell, neighbours all NaN
+    image[3, 3] = 10.0   # hill cell bordering measured open sky
+    image[3, 4] = 0.0    # measured, constrained open sky (finite, <= level)
+
+    class _Sky:
+        centers = np.arange(5, dtype=np.float64)
+
+    edge = extract_edge(image, _Sky(), level=1.0)
+    pts = {tuple(p) for p in edge}
+    assert (3.0, 3.0) in pts
+    assert (1.0, 1.0) not in pts
 
 
 def test_ridgeline_recovers_known_bins_and_nan_for_empty():
@@ -142,6 +161,7 @@ def test_extract_silhouette_recovers_known_ridgeline():
 
     d = res.per_pos["pos0"]
     assert d["n_edge"] > 0
+    assert 0.0 < d["az_coverage"] <= 1.0
     ridge_az, ridge_elev = d["ridge_az"], d["ridge_elev"]
     truth = _e0(ridge_az)
     m = np.isfinite(ridge_elev)

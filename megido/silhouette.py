@@ -58,26 +58,37 @@ def hill_threshold(lam: np.ndarray, *, frac: float = 0.5, hi_q: float = 0.9) -> 
 
 
 def extract_edge(image: np.ndarray, sky, *, level: float) -> np.ndarray:
-    """(sx, sy) centres of hill-mask cells that border a non-hill cell.
+    """(sx, sy) centres of hill-mask cells that border MEASURED open sky.
 
     `image` is opacity reshaped to (n_bins, n_bins) in the SkyGrid flat order
     i*n_bins+j, so image[i, j] corresponds to sx=sky.centers[i],
-    sy=sky.centers[j]. An off-grid neighbour counts as "not in mask".
+    sy=sky.centers[j].
+
+    A neighbour only qualifies as "open sky" if it is in-grid, finite (a
+    constrained measurement -- CLAUDE.md: NaN means "not constrained", never
+    a value), and at or below `level`. Off-grid and NaN/unconstrained
+    neighbours do NOT qualify: on real data most of a hill mask's boundary
+    borders unconstrained sky (the edge of where the detector has coverage),
+    not the physical hill/open-sky transition, and counting those as "edge"
+    mostly traces the coverage boundary instead of the silhouette.
     """
     image = np.asarray(image, dtype=np.float64)
-    mask = np.isfinite(image) & (image > level)
+    finite = np.isfinite(image)
+    mask = finite & (image > level)
+    open_sky = finite & (image <= level)
 
-    neighbor_up = np.zeros_like(mask)
-    neighbor_up[1:, :] = mask[:-1, :]
-    neighbor_down = np.zeros_like(mask)
-    neighbor_down[:-1, :] = mask[1:, :]
-    neighbor_left = np.zeros_like(mask)
-    neighbor_left[:, 1:] = mask[:, :-1]
-    neighbor_right = np.zeros_like(mask)
-    neighbor_right[:, :-1] = mask[:, 1:]
+    neighbor_open_up = np.zeros_like(open_sky)
+    neighbor_open_up[1:, :] = open_sky[:-1, :]
+    neighbor_open_down = np.zeros_like(open_sky)
+    neighbor_open_down[:-1, :] = open_sky[1:, :]
+    neighbor_open_left = np.zeros_like(open_sky)
+    neighbor_open_left[:, 1:] = open_sky[:, :-1]
+    neighbor_open_right = np.zeros_like(open_sky)
+    neighbor_open_right[:, :-1] = open_sky[:, 1:]
 
-    has_non_mask_neighbor = ~neighbor_up | ~neighbor_down | ~neighbor_left | ~neighbor_right
-    edge_mask = mask & has_non_mask_neighbor
+    has_open_sky_neighbor = (neighbor_open_up | neighbor_open_down
+                              | neighbor_open_left | neighbor_open_right)
+    edge_mask = mask & has_open_sky_neighbor
 
     centers = sky.centers
     sxm, sym = np.meshgrid(centers, centers, indexing="ij")
@@ -104,6 +115,9 @@ def ridgeline(az_deg: np.ndarray, elev_deg: np.ndarray, *, n_az: int = 72
 
 @dataclass(frozen=True)
 class SilhouetteResult:
+    """`per_pos[pid]["az_coverage"]` is the honest caveat: the ridgeline only
+    exists where a constrained (measured) open-sky bin borders the hill, so
+    coverage over azimuth is partial by construction, not a bug."""
     per_pos: dict
     agreement: float
     detectors: list
@@ -162,6 +176,7 @@ def extract_silhouette(sol, cfg, *, frac: float = 0.5, hi_q: float = 0.9,
             az, elev = sky_to_azel(edge_sx, edge_sy)
         ridge_az, ridge_elev = ridgeline(az, elev, n_az=n_az)
 
+        az_coverage = float(np.mean(np.isfinite(ridge_elev))) if n_az > 0 else float("nan")
         per_pos[pid] = {
             "edge_sx": edge_sx,
             "edge_sy": edge_sy,
@@ -171,6 +186,13 @@ def extract_silhouette(sol, cfg, *, frac: float = 0.5, hi_q: float = 0.9,
             "ridge_elev": ridge_elev,
             "level": level,
             "n_edge": int(edge.shape[0]),
+            # Honesty: extract_edge now counts only cells bordering MEASURED
+            # open sky as silhouette edges (see its docstring), so the
+            # ridgeline is necessarily partial -- it exists only where a
+            # constrained open-sky bin happens to sit next to the hill.
+            # az_coverage is the fraction of ridgeline azimuth bins that are
+            # non-empty; report it alongside the ridgeline, never silently.
+            "az_coverage": az_coverage,
         }
         detectors.append({
             "id": pid,
