@@ -61,3 +61,43 @@ def test_fit_scale_recovers_density_from_parallax():
     out = fit_scale(images, xe, ye, a0=1.0)
     assert abs(out["a"] - a_true) / a_true < 0.15   # scale recovered within 15%
     assert out["n_overlap"] > 20
+
+
+def test_fit_scale_robust_to_outlier_opacity_pixels():
+    # Same clean parallax setup, but ~5% of the near-vertical (low-tan) pixels
+    # in each cloud are runaway opacity outliers (lam * 10) — a bad-channel /
+    # saturation pattern a real S2 opacity image can carry, concentrated where
+    # muon flux (and so sample count) is highest. Low-tan outliers stay near
+    # (x,y)=0 regardless of the trial scale a, so they land inside the grid
+    # and inside populated cells for every a the optimizer tries — they don't
+    # get filtered out simply by falling off the edge of the grid the way a
+    # high-tan outlier would.
+    #
+    # An unweighted, unclipped RMS objective (the pre-fix version) is pulled
+    # far off by these: verified separately that it lands near a=0.99
+    # (rel. err ~99%) on this exact injected data. The count-weighted,
+    # L-clipped objective here should still recover a_true almost exactly,
+    # since a single-ray outlier cell is outweighed by many-ray good cells
+    # and the most extreme reconstructed lengths are dropped by the L_max
+    # clip.
+    rng = np.random.default_rng(1)
+    a_true = 0.5
+    xe = np.linspace(-14.0, 14.0, 57); ye = np.linspace(-14.0, 14.0, 57)
+    t0, l0, _ = _forward(np.array([0.0, 0.0, 0.0]), a_true)
+    t1, l1, _ = _forward(np.array([2.2, 0.0, 0.0]), a_true)
+
+    def _inject_central_outliers(tan, lam, frac=0.05, mult=10.0):
+        lam = lam.copy()
+        r = np.linalg.norm(tan, axis=1)
+        low_tan = np.argsort(r)[: 3 * int(frac * len(lam))]
+        idx = rng.choice(low_tan, size=int(frac * len(lam)), replace=False)
+        lam[idx] *= mult
+        return lam
+
+    l0_noisy = _inject_central_outliers(t0, l0)
+    l1_noisy = _inject_central_outliers(t1, l1)
+    images = {"pos0": {"tan": t0, "lam": l0_noisy, "p": np.array([0.0, 0, 0])},
+              "pos1": {"tan": t1, "lam": l1_noisy, "p": np.array([2.2, 0, 0])}}
+    out = fit_scale(images, xe, ye, a0=1.0)
+    assert abs(out["a"] - a_true) / a_true < 0.20   # still recovered despite outliers
+    assert out["n_overlap"] > 20

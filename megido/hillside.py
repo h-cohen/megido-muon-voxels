@@ -42,38 +42,49 @@ def grid_surface(points: np.ndarray, xedges: np.ndarray, yedges: np.ndarray):
     return H, cnt
 
 
-def _cloud_H(img, a, b, xedges, yedges):
-    """Map one position's (tan,lam,p) image to a gridded surface at scale a, offset b."""
+def _cloud_H(img, a, b, xedges, yedges, L_max=60.0):
+    """Map one position's (tan,lam,p) image to a gridded surface at scale a, offset b.
+
+    Path lengths are clipped to (0, L_max]; a runaway L (opacity outlier, edge
+    noise) is dropped rather than allowed to plant a bogus far-away point.
+    """
     d = ray_dirs(img["tan"])
     L = a * np.asarray(img["lam"], dtype=np.float64) + b
-    ok = np.isfinite(L) & (L > 0)
+    ok = np.isfinite(L) & (L > 0) & (L <= L_max)
     pts = surface_points(np.asarray(img["p"], float), L[ok], d[ok])
     return grid_surface(pts, xedges, yedges)
 
 
-def overlap_disagreement(a, db, images, xedges, yedges):
-    """RMS of (H_P0 - H_P1) over cells both positions populate, at scale a, P1 offset db."""
-    H0, c0 = _cloud_H(images["pos0"], a, 0.0, xedges, yedges)
-    H1, c1 = _cloud_H(images["pos1"], a, db, xedges, yedges)
+def overlap_disagreement(a, db, images, xedges, yedges, L_max=60.0):
+    """Count-weighted RMS of (H_P0 - H_P1) over cells both positions populate.
+
+    Each shared cell is weighted by min(count_P0, count_P1): a cell backed by
+    many agreeing rays in both clouds dominates, while a cell that only a
+    single stray outlier ray reaches barely moves the objective.
+    """
+    H0, c0 = _cloud_H(images["pos0"], a, 0.0, xedges, yedges, L_max=L_max)
+    H1, c1 = _cloud_H(images["pos1"], a, db, xedges, yedges, L_max=L_max)
     both = (c0 > 0) & (c1 > 0)
     if both.sum() == 0:
         return np.inf, 0
     diff = H0[both] - H1[both]
-    return float(np.sqrt(np.mean(diff ** 2))), int(both.sum())
+    w = np.minimum(c0[both], c1[both])
+    rms = float(np.sqrt(np.sum(w * diff ** 2) / np.sum(w)))
+    return rms, int(both.sum())
 
 
-def fit_scale(images, xedges, yedges, *, a0=1.0, db0=0.0):
+def fit_scale(images, xedges, yedges, *, a0=1.0, db0=0.0, L_max=60.0):
     """Fit shared density scale a and P1 relative offset db by P0/P1 overlap consistency."""
     def obj(params):
         a, db = params
         if a <= 1e-6:
             return 1e6
-        rms, n = overlap_disagreement(a, db, images, xedges, yedges)
-        if n < 5:
+        rms, n = overlap_disagreement(a, db, images, xedges, yedges, L_max=L_max)
+        if n < 15:
             return 1e6            # too little overlap: reject
         return rms
     res = minimize(obj, [a0, db0], method="Nelder-Mead",
                    options={"xatol": 1e-4, "fatol": 1e-6, "maxiter": 2000})
     a, db = res.x
-    rms, n = overlap_disagreement(a, db, images, xedges, yedges)
+    rms, n = overlap_disagreement(a, db, images, xedges, yedges, L_max=L_max)
     return {"a": float(a), "db": float(db), "disagreement": rms, "n_overlap": n}
