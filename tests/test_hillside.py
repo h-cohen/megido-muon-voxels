@@ -1,5 +1,5 @@
 import numpy as np
-from megido.hillside import ray_dirs, surface_points, grid_surface, fit_scale
+from megido.hillside import ray_dirs, surface_points, grid_surface, fit_scale, fit_hillside, HillsideResult
 
 
 def test_ray_dirs_unit_and_upward():
@@ -101,3 +101,49 @@ def test_fit_scale_robust_to_outlier_opacity_pixels():
     out = fit_scale(images, xe, ye, a0=1.0)
     assert abs(out["a"] - a_true) / a_true < 0.20   # still recovered despite outliers
     assert out["n_overlap"] > 20
+
+
+class _FakeSky:
+    n_bins = 40
+    def centers(self):
+        g = np.linspace(-1.2, 1.2, 40)
+        tx, ty = np.meshgrid(g, g)
+        return np.column_stack([tx.ravel(), ty.ravel()])
+
+
+class _FakeSol:
+    """Minimal BaselineSolution stand-in emitting a known hill's opacity."""
+    def __init__(self, a_true):
+        self.sky = _FakeSky()
+        self._a = a_true
+        self._lam = {}
+        for pid, p in (("pos0", [0, 0, 0]), ("pos1", [2.2, 0, 0])):
+            _, lam, _ = _forward(np.array(p, float), a_true, n=40)
+            self._lam[pid] = lam
+
+    def normalized_opacity(self, pid, transparent_quantile=0.05):
+        return self._lam[pid]
+
+
+class _FakeCfg:
+    class _E:
+        def __init__(s, pid, x): s.position, s.pose = pid, type("P", (), {"x": x, "y": 0.0, "z": 0.0})
+    exposures = [_E("pos0", 0.0), _E("pos1", 2.2)]
+
+
+def test_fit_hillside_recovers_lateral_shape():
+    a_true = 0.5
+    res = fit_hillside(_FakeSol(a_true), _FakeCfg(), footprint_m=14.0, cell_m=0.5, n_boot=4)
+    assert isinstance(res, HillsideResult)
+    truth = _synthetic_hill(*np.meshgrid(
+        0.5 * (res.xedges[:-1] + res.xedges[1:]),
+        0.5 * (res.yedges[:-1] + res.yedges[1:]), indexing="ij"))
+    m = np.isfinite(res.H)
+    # lateral SHAPE recovered (correlation), the honest claim
+    corr = np.corrcoef(res.H[m], truth[m])[0, 1]
+    assert corr > 0.85
+    # the fit reproduces its own data
+    assert res.data_residual < 0.2
+    # uncertainty is populated where the surface is
+    assert np.isfinite(res.sigma[m]).all() and (res.sigma[m] >= 0).all()
+    assert "height" in res.height_confidence.lower()

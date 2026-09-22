@@ -8,6 +8,9 @@ lateral shape is not. Every result carries that band.
 """
 from __future__ import annotations
 
+import warnings
+from dataclasses import dataclass, field
+
 import numpy as np
 from scipy.optimize import minimize
 
@@ -88,3 +91,244 @@ def fit_scale(images, xedges, yedges, *, a0=1.0, db0=0.0, L_max=60.0):
     a, db = res.x
     rms, n = overlap_disagreement(a, db, images, xedges, yedges, L_max=L_max)
     return {"a": float(a), "db": float(db), "disagreement": rms, "n_overlap": n}
+
+
+def _sky_centers_flat(sky) -> np.ndarray:
+    """N×2 (tx,ty) per flat sky pixel, whatever shape `sky.centers` takes.
+
+    The Task-3 test double exposes `centers()` as a method already returning
+    the flat N×2 array (its convenience). The real `SkyGrid.centers` is a
+    property giving the 1-D per-axis bin centers; `opacity[position]` is flat
+    in `i*n_bins+j` order (see `SkyGrid.bin_index`), so the meshgrid here uses
+    `indexing="ij"` to match.
+    """
+    c = sky.centers
+    pts = np.asarray(c() if callable(c) else c, dtype=np.float64)
+    if pts.ndim == 2 and pts.shape[1] == 2:
+        return pts
+    tx, ty = np.meshgrid(pts, pts, indexing="ij")
+    return np.column_stack([tx.ravel(), ty.ravel()])
+
+
+def _group_positions(cfg):
+    """One (position_id, pose) per distinct position, in first-seen order.
+
+    A real SiteConfig has several exposures (P0/T20a/T20b/P1) sharing two
+    positions (pos0/pos1); each position contributes exactly one opacity
+    image and one detector world pose, never one per exposure.
+    """
+    poses = {}
+    order = []
+    for exp in cfg.exposures:
+        pid = exp.position
+        if pid not in poses:
+            poses[pid] = exp.pose
+            order.append(pid)
+    return order, poses
+
+
+def _build_images(sol, positions, poses, quantile: float) -> dict:
+    tan = None
+    images = {}
+    for pid in positions:
+        if tan is None:
+            tan = _sky_centers_flat(sol.sky)
+        lam = np.asarray(sol.normalized_opacity(pid, transparent_quantile=quantile),
+                         dtype=np.float64)
+        p = poses[pid]
+        images[pid] = {"tan": tan, "lam": lam, "p": np.array([p.x, p.y, p.z], float)}
+    return images
+
+
+def _build_edges(positions, poses, footprint_m, cell_m):
+    xs = [poses[pid].x for pid in positions]
+    ys = [poses[pid].y for pid in positions]
+    cx, cy = float(np.mean(xs)), float(np.mean(ys))
+    if footprint_m is None:
+        footprint_m = 14.0
+    n = max(int(round(2 * footprint_m / cell_m)), 1)
+    xedges = cx - footprint_m + cell_m * np.arange(n + 1)
+    yedges = cy - footprint_m + cell_m * np.arange(n + 1)
+    return xedges, yedges
+
+
+def _combined_cloud(images, a, db, xedges, yedges, L_max=60.0):
+    """Combined H/count from BOTH clouds, plus each position's own-only H.
+
+    pos0 carries offset 0 and pos1 carries the fitted relative offset `db`,
+    matching the convention `fit_scale`/`overlap_disagreement` use.
+    """
+    offsets = {"pos0": 0.0, "pos1": db}
+    all_pts = []
+    per_pos = {}
+    for pid, img in images.items():
+        b = offsets.get(pid, 0.0)
+        d = ray_dirs(img["tan"])
+        L = a * np.asarray(img["lam"], dtype=np.float64) + b
+        ok = np.isfinite(L) & (L > 0) & (L <= L_max)
+        pts = surface_points(np.asarray(img["p"], float), L[ok], d[ok])
+        all_pts.append(pts)
+        per_pos[pid] = grid_surface(pts, xedges, yedges)
+    combined = (np.concatenate(all_pts, axis=0) if all_pts
+                else np.zeros((0, 3)))
+    H, count = grid_surface(combined, xedges, yedges)
+    return H, count, per_pos
+
+
+def _overlap_agreement(per_pos, H) -> float:
+    if "pos0" not in per_pos or "pos1" not in per_pos:
+        return float("nan")
+    H0, c0 = per_pos["pos0"]
+    H1, c1 = per_pos["pos1"]
+    both = (c0 > 0) & (c1 > 0)
+    if both.sum() == 0:
+        return float("nan")
+    diff = H0[both] - H1[both]
+    rms = float(np.sqrt(np.mean(diff ** 2)))
+    finite_H = H[np.isfinite(H)]
+    scale = float(np.ptp(finite_H)) if finite_H.size else 0.0
+    if scale <= 0:
+        return float("nan")
+    return rms / scale
+
+
+def _predict_lambda(img, a, db_for_pid, H, xedges, yedges, L_max=60.0,
+                     n_iter=25, damping=0.5):
+    """Self-consistency check: re-find where each ray hits the fitted H(x,y)
+    and compare the implied opacity to the measured one (mirrors the
+    damped fixed-point ray march used to build the synthetic test hill)."""
+    p = np.asarray(img["p"], dtype=np.float64)
+    d = ray_dirs(img["tan"])
+    lam = np.asarray(img["lam"], dtype=np.float64)
+    L0 = a * lam + db_for_pid
+    ok = np.isfinite(L0) & (L0 > 0) & (L0 <= L_max)
+    L = np.where(ok, np.clip(L0, 0.1, L_max), 5.0).astype(np.float64)
+    nx, ny = H.shape
+
+    def H_at(x, y):
+        ix = np.clip(np.digitize(x, xedges) - 1, 0, nx - 1)
+        iy = np.clip(np.digitize(y, yedges) - 1, 0, ny - 1)
+        return H[ix, iy]
+
+    for _ in range(n_iter):
+        s = p[None, :] + L[:, None] * d
+        Hs = H_at(s[:, 0], s[:, 1])
+        valid = np.isfinite(Hs)
+        L_step = np.where(valid,
+                           np.clip(np.where(valid, Hs, 0.0) / np.clip(d[:, 2], 1e-3, None),
+                                   0.1, L_max),
+                           L)
+        L = (1 - damping) * L + damping * L_step
+
+    lam_pred = (L - db_for_pid) / a
+    valid = ok & np.isfinite(lam_pred)
+    return lam[valid], lam_pred[valid]
+
+
+def _data_residual(images, a, db, H, xedges, yedges, L_max=60.0) -> float:
+    offsets = {"pos0": 0.0, "pos1": db}
+    obs, pred = [], []
+    for pid, img in images.items():
+        o, pr = _predict_lambda(img, a, offsets.get(pid, 0.0), H, xedges, yedges, L_max=L_max)
+        obs.append(o)
+        pred.append(pr)
+    if not obs:
+        return float("nan")
+    obs = np.concatenate(obs)
+    pred = np.concatenate(pred)
+    if obs.size == 0:
+        return float("nan")
+    scale = float(np.std(obs))
+    rms = float(np.sqrt(np.mean((pred - obs) ** 2)))
+    if scale <= 0:
+        return rms
+    return rms / scale
+
+
+@dataclass
+class HillsideResult:
+    """The overburden-surface fit, with its bootstrap uncertainty band.
+
+    `H`/`sigma`/`count` are nx×ny; NaN off the hill (nowhere a ray landed).
+    `sigma` is the per-cell 1-sigma spread of `H` under the gauge bootstrap
+    (varying `normalized_opacity`'s `transparent_quantile`) — the only
+    uncertainty this geometry has an honest handle on. `height_confidence`
+    states that band against the H relief in plain language; nothing here
+    ever presents a crisp absolute height without it.
+    """
+    H: np.ndarray
+    sigma: np.ndarray
+    count: np.ndarray
+    xedges: np.ndarray
+    yedges: np.ndarray
+    a: float
+    db: float
+    disagreement: float
+    data_residual: float
+    overlap_agreement: float
+    height_confidence: str
+    detectors: list = field(default_factory=list)
+
+
+def fit_hillside(sol, cfg, *, footprint_m=None, cell_m=0.5, n_boot=8,
+                  quantiles=None) -> HillsideResult:
+    """Fit the overburden surface H(x,y) from both positions' opacity images.
+
+    Groups `cfg.exposures` by `.position` (a real config has several
+    exposures sharing two positions — one image and one world pose per
+    position, never per exposure), fits the shared density scale + P1
+    relative offset by parallax overlap consistency, builds the combined
+    two-cloud height field, and bootstraps the Phase-2 gauge
+    (`transparent_quantile`) to get a per-cell uncertainty band.
+    """
+    positions, poses = _group_positions(cfg)
+    xedges, yedges = _build_edges(positions, poses, footprint_m, cell_m)
+
+    images = _build_images(sol, positions, poses, quantile=0.05)
+    scale = fit_scale(images, xedges, yedges, a0=1.0, db0=0.0)
+    a, db = scale["a"], scale["db"]
+
+    H, count, per_pos = _combined_cloud(images, a, db, xedges, yedges)
+    overlap_agreement = _overlap_agreement(per_pos, H)
+    data_residual = _data_residual(images, a, db, H, xedges, yedges)
+
+    if quantiles is None:
+        quantiles = [0.02, 0.05, 0.1, 0.2]
+    H_boot = np.full((n_boot,) + H.shape, np.nan)
+    for k in range(n_boot):
+        q = quantiles[k % len(quantiles)]
+        images_q = _build_images(sol, positions, poses, quantile=q)
+        scale_q = fit_scale(images_q, xedges, yedges, a0=a, db0=db)
+        H_q, _, _ = _combined_cloud(images_q, scale_q["a"], scale_q["db"], xedges, yedges)
+        H_boot[k] = H_q
+
+    sigma = np.full(H.shape, np.nan)
+    m = np.isfinite(H)
+    n_finite = np.sum(np.isfinite(H_boot), axis=0)
+    enough = m & (n_finite >= 2)
+    if enough.any():
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            sigma[enough] = np.nanstd(H_boot[:, enough], axis=0)
+    sigma[m & (n_finite < 2)] = 0.0
+
+    if m.any():
+        band = float(np.nanmedian(sigma[m]))
+        relief = float(np.nanmax(H[m]) - np.nanmin(H[m]))
+        pct = 100.0 * band / relief if relief > 0 else float("nan")
+        height_confidence = (
+            f"absolute height uncertain to +/-{band:.1f} m ({pct:.0f}% of relief); "
+            "lateral shape well constrained"
+        )
+    else:
+        height_confidence = "no hill surface recovered; height entirely unconstrained"
+
+    detectors = [{"id": pid, "x": poses[pid].x, "y": poses[pid].y, "z": poses[pid].z}
+                 for pid in positions]
+
+    return HillsideResult(
+        H=H, sigma=sigma, count=count, xedges=xedges, yedges=yedges,
+        a=a, db=db, disagreement=scale["disagreement"],
+        data_residual=data_residual, overlap_agreement=overlap_agreement,
+        height_confidence=height_confidence, detectors=detectors,
+    )
