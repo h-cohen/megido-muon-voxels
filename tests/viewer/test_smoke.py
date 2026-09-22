@@ -155,4 +155,28 @@ def test_real_campaign_output_renders_with_every_control_operable(page, dist_pat
         "disabling #toggle-silhouette must remove the ridgeline fan again"
     )
 
+    # Phase 5b Task 4: hillside surface mesh (the primary hillside display).
+    # hill_surface.npy + hill_surface_meta.json are present in the real
+    # runs/voxels output (written by `megido.cli hillside`), so the toggle
+    # must be enabled.
+    hill_surface_toggle = page.locator("#toggle-hill-surface")
+    assert hill_surface_toggle.count() == 1, "missing #toggle-hill-surface control"
+    assert hill_surface_toggle.is_enabled(), (
+        "runs/voxels has hill_surface.npy - #toggle-hill-surface must be enabled"
+    )
+
+    before_hill_surface = gl_canvas_data()
+    hill_surface_toggle.uncheck()
+    page.wait_for_timeout(50)
+    after_uncheck = gl_canvas_data()
+    assert after_uncheck != before_hill_surface, (
+        "unchecking #toggle-hill-surface must change the rendered canvas "
+        "(it defaults to checked when the artifact is present)"
+    )
+    hill_surface_toggle.check()
+    page.wait_for_timeout(50)
+    assert gl_canvas_data() == before_hill_surface, (
+        "re-checking #toggle-hill-surface must restore the rendered surface"
+    )
+
     assert console_errors == [], f"JS console errors during interaction: {console_errors}"

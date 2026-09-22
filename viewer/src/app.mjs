@@ -12,6 +12,7 @@ import { COLORMAP_NAMES, colormapStops } from './colormap.mjs';
 import { captureView, loadViews, saveViews } from './views.mjs';
 import { SHORTCUTS, keyToAction } from './shortcuts.mjs';
 import { markerVertices, silhouetteVertices, SILHOUETTE_RAYLEN_M } from './markers.mjs';
+import { surfaceMesh } from './surfacemesh.mjs';
 
 const VERTEX_SRC = `#version 300 es
 out vec2 vUv;
@@ -104,6 +105,21 @@ uniform vec3 uMarkerColor;
 out vec4 outColor;
 void main() {
   outColor = vec4(uMarkerColor, 1.0);
+}`;
+
+// Hillside SURFACE mesh (Phase 5b Task 4): reuses MARKER_VERTEX_SRC's
+// attribute layout (location 0 vec3 aPos, uMarkerViewProj) but draws with
+// gl.TRIANGLES and a translucent RGBA fill instead of the marker program's
+// opaque line color, so blending is needed here and NOT for markers/
+// silhouette. A separate tiny fragment shader keeps that alpha logic out of
+// MARKER_FRAGMENT_SRC and, per the task contract, nowhere near the raymarch
+// FRAGMENT_SRC above.
+const FILL_FRAGMENT_SRC = `#version 300 es
+precision highp float;
+uniform vec4 uFillColor;
+out vec4 outColor;
+void main() {
+  outColor = uFillColor;
 }`;
 
 function compileShader(gl, type, src) {
@@ -201,6 +217,28 @@ export function initViewer(root) {
   gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
   gl.bindVertexArray(null);
 
+  // Hillside SURFACE mesh (Task 4, primary hillside display): a filled
+  // height-field "lid" over the fitted overburden. Own program (FILL_FRAGMENT_SRC
+  // above) so the translucent fill doesn't touch the opaque marker/silhouette
+  // color path, and its own VAO/position+index buffers since it is indexed
+  // triangles, not a flat gl.LINES vertex list.
+  const fillProgram = linkProgram(gl, MARKER_VERTEX_SRC, FILL_FRAGMENT_SRC);
+  const fillUniforms = {
+    uMarkerViewProj: gl.getUniformLocation(fillProgram, 'uMarkerViewProj'),
+    uFillColor: gl.getUniformLocation(fillProgram, 'uFillColor'),
+  };
+  const hillSurfaceVao = gl.createVertexArray();
+  const hillSurfacePositionBuffer = gl.createBuffer();
+  const hillSurfaceIndexBuffer = gl.createBuffer();
+  gl.bindVertexArray(hillSurfaceVao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, hillSurfacePositionBuffer);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, hillSurfaceIndexBuffer);
+  gl.bindVertexArray(null);
+  // Warm amber, distinct from the teal/magenta silhouette fan.
+  const HILL_SURFACE_COLOR = [0.95, 0.6, 0.15, 0.35];
+
   const uniforms = {};
   for (const name of [
     'uInvViewProj', 'uCameraPos', 'uVolume', 'uSigmaTex', 'uTransferLUT',
@@ -235,6 +273,9 @@ export function initViewer(root) {
     silhouette: null,
     showSilhouette: false,
     silhouetteRanges: [],
+    hillSurface: null,
+    showHillSurface: false,
+    hillSurfaceIndexCount: 0,
   };
 
   function worldBounds() {
@@ -293,6 +334,9 @@ export function initViewer(root) {
     }
     if (state.showSilhouette && state.silhouette && state.silhouetteRanges.length > 0) {
       drawSilhouette(viewProj);
+    }
+    if (state.showHillSurface && state.hillSurface && state.hillSurfaceIndexCount > 0) {
+      drawHillSurface(viewProj);
     }
     drawGizmo();
   }
@@ -365,6 +409,42 @@ export function initViewer(root) {
     state.silhouetteRanges = ranges;
     gl.bindBuffer(gl.ARRAY_BUFFER, silhouetteBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, combined, gl.STATIC_DRAW);
+  }
+
+  // Hillside SURFACE mesh (Task 4): filled translucent triangles from the
+  // `hillside` CLI's regularized height-field fit. Own fillProgram/VAO (see
+  // setup above) drawn with gl.TRIANGLES over indices built once by
+  // rebuildHillSurfaceBuffer, not per frame. Blending is enabled only for
+  // this draw call and disabled again immediately after, so it never leaks
+  // into the raymarch pass (which runs earlier in this same render() call
+  // on the NEXT frame, by which point blend is already off, but restoring
+  // here keeps state deterministic regardless of draw order).
+  function drawHillSurface(viewProj) {
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.useProgram(fillProgram);
+    gl.bindVertexArray(hillSurfaceVao);
+    gl.uniformMatrix4fv(fillUniforms.uMarkerViewProj, false, viewProj);
+    gl.uniform4fv(fillUniforms.uFillColor, HILL_SURFACE_COLOR);
+    gl.drawElements(gl.TRIANGLES, state.hillSurfaceIndexCount, gl.UNSIGNED_INT, 0);
+    gl.bindVertexArray(null);
+    gl.disable(gl.BLEND);
+  }
+
+  function rebuildHillSurfaceBuffer() {
+    const surf = state.hillSurface;
+    if (!surf) {
+      state.hillSurfaceIndexCount = 0;
+      return;
+    }
+    const { positions, indices } = surfaceMesh(surf.H, surf.gx, surf.gy);
+    gl.bindVertexArray(hillSurfaceVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, hillSurfacePositionBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, hillSurfaceIndexBuffer);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+    gl.bindVertexArray(null);
+    state.hillSurfaceIndexCount = indices.length;
   }
 
   // Axis-orientation gizmo (bottom-left): projects the three world axes
@@ -545,6 +625,41 @@ export function initViewer(root) {
         toggleSilhouetteEl.checked = false;
         state.showSilhouette = false;
       }
+    }
+
+    // hill_surface.npy + hill_surface_meta.json (Phase 5b Task 4): the fitted
+    // overburden height-field, written by the `hillside` CLI subcommand.
+    // BOTH files must be present - a run missing either (older/synthetic
+    // runs) must not error, and the toggle stays disabled and unchecked.
+    const hillSurfaceFile = byName.get('hill_surface.npy');
+    const hillSurfaceMetaFile = byName.get('hill_surface_meta.json');
+    const toggleHillSurfaceEl = root.querySelector('#toggle-hill-surface');
+    const hillSurfaceCaveatEl = root.querySelector('#hill-surface-caveat');
+    if (hillSurfaceFile && hillSurfaceMetaFile) {
+      const { data: H } = parseNpy(await readFile(hillSurfaceFile));
+      const hillMeta = JSON.parse(await hillSurfaceMetaFile.text());
+      state.hillSurface = { H, gx: hillMeta.gx, gy: hillMeta.gy, meta: hillMeta };
+      rebuildHillSurfaceBuffer();
+      if (toggleHillSurfaceEl) {
+        toggleHillSurfaceEl.disabled = false;
+        toggleHillSurfaceEl.checked = true; // primary hillside display: on by default when present
+      }
+      state.showHillSurface = true;
+      if (hillSurfaceCaveatEl) {
+        const pct = Math.round((hillMeta.variance_explained || 0) * 100);
+        hillSurfaceCaveatEl.textContent =
+          `Hillside surface — assumed scale, ${pct}% variance explained`;
+        hillSurfaceCaveatEl.hidden = false;
+      }
+    } else {
+      state.hillSurface = null;
+      state.hillSurfaceIndexCount = 0;
+      state.showHillSurface = false;
+      if (toggleHillSurfaceEl) {
+        toggleHillSurfaceEl.disabled = true;
+        toggleHillSurfaceEl.checked = false;
+      }
+      if (hillSurfaceCaveatEl) hillSurfaceCaveatEl.hidden = true;
     }
 
     const banner = root.querySelector('#resolution-banner');
@@ -768,6 +883,15 @@ export function initViewer(root) {
     toggleSilhouetteEl.disabled = true; // enabled by loadRun once a run is present
     toggleSilhouetteEl.addEventListener('change', (ev) => {
       state.showSilhouette = ev.target.checked;
+      render();
+    });
+  }
+
+  const toggleHillSurfaceEl = root.querySelector('#toggle-hill-surface');
+  if (toggleHillSurfaceEl) {
+    toggleHillSurfaceEl.disabled = true; // enabled by loadRun once the artifact is present
+    toggleHillSurfaceEl.addEventListener('change', (ev) => {
+      state.showHillSurface = ev.target.checked;
       render();
     });
   }
