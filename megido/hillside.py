@@ -1,10 +1,19 @@
 """Data-driven hillside (overburden surface) extraction from the muon flux.
 
 Each Phase-2 sky-opacity pixel is an in-rock path length up to a density
-scale; the exit point p + L*d̂ is a point on the hill surface z=H(x,y). The
-P0/P1 parallax pins the scale. See docs/superpowers/specs/...-design.md §11.
-The absolute height is weakly constrained by a single 2.2 m baseline; the
-lateral shape is not. Every result carries that band.
+scale; the exit point p + L*d̂ is a point on the hill surface z=H(x,y). See
+docs/superpowers/specs/...-design.md §11.
+
+`fit_scale`/`overlap_disagreement` below fit that density scale by P0/P1
+parallax overlap consistency, and they remain valid on clean/synthetic
+geometry (see their tests). But on the real 2.2 m baseline, the controller
+found the overlap disagreement is monotone in the scale `a` — no interior
+minimum — so a parallax fit there is meaningless, not merely noisy.
+`fit_hillside` therefore does NOT call `fit_scale`: it reports the surface
+at a stated convention scale (`a_nom`, default 1 opacity-unit = 1 m) and
+flags `scale_determined=False` on every result. The lateral SHAPE is what
+this geometry constrains; every result carries a per-cell bootstrap band on
+that shape, and a P0/P1 shape-agreement diagnostic that does not set scale.
 """
 from __future__ import annotations
 
@@ -256,11 +265,19 @@ class HillsideResult:
     """The overburden-surface fit, with its bootstrap uncertainty band.
 
     `H`/`sigma`/`count` are nx×ny; NaN off the hill (nowhere a ray landed).
-    `sigma` is the per-cell 1-sigma spread of `H` under the gauge bootstrap
-    (varying `normalized_opacity`'s `transparent_quantile`) — the only
-    uncertainty this geometry has an honest handle on. `height_confidence`
-    states that band against the H relief in plain language; nothing here
-    ever presents a crisp absolute height without it.
+
+    The real 2.2 m baseline turned out NOT to pin the density scale: on real
+    data the P0/P1 overlap disagreement is monotone in `a` (no interior
+    minimum), so fitting `a` from parallax (`fit_scale`) is meaningless here
+    — verified by the controller against real S2 output. `a`/`db` are
+    therefore a stated CONVENTION scale (1 opacity-unit = 1 m by default),
+    not a fit; `scale_determined` is always False, and `height_confidence`
+    says so explicitly. `shape_consistency` (P0/P1 overlap RMS ÷ H relief) is
+    reported as a diagnostic of how well the two positions' *shapes* agree —
+    it does not set the scale. `sigma` is the per-cell 1-sigma spread of `H`
+    under the gauge bootstrap (varying `normalized_opacity`'s
+    `transparent_quantile`) at fixed (a, db) — the honest lateral-shape
+    uncertainty this geometry does have a handle on.
     """
     H: np.ndarray
     sigma: np.ndarray
@@ -273,30 +290,42 @@ class HillsideResult:
     data_residual: float
     overlap_agreement: float
     height_confidence: str
+    shape_consistency: float = float("nan")
+    scale_determined: bool = False
     detectors: list = field(default_factory=list)
 
 
-def fit_hillside(sol, cfg, *, footprint_m=None, cell_m=0.5, n_boot=8,
-                  quantiles=None) -> HillsideResult:
-    """Fit the overburden surface H(x,y) from both positions' opacity images.
+def fit_hillside(sol, cfg, *, a_nom=1.0, footprint_m=None, cell_m=0.5,
+                  n_boot=8, quantiles=None, db=0.0) -> HillsideResult:
+    """Build the overburden surface H(x,y) from both positions' opacity images,
+    at a stated convention scale.
 
     Groups `cfg.exposures` by `.position` (a real config has several
     exposures sharing two positions — one image and one world pose per
-    position, never per exposure), fits the shared density scale + P1
-    relative offset by parallax overlap consistency, builds the combined
-    two-cloud height field, and bootstraps the Phase-2 gauge
-    (`transparent_quantile`) to get a per-cell uncertainty band.
+    position, never per exposure). Does NOT fit the density scale from
+    parallax: on the real 2.2 m baseline the P0/P1 overlap disagreement is
+    monotone in `a`, so `fit_scale` has no interior minimum to find there.
+    Instead uses the stated `a_nom`/`db` (default: 1 opacity-unit = 1 m, no
+    relative offset), builds the combined two-cloud height field at that
+    scale, reports P0/P1 shape agreement as a diagnostic (not a scale fit),
+    and bootstraps the Phase-2 gauge (`transparent_quantile`) at fixed
+    (a_nom, db) to get a per-cell lateral-shape uncertainty band.
     """
     positions, poses = _group_positions(cfg)
     xedges, yedges = _build_edges(positions, poses, footprint_m, cell_m)
 
     images = _build_images(sol, positions, poses, quantile=0.05)
-    scale = fit_scale(images, xedges, yedges, a0=1.0, db0=0.0)
-    a, db = scale["a"], scale["db"]
+    a = float(a_nom)
 
     H, count, per_pos = _combined_cloud(images, a, db, xedges, yedges)
     overlap_agreement = _overlap_agreement(per_pos, H)
     data_residual = _data_residual(images, a, db, H, xedges, yedges)
+
+    disagreement, _n_overlap = overlap_disagreement(a, db, images, xedges, yedges)
+    finite_H = H[np.isfinite(H)]
+    relief = float(np.ptp(finite_H)) if finite_H.size else 0.0
+    shape_consistency = (disagreement / relief) if relief > 0 and np.isfinite(disagreement) \
+        else float("nan")
 
     if quantiles is None:
         quantiles = [0.02, 0.05, 0.1, 0.2]
@@ -304,8 +333,7 @@ def fit_hillside(sol, cfg, *, footprint_m=None, cell_m=0.5, n_boot=8,
     for k in range(n_boot):
         q = quantiles[k % len(quantiles)]
         images_q = _build_images(sol, positions, poses, quantile=q)
-        scale_q = fit_scale(images_q, xedges, yedges, a0=a, db0=db)
-        H_q, _, _ = _combined_cloud(images_q, scale_q["a"], scale_q["db"], xedges, yedges)
+        H_q, _, _ = _combined_cloud(images_q, a, db, xedges, yedges)
         H_boot[k] = H_q
 
     sigma = np.full(H.shape, np.nan)
@@ -318,23 +346,22 @@ def fit_hillside(sol, cfg, *, footprint_m=None, cell_m=0.5, n_boot=8,
             sigma[enough] = np.nanstd(H_boot[:, enough], axis=0)
     sigma[m & (n_finite < 2)] = 0.0
 
-    if m.any():
-        band = float(np.nanmedian(sigma[m]))
-        relief = float(np.nanmax(H[m]) - np.nanmin(H[m]))
-        pct = 100.0 * band / relief if relief > 0 else float("nan")
-        height_confidence = (
-            f"absolute height uncertain to +/-{band:.1f} m ({pct:.0f}% of relief); "
-            "lateral shape well constrained"
-        )
-    else:
-        height_confidence = "no hill surface recovered; height entirely unconstrained"
+    sc_str = f"{shape_consistency:.2f}" if np.isfinite(shape_consistency) else "n/a"
+    height_confidence = (
+        "absolute height NOT determined by 2.2 m parallax (overlap "
+        "disagreement is monotone in scale on real data, no interior "
+        "minimum); shown at convention scale (1 opacity-unit = 1 m), true "
+        "height proportional to 1/rho (rho assumed, external); lateral "
+        f"shape constrained; P0/P1 shape agreement (overlap RMS/relief) = {sc_str}"
+    )
 
     detectors = [{"id": pid, "x": poses[pid].x, "y": poses[pid].y, "z": poses[pid].z}
                  for pid in positions]
 
     return HillsideResult(
         H=H, sigma=sigma, count=count, xedges=xedges, yedges=yedges,
-        a=a, db=db, disagreement=scale["disagreement"],
+        a=a, db=float(db), disagreement=disagreement,
         data_residual=data_residual, overlap_agreement=overlap_agreement,
-        height_confidence=height_confidence, detectors=detectors,
+        height_confidence=height_confidence, shape_consistency=shape_consistency,
+        scale_determined=False, detectors=detectors,
     )

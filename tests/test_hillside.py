@@ -156,8 +156,13 @@ def test_group_positions_groups_by_pose_not_exposure_count():
 
 
 def test_fit_hillside_recovers_lateral_shape():
+    # a is no longer fitted from parallax (real-data diagnosis: the P0/P1
+    # overlap disagreement is monotone in a, no interior minimum) -- pass
+    # the synthetic's true 1/rho as the stated convention scale a_nom, and
+    # check the SHAPE recovery, which is the honest claim this test makes.
     a_true = 0.5
-    res = fit_hillside(_FakeSol(a_true), _FakeCfg(), footprint_m=14.0, cell_m=0.5, n_boot=4)
+    res = fit_hillside(_FakeSol(a_true), _FakeCfg(), a_nom=a_true,
+                        footprint_m=14.0, cell_m=0.5, n_boot=4)
     assert isinstance(res, HillsideResult)
     truth = _synthetic_hill(*np.meshgrid(
         0.5 * (res.xedges[:-1] + res.xedges[1:]),
@@ -171,6 +176,9 @@ def test_fit_hillside_recovers_lateral_shape():
     # uncertainty is populated where the surface is
     assert np.isfinite(res.sigma[m]).all() and (res.sigma[m] >= 0).all()
     assert "height" in res.height_confidence.lower()
+    # honesty: scale is a stated convention, never presented as measured
+    assert res.scale_determined is False
+    assert "not determined" in res.height_confidence.lower()
 
 
 class _FakeSolVaryingQuantile(_FakeSol):
