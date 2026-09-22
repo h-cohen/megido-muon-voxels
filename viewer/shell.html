@@ -222,6 +222,9 @@
         <label><input id="toggle-silhouette" type="checkbox" style="width:auto" disabled> Silhouette <span class="dim">(angular, convention length)</span></label>
         <label><input id="toggle-hill-surface" type="checkbox" style="width:auto" disabled> Hillside surface</label>
         <div id="hill-surface-caveat" class="dim" hidden></div>
+        <label for="hill-surface-smooth" class="dim">smoothing (display only)</label>
+        <input id="hill-surface-smooth" type="range" min="0" max="12" step="1" value="0" disabled>
+        <span id="hill-surface-smooth-readout" class="dim mono">0</span>
         <button id="export-png-btn">Export PNG</button>
         <button id="frame-all-btn">Frame all</button>
         <div class="row"><input id="view-name" type="text" placeholder="view name"><button id="save-view-btn">Save view</button></div>

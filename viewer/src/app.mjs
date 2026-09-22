@@ -12,7 +12,7 @@ import { COLORMAP_NAMES, colormapStops } from './colormap.mjs';
 import { captureView, loadViews, saveViews } from './views.mjs';
 import { SHORTCUTS, keyToAction } from './shortcuts.mjs';
 import { markerVertices, silhouetteVertices, SILHOUETTE_RAYLEN_M } from './markers.mjs';
-import { surfaceMesh } from './surfacemesh.mjs';
+import { surfaceMesh, smoothHeightfield } from './surfacemesh.mjs';
 
 const VERTEX_SRC = `#version 300 es
 out vec2 vUv;
@@ -276,6 +276,7 @@ export function initViewer(root) {
     hillSurface: null,
     showHillSurface: false,
     hillSurfaceIndexCount: 0,
+    hillSurfaceSmooth: 0, // display-only smoothing pass count; 0 = raw fit
   };
 
   function worldBounds() {
@@ -431,13 +432,22 @@ export function initViewer(root) {
     gl.disable(gl.BLEND);
   }
 
+  // Rebuilds the hill-surface GL buffers from the RAW fitted height field,
+  // re-applying state.hillSurfaceSmooth passes of display-only smoothing
+  // (smoothHeightfield) each time. Smoothing always starts from the raw
+  // surf.H (never cumulatively from a previous smoothed result), so moving
+  // the slider back to 0 exactly restores the raw fit.
   function rebuildHillSurfaceBuffer() {
     const surf = state.hillSurface;
     if (!surf) {
       state.hillSurfaceIndexCount = 0;
       return;
     }
-    const { positions, indices } = surfaceMesh(surf.H, surf.gx, surf.gy);
+    const iterations = state.hillSurfaceSmooth || 0;
+    const H = iterations > 0
+      ? smoothHeightfield(surf.H, surf.gx.length, surf.gy.length, iterations)
+      : surf.H;
+    const { positions, indices } = surfaceMesh(H, surf.gx, surf.gy);
     gl.bindVertexArray(hillSurfaceVao);
     gl.bindBuffer(gl.ARRAY_BUFFER, hillSurfacePositionBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
@@ -635,6 +645,13 @@ export function initViewer(root) {
     const hillSurfaceMetaFile = byName.get('hill_surface_meta.json');
     const toggleHillSurfaceEl = root.querySelector('#toggle-hill-surface');
     const hillSurfaceCaveatEl = root.querySelector('#hill-surface-caveat');
+    const hillSurfaceSmoothEl = root.querySelector('#hill-surface-smooth');
+    const hillSurfaceSmoothReadoutEl = root.querySelector('#hill-surface-smooth-readout');
+    // A fresh run always starts unsmoothed, whatever a previous run's slider
+    // was left at - display-only smoothing must never carry across loads.
+    state.hillSurfaceSmooth = 0;
+    if (hillSurfaceSmoothEl) hillSurfaceSmoothEl.value = '0';
+    if (hillSurfaceSmoothReadoutEl) hillSurfaceSmoothReadoutEl.textContent = '0';
     if (hillSurfaceFile && hillSurfaceMetaFile) {
       const { data: H } = parseNpy(await readFile(hillSurfaceFile));
       const hillMeta = JSON.parse(await hillSurfaceMetaFile.text());
@@ -644,6 +661,7 @@ export function initViewer(root) {
         toggleHillSurfaceEl.disabled = false;
         toggleHillSurfaceEl.checked = true; // primary hillside display: on by default when present
       }
+      if (hillSurfaceSmoothEl) hillSurfaceSmoothEl.disabled = false;
       state.showHillSurface = true;
       if (hillSurfaceCaveatEl) {
         const pct = Math.round((hillMeta.variance_explained || 0) * 100);
@@ -659,6 +677,7 @@ export function initViewer(root) {
         toggleHillSurfaceEl.disabled = true;
         toggleHillSurfaceEl.checked = false;
       }
+      if (hillSurfaceSmoothEl) hillSurfaceSmoothEl.disabled = true;
       if (hillSurfaceCaveatEl) hillSurfaceCaveatEl.hidden = true;
     }
 
@@ -892,6 +911,26 @@ export function initViewer(root) {
     toggleHillSurfaceEl.disabled = true; // enabled by loadRun once the artifact is present
     toggleHillSurfaceEl.addEventListener('change', (ev) => {
       state.showHillSurface = ev.target.checked;
+      render();
+    });
+  }
+
+  // Display-only smoothing slider for the hillside surface mesh: always
+  // rebuilds from the RAW fitted state.hillSurface.H (see
+  // rebuildHillSurfaceBuffer), so it adds no information and changing the
+  // slider never accumulates smoothing passes. No-op while no run/surface
+  // is loaded.
+  const hillSurfaceSmoothEl = root.querySelector('#hill-surface-smooth');
+  const hillSurfaceSmoothReadoutEl = root.querySelector('#hill-surface-smooth-readout');
+  if (hillSurfaceSmoothEl) {
+    hillSurfaceSmoothEl.disabled = true; // enabled by loadRun once the artifact is present
+    hillSurfaceSmoothEl.addEventListener('input', (ev) => {
+      if (!state.hillSurface) return;
+      state.hillSurfaceSmooth = Number(ev.target.value) || 0;
+      if (hillSurfaceSmoothReadoutEl) {
+        hillSurfaceSmoothReadoutEl.textContent = String(state.hillSurfaceSmooth);
+      }
+      rebuildHillSurfaceBuffer();
       render();
     });
   }

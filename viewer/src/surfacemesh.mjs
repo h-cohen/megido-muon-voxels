@@ -44,3 +44,51 @@ export function surfaceMesh(H, gx, gy) {
 
   return { positions, indices: Uint32Array.from(indices) };
 }
+
+// smoothHeightfield(H, nx, ny, iterations) -> Float32Array
+// DISPLAY-ONLY de-jitter for a fitted height field: NaN-aware iterative
+// neighbour averaging. Adds no information and changes no fit - it only
+// makes the rendered mesh look less jumpy. Each pass replaces every FINITE
+// cell with the mean of itself and its finite 4-neighbours (up/down/left/
+// right, flat index i*ny+j); a missing (off-grid or NaN) neighbour is simply
+// excluded from that mean, never treated as zero. NaN cells are never
+// touched - they stay NaN and are never averaged into a finite neighbour's
+// mean, so holes in the surface never get smoothed shut. Pure: returns a
+// NEW array; `H` is never mutated. iterations=0 returns an unchanged copy.
+export function smoothHeightfield(H, nx, ny, iterations) {
+  let current = Float32Array.from(H);
+  for (let pass = 0; pass < iterations; pass++) {
+    const next = new Float32Array(current.length);
+    for (let i = 0; i < nx; i++) {
+      for (let j = 0; j < ny; j++) {
+        const idx = i * ny + j;
+        const center = current[idx];
+        if (!Number.isFinite(center)) {
+          next[idx] = NaN;
+          continue;
+        }
+        let sum = center;
+        let count = 1;
+        if (i > 0) {
+          const v = current[(i - 1) * ny + j];
+          if (Number.isFinite(v)) { sum += v; count++; }
+        }
+        if (i < nx - 1) {
+          const v = current[(i + 1) * ny + j];
+          if (Number.isFinite(v)) { sum += v; count++; }
+        }
+        if (j > 0) {
+          const v = current[i * ny + (j - 1)];
+          if (Number.isFinite(v)) { sum += v; count++; }
+        }
+        if (j < ny - 1) {
+          const v = current[i * ny + (j + 1)];
+          if (Number.isFinite(v)) { sum += v; count++; }
+        }
+        next[idx] = sum / count;
+      }
+    }
+    current = next;
+  }
+  return current;
+}

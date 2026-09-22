@@ -179,4 +179,28 @@ def test_real_campaign_output_renders_with_every_control_operable(page, dist_pat
         "re-checking #toggle-hill-surface must restore the rendered surface"
     )
 
+    # Display-only smoothing slider for the hillside surface: with the
+    # surface toggled on, dragging it to a nonzero value must re-render the
+    # (visibly smoother) mesh, and dragging back to 0 must restore the raw
+    # fitted surface exactly.
+    hill_surface_smooth = page.locator("#hill-surface-smooth")
+    assert hill_surface_smooth.count() == 1, "missing #hill-surface-smooth control"
+    assert hill_surface_smooth.is_enabled(), (
+        "runs/voxels has hill_surface.npy - #hill-surface-smooth must be enabled"
+    )
+    raw_hill_surface = gl_canvas_data()
+    hill_surface_smooth.fill("8")
+    hill_surface_smooth.dispatch_event("input")
+    page.wait_for_timeout(50)
+    smoothed_hill_surface = gl_canvas_data()
+    assert smoothed_hill_surface != raw_hill_surface, (
+        "moving #hill-surface-smooth to a nonzero value must change the rendered mesh"
+    )
+    hill_surface_smooth.fill("0")
+    hill_surface_smooth.dispatch_event("input")
+    page.wait_for_timeout(50)
+    assert gl_canvas_data() == raw_hill_surface, (
+        "returning #hill-surface-smooth to 0 must restore the raw fitted surface"
+    )
+
     assert console_errors == [], f"JS console errors during interaction: {console_errors}"
