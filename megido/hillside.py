@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy.optimize import minimize
 
+from megido.baseline import position_ids
+
 
 def ray_dirs(tan_xy: np.ndarray) -> np.ndarray:
     """N×2 (tx,ty) -> N×3 unit sky-frame ray directions (tx,ty,1)/|.|."""
@@ -115,12 +117,16 @@ def _group_positions(cfg):
 
     A real SiteConfig has several exposures (P0/T20a/T20b/P1) sharing two
     positions (pos0/pos1); each position contributes exactly one opacity
-    image and one detector world pose, never one per exposure.
+    image and one detector world pose, never one per exposure. `Exposure` has
+    no `.position` field — position is derived from pose translation via the
+    canonical `megido.baseline.position_ids` (two tilts at the same spot are
+    the same position), the same grouping the S2 solve itself uses.
     """
+    pid_by_exposure = position_ids(cfg)
     poses = {}
     order = []
     for exp in cfg.exposures:
-        pid = exp.position
+        pid = pid_by_exposure[exp.id]
         if pid not in poses:
             poses[pid] = exp.pose
             order.append(pid)

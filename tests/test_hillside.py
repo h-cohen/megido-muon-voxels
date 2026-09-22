@@ -126,9 +126,33 @@ class _FakeSol:
 
 
 class _FakeCfg:
+    """Real `Exposure` has no `.position` field — position is derived from
+    pose translation (see `megido.baseline.position_ids`), never read off
+    the exposure directly. This fake deliberately has no `.position` so the
+    test exercises the real grouping path."""
     class _E:
-        def __init__(s, pid, x): s.position, s.pose = pid, type("P", (), {"x": x, "y": 0.0, "z": 0.0})
-    exposures = [_E("pos0", 0.0), _E("pos1", 2.2)]
+        def __init__(s, id_, x, y=0.0, z=0.0):
+            s.id = id_
+            s.pose = type("P", (), {"x": x, "y": y, "z": z})
+    exposures = [_E("P0", 0.0), _E("P1", 2.2)]
+
+
+def test_group_positions_groups_by_pose_not_exposure_count():
+    # A real SiteConfig has 4 exposures (P0, T20a, T20b, P1) over 2 positions
+    # -- three exposures share pose (0,0,0) and one sits at (2.2,0,0). This
+    # must collapse to exactly 2 positions, keyed by pose, not by exposure.
+    from megido.hillside import _group_positions
+    E = _FakeCfg._E
+    cfg = type("Cfg", (), {"exposures": [
+        E("P0", 0.0, 0.0, 0.0),
+        E("T20a", 0.0, 0.0, 0.0),
+        E("T20b", 0.0, 0.0, 0.0),
+        E("P1", 2.2, 0.0, 0.0),
+    ]})()
+    order, poses = _group_positions(cfg)
+    assert order == ["pos0", "pos1"]
+    assert poses["pos0"].x == 0.0 and poses["pos0"].y == 0.0
+    assert poses["pos1"].x == 2.2
 
 
 def test_fit_hillside_recovers_lateral_shape():
@@ -147,3 +171,23 @@ def test_fit_hillside_recovers_lateral_shape():
     # uncertainty is populated where the surface is
     assert np.isfinite(res.sigma[m]).all() and (res.sigma[m] >= 0).all()
     assert "height" in res.height_confidence.lower()
+
+
+class _FakeSolVaryingQuantile(_FakeSol):
+    """Like _FakeSol, but normalized_opacity actually moves with the gauge
+    quantile -- exercises the bootstrap's quantile-cycling -> refit ->
+    per-cell-std machinery instead of trivially replaying one fixed image."""
+    def normalized_opacity(self, pid, transparent_quantile=0.05):
+        return self._lam[pid] * (1.0 + transparent_quantile)
+
+
+def test_fit_hillside_bootstrap_band_is_nonzero_and_matches_h_mask():
+    a_true = 0.5
+    res = fit_hillside(_FakeSolVaryingQuantile(a_true), _FakeCfg(),
+                        footprint_m=14.0, cell_m=0.5, n_boot=4)
+    m = np.isfinite(res.H)
+    # the quantile bootstrap actually produces spread somewhere on the hill
+    assert np.nanmax(res.sigma[m]) > 0.0
+    # sigma is defined everywhere H is, and nowhere H isn't
+    assert np.isfinite(res.sigma[m]).all()
+    assert np.isnan(res.sigma[~m]).all()
