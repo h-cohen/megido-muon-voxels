@@ -44,6 +44,30 @@ def test_real_campaign_output_renders_with_every_control_operable(page, dist_pat
         "the real campaign's honest verdict must reach the viewer unedited"
     )
 
+    def canvas_is_blank(selector):
+        data = page.evaluate(f"""
+            () => {{
+                const src = document.querySelector('{selector}');
+                const c = document.createElement('canvas');
+                c.width = src.width; c.height = src.height;
+                return [src.toDataURL(), c.toDataURL()];
+            }}
+        """)
+        return data[0] == data[1]
+
+    assert not canvas_is_blank("#gizmo-canvas"), "axis gizmo must render"
+    assert not canvas_is_blank("#legend-canvas"), "colorbar legend must render"
+
+    # Switch colormap.
+    page.locator("#colormap-select").select_option("inferno")
+
+    # Collapse and re-expand a dock section.
+    clip_header = page.locator('[data-section="sec-clip"] .section-header')
+    clip_header.click()
+    assert page.locator('[data-section="sec-clip"]').get_attribute("data-open") == "false"
+    clip_header.click()
+    assert page.locator('[data-section="sec-clip"]').get_attribute("data-open") == "true"
+
     # backprojection.npy is a 2D (58, 50) diagnostic plane, not a volume grid
     # layer (nx*ny*nz elements); loadRun correctly skips it, so it is not
     # asserted here.
@@ -83,6 +107,25 @@ def test_real_campaign_output_renders_with_every_control_operable(page, dist_pat
     page.mouse.move(canvas_box["x"] + canvas_box["width"] / 2,
                      canvas_box["y"] + canvas_box["height"] / 2)
     page.wait_for_timeout(100)
+
+    # Shortcuts overlay: open with "?", close with Escape. Move focus off the
+    # last-touched form control first - the app ignores shortcut keys while
+    # an input/select/textarea has focus.
+    page.locator("#gl-canvas").click()
+    page.keyboard.press("Shift+Slash")  # '?'
+    assert page.locator("#overlay-shortcuts").is_visible(), "? must open the shortcuts cheatsheet"
+    page.keyboard.press("Escape")
+    assert page.locator("#overlay-shortcuts").is_hidden(), "Escape must close the shortcuts cheatsheet"
+
+    # Keyboard layer switch (digit keys).
+    page.keyboard.press("2")
+
+    # Save the current view, then apply it back.
+    page.locator("#view-name").fill("smoke-test-view")
+    page.locator("#save-view-btn").click()
+    saved_item = page.locator("#saved-views li", has_text="smoke-test-view")
+    assert saved_item.count() == 1, "saved view must appear in the saved-views list"
+    saved_item.get_by_role("button", name="Apply").click()
 
     with page.expect_download():
         page.locator("#export-png-btn").click()
