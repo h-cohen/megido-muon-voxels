@@ -130,4 +130,29 @@ def test_real_campaign_output_renders_with_every_control_operable(page, dist_pat
     with page.expect_download():
         page.locator("#export-png-btn").click()
 
+    # Task S6: hillside silhouette fan. hill_silhouette.json is present in
+    # the real runs/voxels output (written by `megido.cli hillside`), so the
+    # toggle must be enabled and change the render when checked.
+    silhouette_toggle = page.locator("#toggle-silhouette")
+    assert silhouette_toggle.count() == 1, "missing #toggle-silhouette control"
+    assert silhouette_toggle.is_enabled(), (
+        "runs/voxels has hill_silhouette.json - #toggle-silhouette must be enabled"
+    )
+
+    def gl_canvas_data():
+        return page.evaluate("() => document.querySelector('#gl-canvas').toDataURL()")
+
+    before_silhouette = gl_canvas_data()
+    silhouette_toggle.check()
+    page.wait_for_timeout(50)
+    after_silhouette = gl_canvas_data()
+    assert after_silhouette != before_silhouette, (
+        "enabling #toggle-silhouette must change the rendered canvas (ridgeline fan drawn)"
+    )
+    silhouette_toggle.uncheck()
+    page.wait_for_timeout(50)
+    assert gl_canvas_data() == before_silhouette, (
+        "disabling #toggle-silhouette must remove the ridgeline fan again"
+    )
+
     assert console_errors == [], f"JS console errors during interaction: {console_errors}"

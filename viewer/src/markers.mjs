@@ -26,3 +26,39 @@ export function markerVertices(detectors) {
   }
   return out;
 }
+
+// Hill silhouette (ridgeline) fan: rays from each detector along the
+// azimuth/elevation directions the flux-edge extraction measured. There is
+// no absolute distance in this observable (see hillside CLI honesty_note),
+// so rayLen is a display convention, not a measured range.
+export const SILHOUETTE_RAYLEN_M = 20.0;
+
+// silhouetteVertices(perPos, detectors, rayLen) -> Float32Array
+// perPos: { [posId]: { ridge_az: [deg,...], ridge_elev: [deg|null,...] } }
+// detectors: [{ id, x, y, z }, ...] (meta.json's `detectors` list)
+// Only positions present in BOTH perPos and detectors are drawn; within a
+// position, bins with a null (unconstrained) elevation are skipped. Returns
+// a flat XYZ line-list (2 endpoints x 3 coords per finite bin), same layout
+// convention as markerVertices, for gl.LINES.
+export function silhouetteVertices(perPos, detectors, rayLen = SILHOUETTE_RAYLEN_M) {
+  const byId = new Map(detectors.map((d) => [d.id, d]));
+  const segments = [];
+  for (const [posId, entry] of Object.entries(perPos || {})) {
+    const det = byId.get(posId);
+    if (!det) continue;
+    const { x, y, z } = det;
+    const az = entry.ridge_az || [];
+    const elev = entry.ridge_elev || [];
+    for (let i = 0; i < az.length; i++) {
+      const e = elev[i];
+      if (e === null || e === undefined || Number.isNaN(e)) continue;
+      const azRad = (az[i] * Math.PI) / 180;
+      const elevRad = (e * Math.PI) / 180;
+      const dx = Math.cos(elevRad) * Math.cos(azRad);
+      const dy = Math.cos(elevRad) * Math.sin(azRad);
+      const dz = Math.sin(elevRad);
+      segments.push(x, y, z, x + rayLen * dx, y + rayLen * dy, z + rayLen * dz);
+    }
+  }
+  return new Float32Array(segments);
+}

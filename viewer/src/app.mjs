@@ -11,7 +11,7 @@ import { initDock } from './dock.mjs';
 import { COLORMAP_NAMES, colormapStops } from './colormap.mjs';
 import { captureView, loadViews, saveViews } from './views.mjs';
 import { SHORTCUTS, keyToAction } from './shortcuts.mjs';
-import { markerVertices } from './markers.mjs';
+import { markerVertices, silhouetteVertices, SILHOUETTE_RAYLEN_M } from './markers.mjs';
 
 const VERTEX_SRC = `#version 300 es
 out vec2 vUv;
@@ -184,6 +184,23 @@ export function initViewer(root) {
   gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
   gl.bindVertexArray(null);
 
+  // Hillside silhouette fan: SAME markerProgram/markerUniforms as the
+  // detector crosses above (Task S5), a second VAO/buffer because the
+  // geometry is unrelated. Distinct colors per detector position, drawn as
+  // separate ranges within one buffer so each range gets its own
+  // uMarkerColor.
+  const SILHOUETTE_COLORS = [
+    [0.15, 0.9, 0.85],  // teal/cyan
+    [0.95, 0.35, 0.85],  // magenta
+  ];
+  const silhouetteVao = gl.createVertexArray();
+  const silhouetteBuffer = gl.createBuffer();
+  gl.bindVertexArray(silhouetteVao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, silhouetteBuffer);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  gl.bindVertexArray(null);
+
   const uniforms = {};
   for (const name of [
     'uInvViewProj', 'uCameraPos', 'uVolume', 'uSigmaTex', 'uTransferLUT',
@@ -215,6 +232,9 @@ export function initViewer(root) {
     detectors: [],
     showDetectors: false,
     markerVertexCount: 0,
+    silhouette: null,
+    showSilhouette: false,
+    silhouetteRanges: [],
   };
 
   function worldBounds() {
@@ -271,6 +291,9 @@ export function initViewer(root) {
     if (state.showDetectors && state.meta && state.markerVertexCount > 0) {
       drawMarkers(viewProj);
     }
+    if (state.showSilhouette && state.silhouette && state.silhouetteRanges.length > 0) {
+      drawSilhouette(viewProj);
+    }
     drawGizmo();
   }
   state.render = render;
@@ -293,6 +316,55 @@ export function initViewer(root) {
     state.markerVertexCount = verts.length / 3;
     gl.bindBuffer(gl.ARRAY_BUFFER, markerBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+  }
+
+  // Hillside silhouette fan: drawn with the SAME markerProgram used for
+  // detector crosses (see drawMarkers above), one draw call per detector
+  // position so each gets its own color from SILHOUETTE_COLORS. The rays
+  // are a display convention length (SILHOUETTE_RAYLEN_M) - this observable
+  // is angular only, so no draw call here implies a measured distance.
+  function drawSilhouette(viewProj) {
+    gl.useProgram(markerProgram);
+    gl.bindVertexArray(silhouetteVao);
+    gl.uniformMatrix4fv(markerUniforms.uMarkerViewProj, false, viewProj);
+    for (let i = 0; i < state.silhouetteRanges.length; i++) {
+      const { start, count } = state.silhouetteRanges[i];
+      gl.uniform3fv(markerUniforms.uMarkerColor, SILHOUETTE_COLORS[i % SILHOUETTE_COLORS.length]);
+      gl.drawArrays(gl.LINES, start, count);
+    }
+    gl.bindVertexArray(null);
+  }
+
+  function rebuildSilhouetteBuffer() {
+    const silhouette = state.silhouette;
+    // hill_silhouette.json carries its OWN `detectors` list, keyed by the
+    // same pos0/pos1 ids as `per_pos` (see megido/hillside.py) - these are
+    // NOT the same ids as meta.json's detectors (P0/T20a/T20b/P1), so the
+    // silhouette's own list must be used here, not state.detectors.
+    const detectors = (silhouette && silhouette.detectors) || [];
+    if (!silhouette || !silhouette.per_pos) {
+      state.silhouetteRanges = [];
+      return;
+    }
+    const chunks = [];
+    const ranges = [];
+    let vertOffset = 0;
+    for (const posId of Object.keys(silhouette.per_pos)) {
+      const single = { [posId]: silhouette.per_pos[posId] };
+      const verts = silhouetteVertices(single, detectors, SILHOUETTE_RAYLEN_M);
+      if (verts.length === 0) continue;
+      chunks.push(verts);
+      const count = verts.length / 3;
+      ranges.push({ start: vertOffset, count });
+      vertOffset += count;
+    }
+    const total = chunks.reduce((n, c) => n + c.length, 0);
+    const combined = new Float32Array(total);
+    let o = 0;
+    for (const c of chunks) { combined.set(c, o); o += c.length; }
+    state.silhouetteRanges = ranges;
+    gl.bindBuffer(gl.ARRAY_BUFFER, silhouetteBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, combined, gl.STATIC_DRAW);
   }
 
   // Axis-orientation gizmo (bottom-left): projects the three world axes
@@ -459,6 +531,21 @@ export function initViewer(root) {
     state.meta = meta;
     state.detectors = meta.detectors || [];
     rebuildMarkerBuffer();
+
+    // hill_silhouette.json (S6): an optional ridgeline fan, written by the
+    // `hillside` CLI subcommand. Absent for older/synthetic runs - a run
+    // without it must not error, and its toggle stays disabled.
+    const silhouetteFile = byName.get('hill_silhouette.json');
+    state.silhouette = silhouetteFile ? JSON.parse(await silhouetteFile.text()) : null;
+    rebuildSilhouetteBuffer();
+    const toggleSilhouetteEl = root.querySelector('#toggle-silhouette');
+    if (toggleSilhouetteEl) {
+      toggleSilhouetteEl.disabled = !state.silhouette;
+      if (!state.silhouette) {
+        toggleSilhouetteEl.checked = false;
+        state.showSilhouette = false;
+      }
+    }
 
     const banner = root.querySelector('#resolution-banner');
     const res = meta.resolution || {};
@@ -672,6 +759,15 @@ export function initViewer(root) {
   if (toggleDetectorsEl) {
     toggleDetectorsEl.addEventListener('change', (ev) => {
       state.showDetectors = ev.target.checked;
+      render();
+    });
+  }
+
+  const toggleSilhouetteEl = root.querySelector('#toggle-silhouette');
+  if (toggleSilhouetteEl) {
+    toggleSilhouetteEl.disabled = true; // enabled by loadRun once a run is present
+    toggleSilhouetteEl.addEventListener('change', (ev) => {
+      state.showSilhouette = ev.target.checked;
       render();
     });
   }
