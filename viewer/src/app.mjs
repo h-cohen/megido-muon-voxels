@@ -11,7 +11,7 @@ import { initDock } from './dock.mjs';
 import { COLORMAP_NAMES, colormapStops } from './colormap.mjs';
 import { captureView, loadViews, saveViews } from './views.mjs';
 import { SHORTCUTS, keyToAction } from './shortcuts.mjs';
-import { markerVertices, silhouetteVertices, SILHOUETTE_RAYLEN_M } from './markers.mjs';
+import { markerVertices, silhouetteVertices, SILHOUETTE_RAYLEN_M, dedupeDetectors, projectToScreen } from './markers.mjs';
 import { surfaceMesh, smoothHeightfield } from './surfacemesh.mjs';
 
 const VERTEX_SRC = `#version 300 es
@@ -177,6 +177,7 @@ function makeLutTexture(gl, lutBytes) {
 export function initViewer(root) {
   const canvas = root.querySelector('#gl-canvas');
   const fileInput = root.querySelector('#load-run-input');
+  const detectorLabelsEl = root.querySelector('#detector-labels');
   // preserveDrawingBuffer: true so toDataURL()/screenshot readback after a
   // draw call sees the frame just rendered, not a backbuffer the browser
   // has already cleared for the next composite.
@@ -276,6 +277,7 @@ export function initViewer(root) {
     sigmaTex: dummyVolume,
     lutTex: makeLutTexture(gl, buildTransferLUT(colormapStops('viridis'))),
     detectors: [],
+    detectorLabels: [],
     showDetectors: false,
     markerVertexCount: 0,
     silhouette: null,
@@ -371,6 +373,7 @@ export function initViewer(root) {
       drawHillSurface(viewProj);
     }
     drawGizmo();
+    updateDetectorLabels();
   }
   state.render = render;
 
@@ -392,6 +395,48 @@ export function initViewer(root) {
     state.markerVertexCount = verts.length / 3;
     gl.bindBuffer(gl.ARRAY_BUFFER, markerBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+    state.detectorLabels = dedupeDetectors(detectors);
+    rebuildDetectorLabelEls();
+  }
+
+  // HTML overlay labels ("P0", "P1/T20a", ...) for detector positions -
+  // crisp, theme-aware text the GL raymarch/marker programs can't give us
+  // cheaply. One <div> per distinct world position (see dedupeDetectors in
+  // markers.mjs); rebuilt only when the detector set changes, repositioned
+  // every render() via the SAME viewProj the scene draws with.
+  let detectorLabelEls = [];
+  function rebuildDetectorLabelEls() {
+    if (!detectorLabelsEl) return;
+    detectorLabelsEl.innerHTML = '';
+    detectorLabelEls = state.detectorLabels.map((d) => {
+      const el = document.createElement('div');
+      el.className = 'detector-label';
+      el.textContent = d.label;
+      el.hidden = true;
+      detectorLabelsEl.appendChild(el);
+      return el;
+    });
+  }
+
+  function updateDetectorLabels() {
+    if (!detectorLabelsEl) return;
+    if (!state.showDetectors || !state.meta || detectorLabelEls.length === 0) {
+      for (const el of detectorLabelEls) el.hidden = true;
+      return;
+    }
+    const { viewProj } = cameraMatrices();
+    const { width, height } = root.querySelector('#canvas-wrap').getBoundingClientRect();
+    state.detectorLabels.forEach((d, idx) => {
+      const el = detectorLabelEls[idx];
+      const p = projectToScreen([d.x, d.y, d.z], viewProj, width, height);
+      if (!p || p.x < 0 || p.x > width || p.y < 0 || p.y > height) {
+        el.hidden = true;
+        return;
+      }
+      el.hidden = false;
+      el.style.left = `${p.x}px`;
+      el.style.top = `${p.y}px`;
+    });
   }
 
   // Hillside silhouette fan: drawn with the SAME markerProgram used for

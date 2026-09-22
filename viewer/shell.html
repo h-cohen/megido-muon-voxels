@@ -108,6 +108,12 @@
     position:absolute;background:var(--panel-2);border:1px solid var(--line);color:var(--text);
     border-radius:6px;padding:2px 6px;transform:translate(12px,12px);
   }
+  #detector-labels{position:absolute;inset:0;z-index:6;pointer-events:none;overflow:hidden;}
+  .detector-label{
+    position:absolute;font:11px/1.2 var(--mono);color:var(--text-dim);
+    background:var(--panel);border:1px solid var(--line);border-radius:4px;
+    padding:1px 4px;transform:translate(8px,-8px);white-space:nowrap;
+  }
   #overlay-onboarding{
     position:absolute;inset:0;z-index:7;display:grid;place-items:center;
     pointer-events:none;
@@ -253,6 +259,7 @@
       <div id="legend-ticks" class="mono dim"></div>
     </div>
     <div id="overlay-hover"><div id="hover-readout" class="mono" hidden></div></div>
+    <div id="detector-labels"></div>
     <div id="overlay-onboarding">
       <div id="onboarding-card">
         <h2>Load a run to begin</h2>
