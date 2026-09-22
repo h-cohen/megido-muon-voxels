@@ -19,7 +19,18 @@ def test_hillside_writes_silhouette_json_and_png(tmp_path):
 
     json_path = out / "hill_silhouette.json"
     assert json_path.exists()
-    payload = json.loads(json_path.read_text())
+    text = json_path.read_text()
+
+    # Must be STRICT valid JSON: bare NaN/Infinity tokens (Python's default
+    # json.dumps(allow_nan=True) output) are not valid JSON and JS's
+    # JSON.parse throws on them. Empty ridge bins must serialize as `null`.
+    assert "NaN" not in text
+    assert "Infinity" not in text
+
+    def _reject_constants(c):
+        raise ValueError(f"non-finite JSON constant found: {c}")
+
+    payload = json.loads(text, parse_constant=_reject_constants)
 
     assert "honesty_note" in payload
     assert "distance" in payload["honesty_note"] or "az_coverage" in payload["honesty_note"]
@@ -36,6 +47,9 @@ def test_hillside_writes_silhouette_json_and_png(tmp_path):
             assert key in p, f"{pid} missing {key}"
         assert isinstance(p["ridge_az"], list)
         assert isinstance(p["ridge_elev"], list)
+        if p["az_coverage"] < 1.0:
+            assert None in p["ridge_elev"], (
+                f"{pid} has az_coverage<1 but no null (empty) ridge_elev bins")
 
     try:
         import matplotlib  # noqa: F401

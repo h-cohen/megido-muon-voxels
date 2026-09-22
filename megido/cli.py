@@ -257,6 +257,25 @@ _HONESTY_NOTE = (
 )
 
 
+def _json_nan_to_null(obj):
+    """Recursively replace NaN/inf floats with None.
+
+    `_json_safe` (megido.volexport) strips numpy types but leaves NaN/inf as
+    plain floats; `json.dumps` then serializes those as bare `NaN`/`Infinity`
+    tokens, which is not valid JSON (`JSON.parse` in JS raises on it, and the
+    S6 viewer loads this file that way). Ridge bins with no edge point are
+    legitimately NaN (CLAUDE.md: NaN means "not constrained"), so they must
+    become JSON `null`, not be dropped or coerced to a number.
+    """
+    if isinstance(obj, dict):
+        return {k: _json_nan_to_null(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_nan_to_null(v) for v in obj]
+    if isinstance(obj, float) and not np.isfinite(obj):
+        return None
+    return obj
+
+
 def _cmd_hillside(args) -> int:
     cfg = load_site_config(args.config)
     baseline = Path(args.solve) / "baseline.npz"
@@ -277,7 +296,7 @@ def _cmd_hillside(args) -> int:
         "per_pos": result.per_pos,
     }
     (out / "hill_silhouette.json").write_text(
-        json.dumps(_json_safe(payload), indent=2) + "\n")
+        json.dumps(_json_nan_to_null(_json_safe(payload)), indent=2) + "\n")
 
     for pid in sorted(result.per_pos):
         p = result.per_pos[pid]
