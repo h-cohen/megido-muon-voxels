@@ -11,6 +11,7 @@ import { initDock } from './dock.mjs';
 import { COLORMAP_NAMES, colormapStops } from './colormap.mjs';
 import { captureView, loadViews, saveViews } from './views.mjs';
 import { SHORTCUTS, keyToAction } from './shortcuts.mjs';
+import { markerVertices } from './markers.mjs';
 
 const VERTEX_SRC = `#version 300 es
 out vec2 vUv;
@@ -86,6 +87,25 @@ void main() {
   outColor = accum;
 }`;
 
+// Detector position markers use a SEPARATE minimal GL program from the
+// raymarch shader above: flat-colored world-space lines, drawn with gl.LINES
+// after the raymarch fullscreen triangle. This keeps FRAGMENT_SRC/VERTEX_SRC
+// (the raymarch shader) untouched.
+const MARKER_VERTEX_SRC = `#version 300 es
+layout(location = 0) in vec3 aPos;
+uniform mat4 uMarkerViewProj;
+void main() {
+  gl_Position = uMarkerViewProj * vec4(aPos, 1.0);
+}`;
+
+const MARKER_FRAGMENT_SRC = `#version 300 es
+precision highp float;
+uniform vec3 uMarkerColor;
+out vec4 outColor;
+void main() {
+  outColor = vec4(uMarkerColor, 1.0);
+}`;
+
 function compileShader(gl, type, src) {
   const sh = gl.createShader(type);
   gl.shaderSource(sh, src);
@@ -151,6 +171,19 @@ export function initViewer(root) {
   const program = linkProgram(gl, VERTEX_SRC, FRAGMENT_SRC);
   const vao = gl.createVertexArray();
 
+  const markerProgram = linkProgram(gl, MARKER_VERTEX_SRC, MARKER_FRAGMENT_SRC);
+  const markerUniforms = {
+    uMarkerViewProj: gl.getUniformLocation(markerProgram, 'uMarkerViewProj'),
+    uMarkerColor: gl.getUniformLocation(markerProgram, 'uMarkerColor'),
+  };
+  const markerVao = gl.createVertexArray();
+  const markerBuffer = gl.createBuffer();
+  gl.bindVertexArray(markerVao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, markerBuffer);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  gl.bindVertexArray(null);
+
   const uniforms = {};
   for (const name of [
     'uInvViewProj', 'uCameraPos', 'uVolume', 'uSigmaTex', 'uTransferLUT',
@@ -179,6 +212,9 @@ export function initViewer(root) {
     volumeTex: dummyVolume,
     sigmaTex: dummyVolume,
     lutTex: makeLutTexture(gl, buildTransferLUT(colormapStops('viridis'))),
+    detectors: [],
+    showDetectors: false,
+    markerVertexCount: 0,
   };
 
   function worldBounds() {
@@ -232,9 +268,32 @@ export function initViewer(root) {
     gl.uniform1i(uniforms.uTransferLUT, 2);
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+    if (state.showDetectors && state.meta && state.markerVertexCount > 0) {
+      drawMarkers(viewProj);
+    }
     drawGizmo();
   }
   state.render = render;
+
+  // Detector position markers: drawn with their own tiny GL program (see
+  // MARKER_VERTEX_SRC/MARKER_FRAGMENT_SRC above), using the SAME viewProj
+  // render() just computed so the crosses sit correctly in the scene.
+  function drawMarkers(viewProj) {
+    gl.useProgram(markerProgram);
+    gl.bindVertexArray(markerVao);
+    gl.uniformMatrix4fv(markerUniforms.uMarkerViewProj, false, viewProj);
+    gl.uniform3fv(markerUniforms.uMarkerColor, [1.0, 0.75, 0.1]);
+    gl.drawArrays(gl.LINES, 0, state.markerVertexCount);
+    gl.bindVertexArray(null);
+  }
+
+  function rebuildMarkerBuffer() {
+    const detectors = state.detectors || [];
+    const verts = markerVertices(detectors);
+    state.markerVertexCount = verts.length / 3;
+    gl.bindBuffer(gl.ARRAY_BUFFER, markerBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+  }
 
   // Axis-orientation gizmo (bottom-left): projects the three world axes
   // into view space using the SAME yaw/pitch as render()'s camera, so the
@@ -398,6 +457,8 @@ export function initViewer(root) {
     if (!metaFile) throw new Error('selected directory has no meta.json');
     const meta = JSON.parse(await metaFile.text());
     state.meta = meta;
+    state.detectors = meta.detectors || [];
+    rebuildMarkerBuffer();
 
     const banner = root.querySelector('#resolution-banner');
     const res = meta.resolution || {};
@@ -606,6 +667,14 @@ export function initViewer(root) {
     frameAll();
     render();
   });
+
+  const toggleDetectorsEl = root.querySelector('#toggle-detectors');
+  if (toggleDetectorsEl) {
+    toggleDetectorsEl.addEventListener('change', (ev) => {
+      state.showDetectors = ev.target.checked;
+      render();
+    });
+  }
 
   function renderViewList() {
     const list = loadViews();
