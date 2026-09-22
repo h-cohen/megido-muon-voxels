@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import itertools
+import json
 from pathlib import Path
 
 import numpy as np
@@ -20,8 +21,9 @@ from megido.pipeline import process_all
 from megido.reader import EventChunk, read_chunks
 from megido.reconstruct import VoxelSolution, solve_voxels
 from megido.resolution import campaign_resolution, format_resolution, views_per_voxel
+from megido.silhouette import extract_silhouette
 from megido.validate2 import format_report2, leave_one_out, nll_per_bin_check, opacity_uncertainty
-from megido.volexport import compare_volumes, export_volume
+from megido.volexport import _json_safe, compare_volumes, export_volume
 from megido.voxuncert import systematic_map, voxel_bootstrap
 
 
@@ -248,6 +250,91 @@ def _cmd_compare(args) -> int:
     return 0
 
 
+_HONESTY_NOTE = (
+    "Angular silhouette (ridgeline elevation vs azimuth) per detector position; "
+    "absolute distance/height NOT determined by the 2.2 m parallax; measured "
+    "only where constrained open sky borders the hill (see az_coverage)."
+)
+
+
+def _cmd_hillside(args) -> int:
+    cfg = load_site_config(args.config)
+    baseline = Path(args.solve) / "baseline.npz"
+    if not baseline.exists():
+        print(f"no baseline.npz under {args.solve}; run `megido solve` first")
+        return 1
+
+    sol = BaselineSolution.load(baseline)
+    result = extract_silhouette(sol, cfg)
+
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        "honesty_note": _HONESTY_NOTE,
+        "agreement": result.agreement,
+        "detectors": result.detectors,
+        "per_pos": result.per_pos,
+    }
+    (out / "hill_silhouette.json").write_text(
+        json.dumps(_json_safe(payload), indent=2) + "\n")
+
+    for pid in sorted(result.per_pos):
+        p = result.per_pos[pid]
+        finite = np.isfinite(p["ridge_elev"])
+        if finite.any():
+            lo, hi = np.min(p["ridge_elev"][finite]), np.max(p["ridge_elev"][finite])
+            span = f"{lo:.1f}..{hi:.1f} deg"
+        else:
+            span = "n/a"
+        print(f"{pid}: n_edge={p['n_edge']}  az_coverage={p['az_coverage']:.1%}  "
+              f"ridge elev {span}")
+    print(f"P0/P1 agreement (RMS ridge elevation, deg): {result.agreement:.3f}")
+
+    png_path = out / "hill_silhouette.png"
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("matplotlib not installed; skipped hill_silhouette.png")
+        return 0
+
+    fig = plt.figure(figsize=(7, 7))
+    ax = fig.add_subplot(111, projection="polar")
+    ax.set_theta_zero_location("N")
+    ax.set_theta_direction(-1)
+
+    for pid in sorted(result.per_pos):
+        p = result.per_pos[pid]
+        finite = np.isfinite(p["ridge_elev"])
+        if not finite.any():
+            continue
+        theta = np.radians(p["ridge_az"][finite])
+        r = p["ridge_elev"][finite]
+        ax.plot(theta, r, marker="o", markersize=3, linestyle="-", label=pid)
+
+    for det in result.detectors:
+        az = np.degrees(np.arctan2(det["y"], det["x"])) % 360.0
+        ax.plot(np.radians(az), 90.0, marker="^", markersize=8,
+                linestyle="none", label=f"{det['id']} ref az")
+
+    ax.set_rlabel_position(135)
+    ax.set_title("Megiddo hillside silhouette (ridgeline elevation vs azimuth)")
+    ax.legend(loc="lower left", bbox_to_anchor=(-0.1, -0.15), fontsize=8)
+
+    caption = (f"angular only, no absolute distance; "
+               f"P0/P1 agreement {result.agreement:.2f} deg; " +
+               ", ".join(f"{pid} az_coverage={result.per_pos[pid]['az_coverage']:.0%}"
+                         for pid in sorted(result.per_pos)))
+    fig.text(0.5, 0.02, caption, ha="center", fontsize=8, wrap=True)
+
+    fig.savefig(png_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"written {out / 'hill_silhouette.json'} and {png_path}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="megido")
     sub = p.add_subparsers(dest="command", required=True)
@@ -309,6 +396,12 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--a", required=True)
     c.add_argument("--b", required=True)
     c.set_defaults(func=_cmd_compare)
+
+    h = sub.add_parser("hillside", help="flux-edge hillside silhouette (S4)")
+    h.add_argument("--config", default="configs/megido.yaml")
+    h.add_argument("--solve", default="runs/solve", help="directory holding baseline.npz")
+    h.add_argument("--out", default="runs/voxels")
+    h.set_defaults(func=_cmd_hillside)
 
     args = p.parse_args(argv)
     return int(args.func(args))

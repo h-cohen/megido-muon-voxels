@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.4", "pytest-playwright>=0.4", "playwright>=1.40"]
+dev = ["pytest>=7.4", "pytest-playwright>=0.4", "playwright>=1.40", "matplotlib>=3.7"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
