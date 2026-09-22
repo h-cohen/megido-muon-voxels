@@ -275,8 +275,6 @@ export function initViewer(root) {
       ctx.fillText(axis.label, cx + axis.dx * (r + 10), cy - axis.dy * (r + 10));
     }
   }
-  state.drawGizmo = drawGizmo;
-
   function rebuildLut() {
     gl.deleteTexture(state.lutTex);
     state.lutTex = makeLutTexture(gl, buildTransferLUT(state.transferStops));
@@ -385,7 +383,8 @@ export function initViewer(root) {
       origin_m[2] + 0.5 * shape[2] * spacing_m,
     ];
     const diag = Math.hypot(shape[0] * spacing_m, shape[1] * spacing_m, shape[2] * spacing_m);
-    state.camera.distance = 1.3 * diag;
+    const FRAME_MARGIN = 1.6;
+    state.camera.distance = FRAME_MARGIN * diag;
   }
 
   async function loadRun(files) {
@@ -710,18 +709,18 @@ export function initViewer(root) {
   for (const axis of Object.keys(axes)) {
     const minInput = root.querySelector(`#clip-${axis}-min`);
     const minVal = root.querySelector(`#clip-${axis}-min-val`);
-    minVal.textContent = minInput.value;
+    minVal.textContent = Number(minInput.value).toFixed(2);
     minInput.addEventListener('input', (ev) => {
       state.clipMin[axes[axis]] = parseFloat(ev.target.value);
-      minVal.textContent = ev.target.value;
+      minVal.textContent = Number(ev.target.value).toFixed(2);
       render();
     });
     const maxInput = root.querySelector(`#clip-${axis}-max`);
     const maxVal = root.querySelector(`#clip-${axis}-max-val`);
-    maxVal.textContent = maxInput.value;
+    maxVal.textContent = Number(maxInput.value).toFixed(2);
     maxInput.addEventListener('input', (ev) => {
       state.clipMax[axes[axis]] = parseFloat(ev.target.value);
-      maxVal.textContent = ev.target.value;
+      maxVal.textContent = Number(ev.target.value).toFixed(2);
       render();
     });
   }
@@ -768,6 +767,10 @@ export function initViewer(root) {
     render();
   });
 
+  // Reimplements render()'s camera -> view -> proj -> invViewProj pipeline in
+  // JS (mirrored by the GPU-side unproject() in FRAGMENT_SRC). If the
+  // projection convention changes, update it here, in render(), and in the
+  // shader together.
   function castHoverRay(clientX, clientY) {
     if (!state.meta) return null;
     const rect = canvas.getBoundingClientRect();
