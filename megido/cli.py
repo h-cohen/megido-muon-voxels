@@ -17,6 +17,7 @@ from megido.config import load_site_config
 from megido.detector import DetectorGeometry
 from megido.fitdata import build_fit_data
 from megido.forward import build_forward_model
+from megido.hillside_surface import fit_surface
 from megido.pipeline import process_all
 from megido.reader import EventChunk, read_chunks
 from megido.reconstruct import VoxelSolution, solve_voxels
@@ -316,8 +317,11 @@ def _cmd_hillside(args) -> int:
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
+        plt = None
         print("matplotlib not installed; skipped hill_silhouette.png")
-        return 0
+
+    if plt is None:
+        return _cmd_hillside_surface(args, sol, cfg, out)
 
     fig = plt.figure(figsize=(7, 7))
     ax = fig.add_subplot(111, projection="polar")
@@ -351,6 +355,85 @@ def _cmd_hillside(args) -> int:
     fig.savefig(png_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"written {out / 'hill_silhouette.json'} and {png_path}")
+
+    return _cmd_hillside_surface(args, sol, cfg, out)
+
+
+def _cmd_hillside_surface(args, sol, cfg, out: Path) -> int:
+    """Fit and write the Phase 5b regularized hillside-surface artifacts.
+
+    Called from `_cmd_hillside` after the flux-edge silhouette artifacts are
+    written (kept unchanged) -- this ADDS the surface deliverable, it does
+    not replace anything.
+    """
+    result = fit_surface(sol, cfg, a=args.surface_a, cell_m=args.surface_cell)
+
+    np.save(out / "hill_surface.npy", result.H.astype(np.float32))
+    np.save(out / "hill_surface_sigma.npy", result.sigma.astype(np.float32))
+
+    meta = {
+        "gx": list(result.gx),
+        "gy": list(result.gy),
+        "a": result.a,
+        "cell_m": args.surface_cell,
+        "variance_explained": result.variance_explained,
+        "coverage_frac": result.coverage_frac,
+        "coverage_radius_m": result.coverage_radius_m,
+        "n_rays": result.n_rays,
+        "scale_assumed": result.scale_assumed,
+        "note": result.note,
+        "detectors": result.detectors,
+        "units": "convention metres (height ∝ 1/rho, absolute scale assumed)",
+    }
+    (out / "hill_surface_meta.json").write_text(
+        json.dumps(_json_nan_to_null(_json_safe(meta)), indent=2) + "\n")
+
+    finite = np.isfinite(result.H)
+    relief = (float(np.nanmax(result.H) - np.nanmin(result.H)) if finite.any() else float("nan"))
+    print(f"surface         a={result.a:g}  VE={result.variance_explained:.1%}  "
+          f"coverage={result.coverage_frac:.1%} (radius {result.coverage_radius_m:.1f} m)  "
+          f"relief={relief:.2f} m (convention scale)")
+
+    png_path = out / "hill_surface.png"
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("matplotlib not installed; skipped hill_surface.png")
+        print(f"written {out / 'hill_surface.npy'}, "
+              f"{out / 'hill_surface_sigma.npy'}, {out / 'hill_surface_meta.json'}")
+        return 0
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+    Hplot = np.ma.masked_invalid(result.H.T)  # transpose: pcolormesh wants (ny, nx)
+    mesh = ax.pcolormesh(result.gx, result.gy, Hplot, shading="auto", cmap="terrain")
+    cbar = fig.colorbar(mesh, ax=ax)
+    cbar.set_label("height, convention metres")
+
+    for det in result.detectors:
+        ax.plot(det["x"], det["y"], marker="^", markersize=8, color="black",
+                linestyle="none")
+        ax.annotate(det["id"], (det["x"], det["y"]), fontsize=8,
+                    textcoords="offset points", xytext=(4, 4))
+
+    ax.set_xlabel("x (m)")
+    ax.set_ylabel("y (m)")
+    ax.set_aspect("equal")
+    ax.set_title("Megiddo overburden surface (convention scale)")
+
+    caption = (
+        f"ASSUMED scale a={result.a:g} (height ∝ 1/rho; NOT set by the "
+        f"2.2 m parallax); surface explains {result.variance_explained:.0%} of "
+        f"directional opacity variance; coverage {result.coverage_frac:.0%} "
+        f"(radius {result.coverage_radius_m:.1f} m)"
+    )
+    fig.text(0.5, 0.01, caption, ha="center", fontsize=8, wrap=True)
+
+    fig.savefig(png_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"written {out / 'hill_surface.npy'}, {out / 'hill_surface_sigma.npy'}, "
+          f"{out / 'hill_surface_meta.json'}, {png_path}")
     return 0
 
 
@@ -420,6 +503,12 @@ def main(argv: list[str] | None = None) -> int:
     h.add_argument("--config", default="configs/megido.yaml")
     h.add_argument("--solve", default="runs/solve", help="directory holding baseline.npz")
     h.add_argument("--out", default="runs/voxels")
+    h.add_argument("--surface-a", type=float, default=8.0, dest="surface_a",
+                   help="assumed inverse-density display scale (opacity-units per "
+                        "metre) for the Phase 5b hillside surface; a shape-invariant "
+                        "convention, NOT determined by the 2.2 m parallax")
+    h.add_argument("--surface-cell", type=float, default=1.0, dest="surface_cell",
+                   help="surface grid cell size in metres")
     h.set_defaults(func=_cmd_hillside)
 
     args = p.parse_args(argv)
