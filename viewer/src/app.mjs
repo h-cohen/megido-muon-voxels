@@ -255,7 +255,15 @@ export function initViewer(root) {
     layerData: new Map(),
     activeLayer: null,
     gl, program, uniforms,
-    camera: { yaw: 0.6, pitch: 0.5, distance: 3, target: [0, 0, 0] },
+    // Default view is the "observation" preset (see camera.mjs
+    // CAMERA_PRESETS.observation): z-up, detectors (z=0) low in frame,
+    // reconstructed rock rising above them.
+    camera: {
+      yaw: CAMERA_PRESETS.observation.yaw,
+      pitch: CAMERA_PRESETS.observation.pitch,
+      distance: 3,
+      target: [0, 0, 0],
+    },
     transferStops: colormapStops('viridis'),
     clipMin: [0, 0, 0],
     clipMax: [1, 1, 1],
@@ -286,20 +294,43 @@ export function initViewer(root) {
     return { min: origin_m, extent };
   }
 
+  // World Z is the physical vertical (detectors at z=0, rock above). Near
+  // straight-down/up (|pitch| > PITCH_GIMBAL_LIMIT) the z-up vector goes
+  // parallel to the eye-to-target axis and lookAt degenerates, so we fall
+  // back to y-up there.
+  const PITCH_GIMBAL_LIMIT = 1.4;
+
+  // Single source of truth for eye/view/proj/viewProj/invViewProj, shared by
+  // render() and castHoverRay() so the two can never drift out of sync (see
+  // the cross-ref comment that used to live on castHoverRay).
+  function cameraMatrices() {
+    const { yaw, pitch, distance, target } = state.camera;
+    const eye = orbitToEye(target, yaw, pitch, distance);
+    const up = Math.abs(pitch) > PITCH_GIMBAL_LIMIT ? [0, 1, 0] : [0, 0, 1];
+    const view = lookAt(eye, target, up);
+    const proj = perspective(Math.PI / 4, canvas.width / canvas.height, 0.05, 100);
+    const viewProj = multiply(proj, view);
+    const invViewProj = invert(viewProj) || identity();
+    return { eye, view, proj, viewProj, invViewProj };
+  }
+
+  function currentTheme() {
+    return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+  }
+
   function render() {
     const { width, height } = canvas.getBoundingClientRect();
     canvas.width = Math.max(1, Math.round(width * (window.devicePixelRatio || 1)));
     canvas.height = Math.max(1, Math.round(height * (window.devicePixelRatio || 1)));
     gl.viewport(0, 0, canvas.width, canvas.height);
-    gl.clearColor(0.07, 0.07, 0.09, 1);
+    if (currentTheme() === 'light') {
+      gl.clearColor(0.90, 0.92, 0.94, 1);
+    } else {
+      gl.clearColor(0.04, 0.05, 0.06, 1);
+    }
     gl.clear(gl.COLOR_BUFFER_BIT);
 
-    const { yaw, pitch, distance, target } = state.camera;
-    const eye = orbitToEye(target, yaw, pitch, distance);
-    const view = lookAt(eye, target, [0, 1, 0]);
-    const proj = perspective(Math.PI / 4, canvas.width / canvas.height, 0.05, 100);
-    const viewProj = multiply(proj, view);
-    const invViewProj = invert(viewProj) || identity();
+    const { eye, viewProj, invViewProj } = cameraMatrices();
 
     gl.useProgram(program);
     gl.bindVertexArray(vao);
@@ -472,7 +503,8 @@ export function initViewer(root) {
 
     const { yaw, pitch } = state.camera;
     const eye = orbitToEye([0, 0, 0], yaw, pitch, 1);
-    const view = lookAt(eye, [0, 0, 0], [0, 1, 0]);
+    const up = Math.abs(pitch) > PITCH_GIMBAL_LIMIT ? [0, 1, 0] : [0, 0, 1];
+    const view = lookAt(eye, [0, 0, 0], up);
     // view[0..2] = view-space coords of world X axis, view[4..6] of world
     // Y, view[8..10] of world Z (see mat4.mjs lookAt column layout).
     const axes = [
@@ -1095,21 +1127,17 @@ export function initViewer(root) {
     render();
   });
 
-  // Reimplements render()'s camera -> view -> proj -> invViewProj pipeline in
-  // JS (mirrored by the GPU-side unproject() in FRAGMENT_SRC). If the
-  // projection convention changes, update it here, in render(), and in the
-  // shader together.
+  // Shares cameraMatrices() with render() (mirrored by the GPU-side
+  // unproject() in FRAGMENT_SRC), so hover picking always agrees with what
+  // was actually drawn. If the projection convention changes, update
+  // cameraMatrices() and the shader together.
   function castHoverRay(clientX, clientY) {
     if (!state.meta) return null;
     const rect = canvas.getBoundingClientRect();
     const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
     const ndcY = -(((clientY - rect.top) / rect.height) * 2 - 1);
 
-    const { yaw, pitch, distance, target } = state.camera;
-    const eye = orbitToEye(target, yaw, pitch, distance);
-    const view = lookAt(eye, target, [0, 1, 0]);
-    const proj = perspective(Math.PI / 4, canvas.width / canvas.height, 0.05, 100);
-    const invViewProj = invert(multiply(proj, view));
+    const { invViewProj } = cameraMatrices();
     if (!invViewProj) return null;
 
     function unproject(z) {
@@ -1163,6 +1191,25 @@ export function initViewer(root) {
       ? `voxel (${hit.i}, ${hit.j}, ${hit.k})  value ${hit.value.toFixed(4)}`
       : '';
   });
+
+  // ---- theme toggle (dark default, persisted in localStorage) ----
+  const THEME_KEY = 'megido-viewer:theme';
+  const themeToggleBtn = root.querySelector('#theme-toggle');
+  function applyTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme === 'light' ? 'light' : 'dark');
+    if (themeToggleBtn) themeToggleBtn.textContent = theme === 'light' ? 'Light' : 'Dark';
+  }
+  let startTheme = 'dark';
+  try { startTheme = localStorage.getItem(THEME_KEY) || 'dark'; } catch { /* ignore */ }
+  applyTheme(startTheme);
+  if (themeToggleBtn) {
+    themeToggleBtn.addEventListener('click', () => {
+      const next = currentTheme() === 'light' ? 'dark' : 'light';
+      applyTheme(next);
+      try { localStorage.setItem(THEME_KEY, next); } catch { /* ignore */ }
+      render();
+    });
+  }
 
   render();
   initDock(root);

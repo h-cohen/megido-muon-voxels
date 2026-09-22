@@ -4,14 +4,19 @@ import { orbitToEye, CAMERA_PRESETS } from '../src/camera.mjs';
 
 function close(a, b, eps = 1e-5) { return Math.abs(a - b) < eps; }
 
-test('orbitToEye at yaw=0, pitch=0 sits on +z from target', () => {
+test('orbitToEye at yaw=0, pitch=0 sits on +x from target, at target height', () => {
   const eye = orbitToEye([0, 0, 0], 0, 0, 5);
+  assert.ok(close(eye[0], 5) && close(eye[1], 0) && close(eye[2], 0));
+});
+
+test('orbitToEye at pitch=+PI/2 sits directly above the target (+z)', () => {
+  const eye = orbitToEye([0, 0, 0], 0, Math.PI / 2, 5);
   assert.ok(close(eye[0], 0) && close(eye[1], 0) && close(eye[2], 5));
 });
 
 test('orbitToEye respects the target offset', () => {
   const eye = orbitToEye([1, 2, 3], 0, 0, 5);
-  assert.ok(close(eye[0], 1) && close(eye[1], 2) && close(eye[2], 8));
+  assert.ok(close(eye[0], 6) && close(eye[1], 2) && close(eye[2], 3));
 });
 
 test('orbitToEye stays at constant distance from target', () => {
@@ -23,10 +28,15 @@ test('orbitToEye stays at constant distance from target', () => {
   }
 });
 
-test('CAMERA_PRESETS defines top, front, side, iso', () => {
-  for (const key of ['top', 'front', 'side', 'iso']) {
+test('CAMERA_PRESETS defines top, front, side, iso, observation', () => {
+  for (const key of ['top', 'front', 'side', 'iso', 'observation']) {
     assert.ok(key in CAMERA_PRESETS);
     assert.ok(typeof CAMERA_PRESETS[key].yaw === 'number');
     assert.ok(typeof CAMERA_PRESETS[key].pitch === 'number');
   }
+});
+
+test('observation preset is a slight elevation view (low, positive pitch)', () => {
+  const { pitch } = CAMERA_PRESETS.observation;
+  assert.ok(pitch > 0 && pitch < Math.PI / 4);
 });

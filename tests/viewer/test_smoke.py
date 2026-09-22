@@ -203,4 +203,43 @@ def test_real_campaign_output_renders_with_every_control_operable(page, dist_pat
         "returning #hill-surface-smooth to 0 must restore the raw fitted surface"
     )
 
+    # Observation preset (default z-up view): clicking it must apply the
+    # preset's yaw/pitch and change the render.
+    before_observation = gl_canvas_data()
+    page.locator("#camera-preset-top").click()
+    page.wait_for_timeout(50)
+    page.locator("#camera-preset-observation").click()
+    page.wait_for_timeout(50)
+    after_observation = gl_canvas_data()
+    assert after_observation != before_observation, (
+        "#camera-preset-observation must change the render relative to the top preset"
+    )
+    obs_state = page.evaluate(
+        "() => ({ yaw: window.__viewerState.camera.yaw, pitch: window.__viewerState.camera.pitch })"
+    )
+    assert abs(obs_state["yaw"] - 0.6) < 1e-6
+    assert abs(obs_state["pitch"] - 0.30) < 1e-6
+
+    # Theme toggle: flips data-theme, changes the GL clear color used by
+    # render(), and leaves no console errors behind. The volume raymarch
+    # covers most of the canvas at this camera distance, so the clear color
+    # itself (rather than a full-canvas pixel diff, which the dense
+    # foreground would swamp) is read back directly via WebGL state.
+    def clear_color():
+        return page.evaluate(
+            "() => { const gl = document.querySelector('#gl-canvas').getContext('webgl2'); "
+            "return Array.from(gl.getParameter(gl.COLOR_CLEAR_VALUE)); }"
+        )
+    initial_theme = page.evaluate("() => document.documentElement.getAttribute('data-theme')")
+    before_clear = clear_color()
+    page.locator("#theme-toggle").click()
+    page.wait_for_timeout(50)
+    toggled_theme = page.evaluate("() => document.documentElement.getAttribute('data-theme')")
+    assert toggled_theme != initial_theme, "#theme-toggle must flip the data-theme attribute"
+    after_clear = clear_color()
+    assert after_clear != before_clear, "toggling the theme must change render()'s gl.clearColor"
+    # Toggle back so this test leaves global state as it found it.
+    page.locator("#theme-toggle").click()
+    page.wait_for_timeout(50)
+
     assert console_errors == [], f"JS console errors during interaction: {console_errors}"
