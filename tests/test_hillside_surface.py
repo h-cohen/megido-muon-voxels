@@ -1,9 +1,13 @@
-import numpy as np
+from pathlib import Path
 
-from megido.config import Exposure, Pose, SiteConfig, Binning
+import numpy as np
+import pytest
+
+from megido.config import Exposure, Pose, SiteConfig, Binning, load_site_config
 from megido.hillside_surface import exit_points, fit_surface, variance_explained
-from megido.hillside_surface import _weighted_quantile, _upper_envelope_cells
+from megido.hillside_surface import _weighted_quantile, _upper_envelope_cells, _positions
 from megido.sky import make_sky_grid
+from megido.baseline import BaselineSolution
 
 
 # --- Task 1: upper-envelope reduction helpers -----------------------------
@@ -128,11 +132,16 @@ class _FakeSol:
         return np.clip(lam - offset, 0.0, None)
 
 
-def _build_fake_sol_from_hill(t_max=1.0, n_bins=24):
+def _build_fake_sol_from_hill(t_max=1.0, n_bins=128):
     """Build a fake sol whose (pre-gauge) opacity IS the true path length to
     the known hill, computed through the real sky sampling at the real
     two-position geometry -- so a correct inversion at a=1 should recover the
-    hill's shape."""
+    hill's shape.
+
+    n_bins=128 (bumped from 24 in Task 1) so the per-cell upper-envelope
+    reduction (Task 2, cell_m=0.5) has enough rays per grid cell to clear the
+    default min_count=8 at both a=1 and a=2 (the absolute-scale test's larger
+    footprint at a=2 thins ray density per cell, needing the higher count)."""
     sky = make_sky_grid(t_max=t_max, n_bins=n_bins)
     centers = sky.centers
     sx_grid, sy_grid = np.meshgrid(centers, centers, indexing="ij")
@@ -189,12 +198,14 @@ def test_gp_uncertainty_is_calibrated():
 def test_unconstrained_nodes_are_nan_not_zero():
     sol = _build_fake_sol_from_hill()
     cfg = _fake_cfg()
-    # cov_tau=0.3 forces the coverage mask to bite even on this compact,
+    # cov_tau=0.1 forces the coverage mask to bite even on this compact,
     # well-covered fixture, exercising the unconstrained -> NaN path. (At the
-    # default tau the trimmed footprint is fully data-supported, which is
-    # legitimate, not a bug -- the mask still works, as this stricter tau shows.)
+    # default tau, and even at the old 0.3 probe, the cell-reduced fit -- Task
+    # 2's per-cell upper envelope -- is fully data-supported on this dense
+    # fixture, which is legitimate, not a bug; a tighter tau is needed to make
+    # the mask bite, and the mask still works, as this stricter tau shows.)
     result = fit_surface(sol, cfg, a=1.0, cell_m=0.5, n_restarts=1,
-                         max_points=400, cov_tau=0.3)
+                         max_points=400, cov_tau=0.1)
     assert np.isnan(result.H).any()
     assert not np.any(result.H[np.isnan(result.H)] == 0.0)  # NaN, never 0
 
@@ -225,7 +236,7 @@ def test_heteroscedastic_downweights_low_count_bins():
     the old 'sigma merely differs' check could not catch that."""
     sol = _build_fake_sol_from_hill()
     cfg = _fake_cfg()
-    _, pos_index, sky_flat = exit_points(sol, cfg, a=1.0)
+    _, pos_index, dz, sky_flat = exit_points(sol, cfg, a=1.0)
     pids = sorted(set(_positions_ids(cfg)))
 
     counts_hi = {pid: np.full(sol.sky.flat_size, 500.0) for pid in pids}
@@ -243,3 +254,43 @@ def test_heteroscedastic_downweights_low_count_bins():
     assert cov.sum() > 10
     # fewer counts -> noisier -> larger posterior std (weighting sign correct)
     assert np.nanmedian(r_lo.sigma[cov]) > np.nanmedian(r_hi.sigma[cov])
+
+
+# --- Real-data dip gate -----------------------------------------------------
+
+_REAL_SOLVE = Path("runs/solve")
+_TOPO = Path("/home/hadar/Cloud/Work/Postdoc/01_data/raw/topography.csv")
+
+
+@pytest.mark.skipif(not (_REAL_SOLVE / "baseline.npz").exists() or not _TOPO.exists(),
+                     reason="needs runs/solve/baseline.npz + topography.csv ground truth")
+def test_detector_footprint_is_not_a_spurious_dip():
+    """Load-bearing: the fitted surface must NOT invert the crown into a dip at the
+    detector footprints. Ground truth (topography.csv, TEST-ONLY) is a peak there;
+    the old mean estimator produced a ~2.4 m dip below the surrounding ring. The
+    upper-envelope estimator must bring the footprint back up (no spurious deep
+    minimum)."""
+    cfg = load_site_config("configs/megido.yaml")
+    sol = BaselineSolution.load(_REAL_SOLVE / "baseline.npz")
+    r = fit_surface(sol, cfg, a=8.0, cell_m=1.0, n_restarts=1, max_points=800)
+    pos = _positions(cfg); pids = sorted(pos)
+    gx, gy = r.gx, r.gy
+
+    T = np.loadtxt(_TOPO, delimiter=",", skiprows=1)
+    tx, ty, tz = T[:, 0], T[:, 1], T[:, 2]
+    def truth(x, y, rr):
+        m = np.hypot(tx - x, ty - y) < rr
+        return float(tz[m].mean()) if m.any() else np.nan
+
+    for pid in pids:
+        p = pos[pid]
+        # sanity: truth is NOT a dip at the detector (peak/flat)
+        assert truth(p.x, p.y, 3.0) >= truth(p.x, p.y, 8.0) - 1.0
+        i = int(np.argmin(np.abs(gx - p.x))); j = int(np.argmin(np.abs(gy - p.y)))
+        ii, jj = np.meshgrid(np.arange(len(gx)), np.arange(len(gy)), indexing="ij")
+        d = np.hypot(ii - i, jj - j)
+        ring = (d >= 3) & (d <= 6) & np.isfinite(r.H)
+        assert np.isfinite(r.H[i, j]), f"{pid} footprint unconstrained"
+        # fitted footprint must not sit far below its ring (old dip was ~2.4 m)
+        assert r.H[i, j] >= np.nanmean(r.H[ring]) - 1.0, (
+            f"{pid} still dips: H_det={r.H[i,j]:.2f} ring={np.nanmean(r.H[ring]):.2f}")

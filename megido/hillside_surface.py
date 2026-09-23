@@ -61,11 +61,9 @@ def exit_points(sol, cfg, a: float = 1.0, transparent_quantile: float = 0.05):
     -------
     pts : (N, 3) ndarray of (x, y, z) exit points, metres.
     pos_index : (N,) int ndarray, index into `sorted(positions)` for each point.
+    dz : (N,) float ndarray, the sky-frame vertical direction cosine, used for
+        the cosmic-ray flux weight in `fit_surface`.
     sky_flat : (N,) int ndarray, the ray's flat sky-bin index into `sol.sky`.
-
-    Note: the exit z already carries the a*dz factor (z = pose.z + a*lam*dz), so
-    the height-space noise model downstream needs |z - pose.z|, NOT dz separately.
-    dz is therefore intentionally not returned -- see fit_surface's noise model.
     """
     pos_pose = _positions(cfg)
     pids_sorted = sorted(pos_pose)
@@ -75,7 +73,7 @@ def exit_points(sol, cfg, a: float = 1.0, transparent_quantile: float = 0.05):
     sx_flat = sx_grid.ravel()
     sy_flat = sy_grid.ravel()
 
-    pts_list, idx_list, flat_list = [], [], []
+    pts_list, idx_list, dz_list, flat_list = [], [], [], []
     for k, pid in enumerate(pids_sorted):
         pose = pos_pose[pid]
         lam = sol.normalized_opacity(pid, transparent_quantile=transparent_quantile)
@@ -90,13 +88,14 @@ def exit_points(sol, cfg, a: float = 1.0, transparent_quantile: float = 0.05):
         z = pose.z + a * l * dz
         pts_list.append(np.stack([x, y, z], axis=1))
         idx_list.append(np.full(int(mask.sum()), k, dtype=int))
+        dz_list.append(dz)
         flat_list.append(np.nonzero(mask)[0])
 
     if not pts_list:
         z0 = np.zeros((0,), dtype=int)
-        return np.zeros((0, 3)), z0, z0
+        return np.zeros((0, 3)), z0, z0.astype(float), z0
     return (np.concatenate(pts_list), np.concatenate(idx_list),
-            np.concatenate(flat_list))
+            np.concatenate(dz_list), np.concatenate(flat_list))
 
 
 def _weighted_quantile(v, w, q: float) -> float:
@@ -215,7 +214,8 @@ class SurfaceResult:
 
 def fit_surface(sol, cfg, *, a: float = 8.0, cell_m: float = 1.0,
                  sky_counts: dict | None = None, cov_tau: float = 0.9,
-                 n_restarts: int = 3, max_points: int = 1000) -> SurfaceResult:
+                 n_restarts: int = 3, max_points: int = 1000,
+                 q_hi: float = 0.85, min_count: int = 8) -> SurfaceResult:
     """Fit the hillside height field from a baseline solution's opacity maps.
 
     A Matern-5/2 Gaussian process (`megido.hillside_gp`) fit by ML-II,
@@ -223,12 +223,19 @@ def fit_surface(sol, cfg, *, a: float = 8.0, cell_m: float = 1.0,
     GP's real posterior standard deviation per grid cell -- a genuine error
     bar, not a bootstrap-over-gauge proxy.
 
+    The GP is trained on one flux-weighted UPPER quantile (`q_hi`) of exit-z
+    per grid cell (`_upper_envelope_cells`), not the raw per-ray exit points
+    or their mean. The per-ray mean is biased low at the detector footprint by
+    a radial opacity-sorting artifact (near-vertical, high-flux rays are rare
+    and get outvoted by oblique low-opacity ones); the upper envelope tracks
+    the true maximum overburden per column and is robust to that artifact.
+
     Absolute height is on an ASSUMED inverse-density scale `a`
     (opacity-units per metre): this campaign's 2.2 m position baseline does
     not determine it. Only the fitted SHAPE, at that assumed scale, is a
     genuine data-driven result. See `SurfaceResult.note`.
     """
-    pts, pos_index, sky_flat = exit_points(sol, cfg, a=a)
+    pts, pos_index, dz, sky_flat = exit_points(sol, cfg, a=a)
     if pts.shape[0] == 0:
         raise ValueError("no finite, positive-opacity sky pixels to fit a surface from")
 
@@ -236,84 +243,72 @@ def fit_surface(sol, cfg, *, a: float = 8.0, cell_m: float = 1.0,
     nx, ny = len(gx), len(gy)
     inside = ((pts[:, 0] >= gx[0]) & (pts[:, 0] <= gx[-1])
               & (pts[:, 1] >= gy[0]) & (pts[:, 1] <= gy[-1]))
-    X = pts[inside, :2]
-    z = pts[inside, 2]
-    flat_in = sky_flat[inside]
-    pos_in = pos_index[inside]
+    X = pts[inside, :2]; z = pts[inside, 2]
+    dz_in = dz[inside]; flat_in = sky_flat[inside]; pos_in = pos_index[inside]
 
-    # Exact-GP cost is O(N^3) per marginal-likelihood evaluation, so a full
-    # campaign's ~3k in-grid rays make each ML-II fit minutes. The height field
-    # is smooth and the footprint is small, so a seeded uniform subsample of the
-    # rays carries the same shape at a fraction of the cost. n_used is reported
-    # honestly; the coverage grid still spans the full footprint.
-    n_total = int(len(z))
-    subsampled = n_total > max_points
-    if subsampled:
-        sel = np.random.default_rng(0).choice(n_total, size=max_points, replace=False)
-        sel.sort()
-        X = X[sel]; z = z[sel]
-        flat_in = flat_in[sel]; pos_in = pos_in[sel]
+    pos_pose = _positions(cfg); pids_sorted = sorted(pos_pose)
+    index = float(getattr(sol, "flux_index", 2.0))
 
-    pos_pose = _positions(cfg)
-    pids_sorted = sorted(pos_pose)
-
-    # Height-space observation noise sigma_z (spec 3.3: sigma_z = a * dz * sigma_lambda,
-    # with opacity error sigma_lambda = lambda / sqrt(N) from Poisson counting).
-    # `heights` = |z - pose.z| = a * lambda * dz already carries the a*dz factor,
-    # so heights / sqrt(N) IS a * dz * sigma_lambda -- do NOT multiply by dz again.
-    heights = np.abs(z - np.array([pos_pose[pids_sorted[p]].z for p in pos_in]))
+    ray_counts = None
+    heteroscedastic = False
     if sky_counts is not None:
-        N = np.array([max(1.0, sky_counts[pids_sorted[p]][f])
-                      for p, f in zip(pos_in, flat_in)])
-        sigma_z = heights / np.sqrt(N) + 0.02 * heights   # Poisson + small rel floor
+        ray_counts = np.array([sky_counts[pids_sorted[p]][f]
+                               for p, f in zip(pos_in, flat_in)], dtype=float)
         heteroscedastic = True
-    else:
-        sigma_z = 0.05 * heights + 0.02 * np.median(heights)  # geometry-only leverage
-        heteroscedastic = False
-    noise_base = sigma_z ** 2 + 1e-6
 
-    mean = float(np.average(z))
-    hypers = fit_hyperparams(X, z, noise_base, mean, n_restarts=n_restarts)
-    noise_var = noise_base + (hypers.noise_floor * hypers.signal_std) ** 2
+    Xc, yc, noise_c = _upper_envelope_cells(
+        X, z, dz_in, gx, gy, index=index, q_hi=q_hi, min_count=min_count,
+        ray_counts=ray_counts)
+    if Xc.shape[0] < 3:
+        raise ValueError("too few populated cells to fit a surface; lower min_count")
+
+    # cells are already few (<= nx*ny); the max_points guard rarely triggers.
+    if Xc.shape[0] > max_points:
+        sel = np.random.default_rng(0).choice(Xc.shape[0], max_points, replace=False)
+        sel.sort(); Xc, yc, noise_c = Xc[sel], yc[sel], noise_c[sel]
+
+    mean = float(np.average(yc))
+    hypers = fit_hyperparams(Xc, yc, noise_c, mean, n_restarts=n_restarts)
+    noise_var = noise_c + (hypers.noise_floor * hypers.signal_std) ** 2
 
     GX, GY = np.meshgrid(gx, gy, indexing="ij")
     Xstar = np.stack([GX.ravel(), GY.ravel()], axis=1)
-    mstar, sstar = predict(X, z, noise_var, mean, Xstar, hypers)
+    mstar, sstar = predict(Xc, yc, noise_var, mean, Xstar, hypers)
 
-    # coverage: a node whose posterior std is still ~ the prior std learned
-    # nothing from data -> unconstrained -> NaN (never 0).
     covered = sstar < cov_tau * hypers.signal_std
     H = np.where(covered, mstar, np.nan).reshape(nx, ny)
     sigma = np.where(covered, sstar, np.nan).reshape(nx, ny)
     support = np.where(covered, 1.0 - sstar / hypers.signal_std, np.nan).reshape(nx, ny)
 
-    pred_train, _ = predict(X, z, noise_var, mean, X, hypers)
-    ve = variance_explained(z, pred_train)
+    pred_cell, _ = predict(Xc, yc, noise_var, mean, Xc, hypers)
+    ve = variance_explained(yc, pred_cell)
 
     detectors = [{"id": pid, "x": pos_pose[pid].x, "y": pos_pose[pid].y,
                   "z": pos_pose[pid].z} for pid in pids_sorted]
     cx = float(np.mean([d["x"] for d in detectors]))
     cy = float(np.mean([d["y"] for d in detectors]))
-    radii = np.sqrt((X[:, 0] - cx) ** 2 + (X[:, 1] - cy) ** 2)
+    radii = np.sqrt((Xc[:, 0] - cx) ** 2 + (Xc[:, 1] - cy) ** 2)
     coverage_radius_m = float(np.percentile(radii, 95))
     coverage_frac = float(np.mean(covered))
+    n_rays = int(inside.sum())
 
     note = (
-        f"Height is on an ASSUMED inverse-density scale a={a:g} (opacity-units "
-        "per metre) -- this campaign's 2.2 m baseline does NOT determine it; only "
-        f"the fitted SHAPE at that scale is a genuine result. GP: Matern-5/2, "
-        f"length-scale={hypers.length_scale:.2f} m (ML-II), "
-        f"{'heteroscedastic Poisson+leverage' if heteroscedastic else 'geometry-only (no counts; pass --run)'} "
-        f"noise. sigma is the posterior std (a real per-cell error bar). "
-        f"{coverage_frac:.0%} of the grid within ~{coverage_radius_m:.1f} m of the "
-        f"detector centroid is data-supported; the rest is NaN (unconstrained). "
-        f"variance_explained={ve:.3f} over {len(z)} rays"
-        + (f" (seeded subsample of {n_total})." if subsampled else ".")
+        f"Height is on an ASSUMED inverse-density scale a={a:g} (opacity-units per "
+        "metre) -- this campaign's 2.2 m baseline does NOT determine it; only the "
+        f"fitted SHAPE at that scale is a genuine result. Estimator: per-cell "
+        f"flux-weighted (cos^{index:g}) UPPER quantile q_hi={q_hi:g} of exit-z "
+        "(tracks the maximum overburden per column; robust to the radial "
+        "opacity-sorting artifact that otherwise dips the detector footprints). "
+        f"GP: Matern-5/2, length-scale={hypers.length_scale:.2f} m (ML-II), "
+        f"{'heteroscedastic (counts)' if heteroscedastic else 'geometry-only (no counts; pass --run)'}. "
+        f"sigma is the posterior std. {coverage_frac:.0%} of the grid within "
+        f"~{coverage_radius_m:.1f} m of the detector centroid is data-supported; the "
+        f"rest is NaN. variance_explained={ve:.3f} over {Xc.shape[0]} cells "
+        f"({n_rays} rays). Opacity gauge zero-point not corrected (deferred)."
     )
     return SurfaceResult(H=H, sigma=sigma, support=support, gx=gx, gy=gy, a=a,
                          variance_explained=ve, coverage_frac=coverage_frac,
-                         coverage_radius_m=coverage_radius_m, n_rays=int(len(z)),
+                         coverage_radius_m=coverage_radius_m, n_rays=n_rays,
                          detectors=detectors, scale_assumed=True, note=note,
                          length_scale_m=hypers.length_scale,
-                         signal_std=hypers.signal_std,
-                         noise_floor=hypers.noise_floor)
+                         signal_std=hypers.signal_std, noise_floor=hypers.noise_floor)
