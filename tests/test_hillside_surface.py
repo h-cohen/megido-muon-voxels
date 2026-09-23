@@ -2,7 +2,52 @@ import numpy as np
 
 from megido.config import Exposure, Pose, SiteConfig, Binning
 from megido.hillside_surface import exit_points, fit_surface, variance_explained
+from megido.hillside_surface import _weighted_quantile, _upper_envelope_cells
 from megido.sky import make_sky_grid
+
+
+# --- Task 1: upper-envelope reduction helpers -----------------------------
+
+
+def test_weighted_quantile_matches_unweighted_when_flat():
+    v = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    w = np.ones(5)
+    # midpoint-convention weighted quantile ~ numpy quantile for uniform weights
+    assert abs(_weighted_quantile(v, w, 0.5) - 3.0) < 1e-9
+    assert _weighted_quantile(v, w, 0.9) > 4.0
+
+
+def test_weighted_quantile_upweights_high_weight_values():
+    v = np.array([0.0, 10.0])
+    # nearly all weight on the high value -> quantile near the high value
+    assert _weighted_quantile(v, np.array([0.01, 100.0]), 0.5) > 9.0
+    assert _weighted_quantile(v, np.array([100.0, 0.01]), 0.5) < 1.0
+
+
+def test_upper_envelope_takes_high_quantile_and_flux_upweights_vertical():
+    # one cell (all points inside), z has a low cluster and a high cluster; the
+    # high cluster is near-vertical (dz~1, high flux weight) -> target must land
+    # in the HIGH cluster, not the (more numerous) low cluster.
+    gx = np.array([0.0, 2.0]); gy = np.array([0.0, 2.0])
+    rng = np.random.default_rng(0)
+    low_xy = rng.uniform(0.2, 1.8, (40, 2)); low_z = rng.normal(2.0, 0.2, 40)
+    low_dz = np.full(40, 0.6)                      # oblique, low flux
+    hi_xy = rng.uniform(0.2, 1.8, (12, 2)); hi_z = rng.normal(9.0, 0.2, 12)
+    hi_dz = np.full(12, 0.99)                      # vertical, high flux
+    X = np.vstack([low_xy, hi_xy]); z = np.concatenate([low_z, hi_z])
+    dz = np.concatenate([low_dz, hi_dz])
+    Xc, yc, nc = _upper_envelope_cells(X, z, dz, gx, gy, index=2.0, q_hi=0.85, min_count=8)
+    assert Xc.shape[0] == 1                         # one populated cell
+    assert yc[0] > 6.0                              # tracks the high (crown) cluster
+    assert nc[0] > 0
+
+
+def test_upper_envelope_drops_sparse_cells():
+    gx = np.array([0.0, 2.0, 4.0]); gy = np.array([0.0, 2.0, 4.0])
+    X = np.array([[0.5, 0.5], [0.6, 0.6]])          # 2 points, below min_count
+    z = np.array([1.0, 2.0]); dz = np.array([0.9, 0.9])
+    Xc, yc, nc = _upper_envelope_cells(X, z, dz, gx, gy, min_count=8)
+    assert Xc.shape[0] == 0
 
 
 # --- Task 2: fit_surface driver -------------------------------------------

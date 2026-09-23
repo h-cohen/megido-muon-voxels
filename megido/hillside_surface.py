@@ -99,6 +99,69 @@ def exit_points(sol, cfg, a: float = 1.0, transparent_quantile: float = 0.05):
             np.concatenate(flat_list))
 
 
+def _weighted_quantile(v, w, q: float) -> float:
+    """Weighted quantile of values ``v`` with non-negative weights ``w`` at level
+    ``q`` in [0,1], midpoint (Hazen-like) convention. Falls back to the unweighted
+    quantile if all weights are zero."""
+    v = np.asarray(v, float)
+    w = np.asarray(w, float)
+    if v.size == 0:
+        return float("nan")
+    order = np.argsort(v)
+    v, w = v[order], w[order]
+    total = w.sum()
+    if total <= 0:
+        return float(np.quantile(v, q))
+    cq = (np.cumsum(w) - 0.5 * w) / total
+    return float(np.interp(q, cq, v))
+
+
+def _upper_envelope_cells(X, z, dz, gx, gy, *, index: float = 2.0,
+                          q_hi: float = 0.85, min_count: int = 8,
+                          ray_counts=None):
+    """Reduce exit points to one flux-weighted upper-quantile target per grid cell.
+
+    The true surface is the MAXIMUM overburden per column; the low exit points are
+    artifacts of radial opacity sorting (see the spec). Per cell we take the
+    ``q_hi`` weighted quantile of exit-z, weighting each ray by the cosmic-ray flux
+    ``dz**index`` (the known cos^index angular distribution) and, when available,
+    its Poisson counts -- so the sparse high-flux near-vertical rays that actually
+    sample the crown drive the target. Cells with fewer than ``min_count`` points
+    are dropped (unconstrained -> NaN downstream, never 0).
+
+    Returns (X_cell (M,2) centroids, y_cell (M,) targets, noise_cell (M,) variances).
+    """
+    X = np.asarray(X, float); z = np.asarray(z, float); dz = np.asarray(dz, float)
+    nx, ny = len(gx), len(gy)
+    ix = np.clip(np.searchsorted(gx, X[:, 0]) - 1, 0, nx - 1)
+    iy = np.clip(np.searchsorted(gy, X[:, 1]) - 1, 0, ny - 1)
+    cell = ix * ny + iy
+    fw = np.clip(dz ** index, 1e-3, None)
+    if ray_counts is not None:
+        fw = fw * np.clip(np.asarray(ray_counts, float), 1.0, None)
+
+    xs, ys, targets, noises = [], [], [], []
+    for c in np.unique(cell):
+        m = cell == c
+        if int(m.sum()) < min_count:
+            continue
+        zc, wc, xc, yc = z[m], fw[m], X[m, 0], X[m, 1]
+        target = _weighted_quantile(zc, wc, q_hi)
+        wsum = wc.sum()
+        n_eff = (wsum ** 2) / np.sum(wc ** 2)          # Kish effective count
+        wmean = np.sum(wc * zc) / wsum
+        wvar = np.sum(wc * (zc - wmean) ** 2) / wsum
+        sigma = np.sqrt(wvar) / np.sqrt(max(n_eff, 1.0)) + 0.02 * abs(target) + 1e-3
+        xs.append(np.average(xc, weights=wc))
+        ys.append(np.average(yc, weights=wc))
+        targets.append(target)
+        noises.append(sigma ** 2)
+
+    if not xs:
+        return np.zeros((0, 2)), np.zeros((0,)), np.zeros((0,))
+    return (np.column_stack([xs, ys]), np.asarray(targets), np.asarray(noises))
+
+
 def _footprint_grid(xy: np.ndarray, cell_m: float):
     """Grid nodes spanning the exit-point footprint, robust to outlier rays.
 
