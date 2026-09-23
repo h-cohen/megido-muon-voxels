@@ -1,6 +1,6 @@
 import { parseNpy } from './npy.mjs';
 import { identity, multiply, perspective, lookAt, invert } from './mat4.mjs';
-import { worldToVoxel, sampleNearest } from './grid.mjs';
+import { worldToVoxel, sampleNearest, reorderForTexture } from './grid.mjs';
 import { insideClipBox, insideClipPlane } from './clip.mjs';
 import { buildTransferLUT } from './transfer.mjs';
 import { orbitToEye, CAMERA_PRESETS } from './camera.mjs';
@@ -158,7 +158,7 @@ function makeVolumeTexture(gl, shape, data) {
   gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
-  gl.texImage3D(gl.TEXTURE_3D, 0, gl.R32F, nx, ny, nz, 0, gl.RED, gl.FLOAT, data);
+  gl.texImage3D(gl.TEXTURE_3D, 0, gl.R32F, nx, ny, nz, 0, gl.RED, gl.FLOAT, reorderForTexture(data, shape));
   return tex;
 }
 
