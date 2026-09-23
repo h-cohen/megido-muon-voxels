@@ -26,7 +26,24 @@ def test_ml2_recovers_length_scale():
     z = np.linalg.cholesky(K) @ rng.standard_normal(len(X))
     noise_base = np.full(len(X), 1e-4)
     h = fit_hyperparams(X, z, noise_base, mean=0.0, n_restarts=3)
-    assert 0.4 * true_ls < h.length_scale < 2.5 * true_ls
+    assert 0.6 * true_ls < h.length_scale < 1.7 * true_ls, h.length_scale
+
+
+def test_nll_matches_bruteforce():
+    rng = np.random.default_rng(3)
+    X = rng.uniform(-3, 3, (12, 2))
+    z = rng.standard_normal(12)
+    noise_base = np.full(12, 0.05)
+    theta = np.log([1.5, 0.8, 0.1])      # ls, signal_std, noise_floor
+    got = nll(theta, X, z, noise_base, mean=0.2)
+    ls, sf, nf = np.exp(theta)
+    K = matern52(X, X, ls, sf ** 2)
+    K[np.diag_indices_from(K)] += noise_base + (nf * sf) ** 2
+    r = z - 0.2
+    sign, logdet = np.linalg.slogdet(K)
+    ref = 0.5 * r @ np.linalg.solve(K, r) + 0.5 * logdet + 0.5 * len(z) * np.log(2 * np.pi)
+    assert sign > 0
+    assert abs(got - ref) < 1e-8
 
 
 def test_predict_std_grows_away_from_data():

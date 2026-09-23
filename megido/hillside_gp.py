@@ -73,7 +73,6 @@ def fit_hyperparams(X, z, noise_base, mean, *, n_restarts: int = 3) -> GPHypers:
               (np.log(zstd * 1e-2), np.log(zstd * 1e2)),
               (np.log(1e-3), np.log(1.0))]
 
-    rng = np.random.default_rng(0)
     inits_ls = np.geomspace(lo_ls * 1.5, hi_ls * 0.5, n_restarts)
     best = None
     for i in range(n_restarts):
