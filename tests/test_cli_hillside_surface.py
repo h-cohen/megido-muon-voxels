@@ -79,6 +79,8 @@ def test_hillside_run_produces_heteroscedastic_meta(tmp_path):
     assert meta["heteroscedastic"] is True
     assert "length_scale" in json.dumps(meta) or "length_scale_m" in meta
     assert "length_scale_m" in meta
+    assert "q_hi" in meta
+    assert 0.0 < meta["q_hi"] <= 1.0
 
 
 @pytest.mark.skipif(not REAL_CONFIG.exists() or not (REAL_SOLVE / "baseline.npz").exists(),

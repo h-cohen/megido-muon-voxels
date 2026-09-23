@@ -380,7 +380,8 @@ def _cmd_hillside_surface(args, sol, cfg, out: Path) -> int:
 
     result = fit_surface(sol, cfg, a=args.surface_a, cell_m=args.surface_cell,
                          sky_counts=sky_counts, max_points=args.surface_max_points,
-                         n_restarts=args.surface_restarts)
+                         n_restarts=args.surface_restarts,
+                         q_hi=args.surface_qhi, min_count=args.surface_min_count)
 
     np.save(out / "hill_surface.npy", result.H.astype(np.float32))
     np.save(out / "hill_surface_sigma.npy", result.sigma.astype(np.float32))
@@ -399,6 +400,7 @@ def _cmd_hillside_surface(args, sol, cfg, out: Path) -> int:
         "detectors": result.detectors,
         "units": "convention metres (height ∝ 1/rho, absolute scale assumed)",
         "heteroscedastic": sky_counts is not None,
+        "q_hi": args.surface_qhi,
         "length_scale_m": result.length_scale_m,
         "signal_std": result.signal_std,
         "noise_floor": result.noise_floor,
@@ -527,6 +529,11 @@ def main(argv: list[str] | None = None) -> int:
                         "convention, NOT determined by the 2.2 m parallax")
     h.add_argument("--surface-cell", type=float, default=1.0, dest="surface_cell",
                    help="surface grid cell size in metres")
+    h.add_argument("--surface-qhi", type=float, default=0.85, dest="surface_qhi",
+                   help="upper-quantile level for the per-cell exit-z envelope "
+                        "(higher tracks the crown harder; robust to spurious low rays)")
+    h.add_argument("--surface-min-count", type=int, default=8, dest="surface_min_count",
+                   help="minimum exit points per grid cell to fit a target there")
     h.add_argument("--run", default="runs/ingest",
                    help="ingest dir; enables heteroscedastic Poisson weights")
     h.add_argument("--rebin", type=int, default=10,
