@@ -2,9 +2,11 @@
 
 Cosmic-ray muon tomography at the Megiddo cavern. The detector sits at several
 positions and tilts inside a cavern; from the muon rate in each angular bin we
-reconstruct a 3D opacity (rock-density) field of the surrounding rock. The
-deliverable is a voxel field plus an HTML viewer, with **honest uncertainty as a
-first-class output, not an appendix**.
+reconstruct a 3D opacity (rock-density) field of the surrounding rock, and from
+the flux edge of the small hill overhead we fit the **hillside surface** itself.
+The deliverables are a voxel field, that fitted surface, and one HTML viewer that
+shows both — with **honest uncertainty as a first-class output, not an
+appendix**.
 
 The defining constraint: **there is no open-sky calibration run.** The detector's
 own angular response and the rock's absorption must be separated from the cavern
@@ -45,6 +47,37 @@ reasoning, the dead ends, and every decision.
   gauge-pinned to median zero and half negative). The per-position additive
   offset `c_p` in the voxel solve is there to reabsorb this, not as a fudge.
 
+## Honest limits — the ceiling, and what was tried against it
+
+The pipeline is at the honest limit of what one 2.2 m baseline of muon-only data
+supports. Three limits are **physical, not algorithmic** — do not try to code
+around them, and do not accept a change that claims to beat them without new data:
+
+- **Depth is null-space.** One-sided geometry; resolvable only by more baseline
+  (a *translated* second position), never by a prior or a regulariser.
+- **Absolute opacity level is gauge-degenerate.** `counts ∝ norm·exp(−λ)`, so
+  `λ → λ+c` is exactly cancelled by `norm → norm·eᶜ`. Only differences (voxels)
+  and shape (surface) are meaningful. Fixable only by an external reference
+  (a surveyed overburden or known-density anchor), never from the data.
+- **Absolute hillside height is that same degeneracy** in the surface: `H ∝ 1/ρ`
+  via the assumed `a`. Shape is measured; scale is assumed and labelled so.
+
+Ideas that were tried at full scale and **rejected with evidence** (don't
+re-propose without new information — the findings are in the specs/plans):
+
+- **Flux-weighting the voxel rows (cos²θ):** *hurts* lateral recovery. Unlike the
+  surface, the voxel solve is a line-integral inversion where every oblique ray
+  buys lateral coverage; down-weighting them (by flux or by 1/σ²) trades coverage
+  for nothing, because this geometry is coverage-limited, not noise-limited.
+- **"Fixing" the opacity gauge zero-point:** no free lunch. The clip-to-zero
+  convention touches only ~5% of directions (the transparent quantile), picks
+  physically sensible grazing directions, and cannot change the meaningful
+  relative/shape outputs — because the absolute level is degenerate anyway.
+
+The two real wins this revision landed: the volume **render axis-order fix** and
+the **upper-envelope GP hillside surface** (the detector-spot dip was a genuine
+defect — radial opacity-sorting — confirmed against ground truth and fixed).
+
 ## Architecture
 
 Six content-addressed stages; downstream stages consume artifacts, never upstream
@@ -58,9 +91,10 @@ S2      baseline solve         histograms -> detector response B(d), per-positio
 S3      forward model          poses      -> sparse path-length matrix A
 S4      inversion              opacity, A -> voxel field + uncertainty
 S5      viewer                 volume     -> interactive HTML
+S6      hillside surface       opacity    -> fitted H(x,y) + posterior sigma
 ```
 
-Built in four phases, each with its own spec-referenced plan under
+Built in phases, each with its own spec-referenced plan under
 `docs/superpowers/plans/` and an exit gate:
 
 - **Phase 1** (done): S0-det, S0-exp, S1 — raw `.data` to angular histograms.
@@ -72,6 +106,19 @@ Built in four phases, each with its own spec-referenced plan under
   into one self-contained `viewer/dist/index.html`. Loads any run directory
   at runtime via a local file picker; never bakes data into the shipped
   page.
+- **Phase 5** (done): S6 — the hillside surface, the campaign's most resolvable
+  observable. `megido/silhouette.py` extracts the flux-edge ridgeline;
+  `megido/hillside_surface.py` fits a smooth height field `H(x,y)` by a
+  **Gaussian process** (`megido/hillside_gp.py`, Matérn-5/2, ML-II
+  hyperparameters, honest posterior-std error bars). The GP fits a **per-cell,
+  flux-weighted (cos^index) upper quantile** of ray exit-z, NOT the raw exit
+  points: the exit-point placement `o + a·λ·d̂` sorts rays radially by opacity,
+  so a mean-like fit inverts the crown above each detector into a spurious dip;
+  the upper envelope tracks the true maximum overburden per column and the flux
+  weight restores the sparse high-flux near-vertical rays. Validated against
+  `topography.csv` ground truth (test-only). Absolute height rides on an ASSUMED
+  inverse-density scale `a` — the shape is measured, the scale is not (see
+  Honest limits).
 
 ## Repo conventions — non-negotiable
 
@@ -96,15 +143,24 @@ Built in four phases, each with its own spec-referenced plan under
 - **Supplied detector constants are falsification-tested, never silently
   refitted.** If a constant fails its test against data, escalate to the
   engineers; do not quietly replace it.
+- **Volume texture axis order.** `.npy` volumes are numpy C-order `(nx,ny,nz)`
+  (z fastest); WebGL `texImage3D` reads x fastest. The viewer transposes at
+  upload (`reorderForTexture` in `viewer/src/grid.mjs`) — the `.npy` files stay
+  numpy-natural for every other consumer. A silent mismatch here rendered the
+  volume as diagonal stripes and was misread as physics for a while; keep the
+  transpose, and if a new 3D layer is added, route it through the same upload.
 
 ## Testing philosophy — learned the hard way
 
-Every serious defect in all three phases surfaced from **running real data at
+Every serious defect in every phase surfaced from **running real data at
 full scale**, not from a green suite or a passing review. The sharpest cases: a
 Phase 2 gauge degeneracy that 159 tests and an approving reviewer missed because
 correlation and standard deviation are both invariant to the degenerate
-direction; and a Phase 3 phantom gate that revealed depth is unrecoverable only
-when real geometry ran through it. So:
+direction; a Phase 3 phantom gate that revealed depth is unrecoverable only
+when real geometry ran through it; a Phase 4 volume that rendered as diagonal
+stripes from an axis-order upload bug and was briefly rationalised as physics;
+and a Phase 5 hillside that inverted the crown above each detector into a dip —
+caught only by checking the fit against `topography.csv` ground truth. So:
 
 - **TDD**, red before green, every task.
 - Prefer tests that assert **physical relationships** (a vertical ray deposits
@@ -194,6 +250,14 @@ uv run pytest -q                                   # the suite
 uv run python -m megido.cli validate --exposure P0 # S0-det falsification checks
 uv run python -m megido.cli ingest                 # S0-exp + S1 for every exposure
 uv run python -m megido.cli solve                  # S2 baseline + opacity
-uv run python -m megido.cli view                  # Phase 4 viewer: build + open
-# Phase 3: reconstruct / export / compare subcommands
+uv run python -m megido.cli reconstruct --bootstrap --run runs/ingest  # S3/S4 voxels + uncertainty
+uv run python -m megido.cli export                 # volume.npy + meta.json for the viewer
+uv run python -m megido.cli hillside --run runs/ingest  # S6 flux-edge silhouette + GP surface
+uv run python -m megido.cli view                   # Phase 4 viewer: build + open
+# also: validate / compare subcommands
 ```
+
+The hillside surface exposes `--surface-qhi` (upper-quantile level, default 0.85)
+and `--surface-min-count`; `--run` enables heteroscedastic Poisson weights and is
+required for `reconstruct --bootstrap` (counts are rebuilt from the ingest grid,
+not carried in `baseline.npz`).

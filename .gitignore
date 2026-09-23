@@ -223,3 +223,7 @@ __marimo__/
 runs/
 cache/
 viewer/dist/
+
+# Local handoff/reference docs (not part of the tracked project)
+NEW_PROJECT_BRIEF.md
+detector_summary.md
