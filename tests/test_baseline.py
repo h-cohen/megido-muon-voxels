@@ -174,3 +174,24 @@ def test_position_sky_counts_matches_build_terms(cfg):
     for pid, arr in psc.items():
         assert arr.shape == (sky.flat_size,)
         assert arr.sum() > 0
+
+    # Independent recompute (does NOT call position_sky_counts): summing live
+    # counts per position, per sky bin, by hand. A broken helper -- double count,
+    # dropped live mask, or wrong position grouping -- must fail this equality.
+    from megido.acceptance import geometric_acceptance
+    from megido.baseline import position_ids
+    from megido.sky import detector_to_sky
+
+    geom = DetectorGeometry.megiddo()
+    tx, ty = grid.tan_mesh()
+    acc = geometric_acceptance(tx, ty, geom)
+    pids = position_ids(cfg)
+    expected = {pid: np.zeros(sky.flat_size) for pid in psc}
+    for eid, counts in grid.counts.items():
+        pose = cfg.exposure(eid).pose
+        sx, sy, on_sky = detector_to_sky(tx, ty, pose)
+        flat, in_grid = sky.bin_index(sx, sy)
+        live = (acc > 0) & on_sky & in_grid
+        np.add.at(expected[pids[eid]], flat[live], counts[live].astype(float))
+    for pid in psc:
+        assert np.allclose(psc[pid], expected[pid])
