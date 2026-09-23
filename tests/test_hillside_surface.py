@@ -25,20 +25,24 @@ def test_weighted_quantile_upweights_high_weight_values():
 
 
 def test_upper_envelope_takes_high_quantile_and_flux_upweights_vertical():
-    # one cell (all points inside), z has a low cluster and a high cluster; the
-    # high cluster is near-vertical (dz~1, high flux weight) -> target must land
-    # in the HIGH cluster, not the (more numerous) low cluster.
+    # one cell (all points inside), z has a LARGE low cluster and a small high
+    # cluster. Counts are chosen so the UNWEIGHTED q_hi quantile stays in the low
+    # cluster (65/75 = 0.867 > q_hi 0.85), so ONLY flux weighting -- the high
+    # cluster is near-vertical (dz~1) vs oblique (dz~0.6) -- can lift the target
+    # into the crown cluster. This makes the flux weighting the thing under test.
     gx = np.array([0.0, 2.0]); gy = np.array([0.0, 2.0])
     rng = np.random.default_rng(0)
-    low_xy = rng.uniform(0.2, 1.8, (40, 2)); low_z = rng.normal(2.0, 0.2, 40)
-    low_dz = np.full(40, 0.6)                      # oblique, low flux
-    hi_xy = rng.uniform(0.2, 1.8, (12, 2)); hi_z = rng.normal(9.0, 0.2, 12)
-    hi_dz = np.full(12, 0.99)                      # vertical, high flux
+    low_xy = rng.uniform(0.2, 1.8, (65, 2)); low_z = rng.normal(2.0, 0.2, 65)
+    low_dz = np.full(65, 0.6)                      # oblique, low flux
+    hi_xy = rng.uniform(0.2, 1.8, (10, 2)); hi_z = rng.normal(9.0, 0.2, 10)
+    hi_dz = np.full(10, 0.99)                      # vertical, high flux
     X = np.vstack([low_xy, hi_xy]); z = np.concatenate([low_z, hi_z])
     dz = np.concatenate([low_dz, hi_dz])
+    # differential: unweighted quantile sits LOW; only flux weighting lifts it.
+    assert _weighted_quantile(z, np.ones_like(z), 0.85) < 4.0
     Xc, yc, nc = _upper_envelope_cells(X, z, dz, gx, gy, index=2.0, q_hi=0.85, min_count=8)
     assert Xc.shape[0] == 1                         # one populated cell
-    assert yc[0] > 6.0                              # tracks the high (crown) cluster
+    assert yc[0] > 6.0                              # flux weight tracks the crown cluster
     assert nc[0] > 0
 
 
