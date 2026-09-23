@@ -190,19 +190,20 @@ def fit_surface(sol, cfg, *, a: float = 8.0, cell_m: float = 1.0,
     pos_pose = _positions(cfg)
     pids_sorted = sorted(pos_pose)
 
-    # heteroscedastic base variance: (a * dz * sigma_lambda)^2
-    # sigma_lambda ~ |z - pose.z| / sqrt(N_counts)  (Poisson, relative), with a
-    # small relative floor; falls back to pure geometric leverage without counts.
+    # Height-space observation noise sigma_z (spec 3.3: sigma_z = a * dz * sigma_lambda,
+    # with opacity error sigma_lambda = lambda / sqrt(N) from Poisson counting).
+    # `heights` = |z - pose.z| = a * lambda * dz already carries the a*dz factor,
+    # so heights / sqrt(N) IS a * dz * sigma_lambda -- do NOT multiply by dz again.
     heights = np.abs(z - np.array([pos_pose[pids_sorted[p]].z for p in pos_in]))
     if sky_counts is not None:
         N = np.array([max(1.0, sky_counts[pids_sorted[p]][f])
                       for p, f in zip(pos_in, flat_in)])
-        sigma_lam = heights / np.sqrt(N) + 0.02 * heights
+        sigma_z = heights / np.sqrt(N) + 0.02 * heights   # Poisson + small rel floor
         heteroscedastic = True
     else:
-        sigma_lam = 0.05 * heights + 0.02 * np.median(heights)  # geometry only
+        sigma_z = 0.05 * heights + 0.02 * np.median(heights)  # geometry-only leverage
         heteroscedastic = False
-    noise_base = (dz_in * sigma_lam) ** 2 + 1e-6
+    noise_base = sigma_z ** 2 + 1e-6
 
     mean = float(np.average(z))
     hypers = fit_hyperparams(X, z, noise_base, mean, n_restarts=n_restarts)
