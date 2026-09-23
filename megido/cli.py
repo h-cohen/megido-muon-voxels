@@ -11,7 +11,7 @@ import numpy as np
 from megido import validate as V
 from megido.angular import load_analysis_grid
 from megido.backproject import backproject_plane, plane_axes
-from megido.baseline import BaselineSolution, solve_baseline
+from megido.baseline import BaselineSolution, position_sky_counts, solve_baseline
 from megido.calib import calibrate
 from megido.config import load_site_config
 from megido.detector import DetectorGeometry
@@ -366,7 +366,19 @@ def _cmd_hillside_surface(args, sol, cfg, out: Path) -> int:
     written (kept unchanged) -- this ADDS the surface deliverable, it does
     not replace anything.
     """
-    result = fit_surface(sol, cfg, a=args.surface_a, cell_m=args.surface_cell)
+    sky_counts = None
+    run_dir = Path(args.run)
+    exposure_ids = [e.id for e in cfg.exposures]
+    if run_dir.is_dir() and all((run_dir / f"counts_{e}.npz").exists() for e in exposure_ids):
+        grid = load_analysis_grid(run_dir, exposure_ids, factor=args.rebin)
+        sky_counts = position_sky_counts(grid, cfg)
+    else:
+        print(f"no ingest counts under {run_dir}; heteroscedastic weights off "
+              "(geometry-only). Pass --run <ingest dir> for Poisson weighting.")
+
+    result = fit_surface(sol, cfg, a=args.surface_a, cell_m=args.surface_cell,
+                         sky_counts=sky_counts, max_points=args.surface_max_points,
+                         n_restarts=args.surface_restarts)
 
     np.save(out / "hill_surface.npy", result.H.astype(np.float32))
     np.save(out / "hill_surface_sigma.npy", result.sigma.astype(np.float32))
@@ -384,6 +396,10 @@ def _cmd_hillside_surface(args, sol, cfg, out: Path) -> int:
         "note": result.note,
         "detectors": result.detectors,
         "units": "convention metres (height ∝ 1/rho, absolute scale assumed)",
+        "heteroscedastic": sky_counts is not None,
+        "length_scale_m": result.length_scale_m,
+        "signal_std": result.signal_std,
+        "noise_floor": result.noise_floor,
     }
     (out / "hill_surface_meta.json").write_text(
         json.dumps(_json_nan_to_null(_json_safe(meta)), indent=2) + "\n")
@@ -509,6 +525,16 @@ def main(argv: list[str] | None = None) -> int:
                         "convention, NOT determined by the 2.2 m parallax")
     h.add_argument("--surface-cell", type=float, default=1.0, dest="surface_cell",
                    help="surface grid cell size in metres")
+    h.add_argument("--run", default="runs/ingest",
+                   help="ingest dir; enables heteroscedastic Poisson weights")
+    h.add_argument("--rebin", type=int, default=10,
+                   help="angular rebin factor (match the solve that made the baseline)")
+    h.add_argument("--surface-max-points", type=int, default=1000,
+                   dest="surface_max_points",
+                   help="cap on GP training rays (exact GP is O(N^3); a seeded "
+                        "subsample of the smooth field keeps the shape). Lower is faster.")
+    h.add_argument("--surface-restarts", type=int, default=3, dest="surface_restarts",
+                   help="ML-II hyperparameter optimiser restarts for the GP fit")
     h.set_defaults(func=_cmd_hillside)
 
     args = p.parse_args(argv)

@@ -154,3 +154,23 @@ def test_longer_runs_do_not_worsen_the_fit(cfg):
     short = solve_baseline(grid, cfg, n_iter=50, tol=0.0)
     long = solve_baseline(grid, cfg, n_iter=1500, tol=0.0)
     assert long.nll_history[-1] <= short.nll_history[-1] + 1e-6
+
+
+def test_position_sky_counts_matches_build_terms(cfg):
+    """position_sky_counts must be the same per-position, per-sky-bin summed
+    live counts that _build_terms uses internally (before the MIN_SKY_COUNTS
+    cut) -- it is the public helper `hillside --run` uses to rebuild
+    heteroscedastic Poisson weights without duplicating the live-mask logic."""
+    from megido.baseline import position_sky_counts
+    from megido.detector import DetectorGeometry
+    from megido.sky import make_sky_grid
+    from megido.simbaseline import make_synthetic_scene
+
+    grid = make_synthetic_scene(cfg).grid
+    sky = make_sky_grid()
+
+    psc = position_sky_counts(grid, cfg)
+    assert set(psc) == {"pos0", "pos1"}
+    for pid, arr in psc.items():
+        assert arr.shape == (sky.flat_size,)
+        assert arr.sum() > 0

@@ -143,6 +143,9 @@ class SurfaceResult:
     detectors: list = field(default_factory=list)
     scale_assumed: bool = True
     note: str = ""
+    length_scale_m: float = float("nan")
+    signal_std: float = float("nan")
+    noise_floor: float = float("nan")
 
 
 def fit_surface(sol, cfg, *, a: float = 8.0, cell_m: float = 1.0,
@@ -246,4 +249,7 @@ def fit_surface(sol, cfg, *, a: float = 8.0, cell_m: float = 1.0,
     return SurfaceResult(H=H, sigma=sigma, support=support, gx=gx, gy=gy, a=a,
                          variance_explained=ve, coverage_frac=coverage_frac,
                          coverage_radius_m=coverage_radius_m, n_rays=int(len(z)),
-                         detectors=detectors, scale_assumed=True, note=note)
+                         detectors=detectors, scale_assumed=True, note=note,
+                         length_scale_m=hypers.length_scale,
+                         signal_std=hypers.signal_std,
+                         noise_floor=hypers.noise_floor)

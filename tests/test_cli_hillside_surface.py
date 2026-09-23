@@ -8,6 +8,7 @@ from megido.cli import main
 
 REAL_CONFIG = Path("configs/megido.yaml")
 REAL_SOLVE = Path("runs/solve")
+REAL_INGEST = Path("runs/ingest")
 
 
 @pytest.mark.skipif(not REAL_CONFIG.exists() or not (REAL_SOLVE / "baseline.npz").exists(),
@@ -15,7 +16,8 @@ REAL_SOLVE = Path("runs/solve")
 def test_hillside_writes_surface_artifacts(tmp_path):
     out = tmp_path / "voxels"
     rc = main(["hillside", "--config", str(REAL_CONFIG), "--solve", str(REAL_SOLVE),
-               "--out", str(out)])
+               "--out", str(out),
+               "--surface-max-points", "150", "--surface-restarts", "1"])
     assert rc == 0
 
     npy_path = out / "hill_surface.npy"
@@ -57,3 +59,41 @@ def test_hillside_writes_surface_artifacts(tmp_path):
     except ImportError:
         return
     assert (out / "hill_surface.png").exists()
+
+
+@pytest.mark.skipif(not REAL_CONFIG.exists() or not (REAL_SOLVE / "baseline.npz").exists()
+                     or not REAL_INGEST.exists(),
+                     reason="needs the real configs/megido.yaml + runs/solve/baseline.npz "
+                            "+ runs/ingest counts")
+def test_hillside_run_produces_heteroscedastic_meta(tmp_path):
+    """--run rebuilds per-sky-bin counts from the ingest grid (baseline.npz
+    itself carries no counts -- BaselineSolution.load sets counts={}
+    deliberately) and turns on heteroscedastic Poisson GP noise."""
+    out = tmp_path / "voxels"
+    rc = main(["hillside", "--config", str(REAL_CONFIG), "--solve", str(REAL_SOLVE),
+               "--out", str(out), "--run", str(REAL_INGEST),
+               "--surface-max-points", "150", "--surface-restarts", "1"])
+    assert rc == 0
+
+    meta = json.loads((out / "hill_surface_meta.json").read_text())
+    assert meta["heteroscedastic"] is True
+    assert "length_scale" in json.dumps(meta) or "length_scale_m" in meta
+    assert "length_scale_m" in meta
+
+
+@pytest.mark.skipif(not REAL_CONFIG.exists() or not (REAL_SOLVE / "baseline.npz").exists(),
+                     reason="needs the real configs/megido.yaml + runs/solve/baseline.npz")
+def test_hillside_without_run_falls_back_to_geometry_only(tmp_path, capsys):
+    """Omitting --run must not crash: it prints a note pointing at --run and
+    writes heteroscedastic: false."""
+    out = tmp_path / "voxels"
+    rc = main(["hillside", "--config", str(REAL_CONFIG), "--solve", str(REAL_SOLVE),
+               "--out", str(out), "--run", str(tmp_path / "no-such-ingest-dir"),
+               "--surface-max-points", "150", "--surface-restarts", "1"])
+    assert rc == 0
+
+    meta = json.loads((out / "hill_surface_meta.json").read_text())
+    assert meta["heteroscedastic"] is False
+
+    captured = capsys.readouterr()
+    assert "--run" in captured.out

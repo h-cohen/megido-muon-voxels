@@ -162,6 +162,41 @@ class BaselineSolution:
         )
 
 
+def position_sky_counts(grid: AnalysisGrid, cfg: SiteConfig, *,
+                         geom: DetectorGeometry | None = None,
+                         sky: SkyGrid | None = None) -> dict[str, np.ndarray]:
+    """Per-position total live observed counts per sky bin, from raw data only.
+
+    Same geometric-acceptance + on-sky + in-grid live mask `_build_terms` uses
+    for its own (private) per-position sky-count accumulation, exposed here so
+    callers that only have a rebuilt ingest grid -- e.g. `hillside --run`,
+    which needs Poisson counts for heteroscedastic GP noise but does not run
+    the full baseline solve -- can get the same totals without duplicating the
+    mask logic. This is the sum BEFORE the MIN_SKY_COUNTS statistical cut;
+    `_build_terms` applies that cut downstream against these same totals.
+
+    `geom`/`sky` default to the real campaign's (`DetectorGeometry.megiddo()`,
+    `make_sky_grid()`) -- the CLI's usage -- but `_build_terms` passes its own,
+    since `solve_baseline` callers (tests, synthetic scenes) may use a
+    different sky/geom and must get the SAME live mask, not a default one.
+    """
+    geom = geom or DetectorGeometry.megiddo()
+    sky = sky or make_sky_grid()
+    tx, ty = grid.tan_mesh()
+    acceptance_full = geometric_acceptance(tx, ty, geom)
+    positions = position_ids(cfg)
+
+    out: dict[str, np.ndarray] = {}
+    for eid, counts in grid.counts.items():
+        exp = cfg.exposure(eid)
+        sx, sy, on_sky = detector_to_sky(tx, ty, exp.pose)
+        flat, in_grid = sky.bin_index(sx, sy)
+        live = (acceptance_full > 0) & on_sky & in_grid
+        acc = out.setdefault(positions[eid], np.zeros(sky.flat_size))
+        np.add.at(acc, flat[live], counts[live].astype(np.float64))
+    return out
+
+
 def _build_terms(grid: AnalysisGrid, cfg: SiteConfig, geom: DetectorGeometry,
                  sky: SkyGrid, basis: SmoothBasis) -> dict[str, _ExposureTerms]:
     tx, ty = grid.tan_mesh()
@@ -182,20 +217,18 @@ def _build_terms(grid: AnalysisGrid, cfg: SiteConfig, geom: DetectorGeometry,
     # Per-position total observed counts per sky bin, from raw data only, fixed
     # for the whole solve. A sky bin below MIN_SKY_COUNTS is dropped from every
     # exposure at that position: it cannot constrain opacity there regardless
-    # of how the smooth correction or norms are set.
-    position_sky_counts: dict[str, np.ndarray] = {}
-    for eid, r in raw.items():
-        pid = positions[eid]
-        acc = position_sky_counts.setdefault(pid, np.zeros(sky.flat_size))
-        live = r["live"]
-        np.add.at(acc, r["flat"][live], r["counts"][live].astype(np.float64))
+    # of how the smooth correction or norms are set. Delegated to the public
+    # `position_sky_counts` helper (DRY), passing THIS call's geom/sky through
+    # -- callers of solve_baseline (tests, synthetic scenes) may use a
+    # non-default sky/geom and must get the same live mask `raw` used above.
+    pos_sky_counts = position_sky_counts(grid, cfg, geom=geom, sky=sky)
 
     terms: dict[str, _ExposureTerms] = {}
     for eid, r in raw.items():
         exp = r["exp"]
         pid = positions[eid]
         sx, sy, flat, counts = r["sx"], r["sy"], r["flat"], r["counts"]
-        sky_ok = position_sky_counts[pid][flat] >= MIN_SKY_COUNTS
+        sky_ok = pos_sky_counts[pid][flat] >= MIN_SKY_COUNTS
         live = r["live"] & sky_ok
 
         terms[eid] = _ExposureTerms(
