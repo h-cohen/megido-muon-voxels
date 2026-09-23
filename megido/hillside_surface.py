@@ -1,18 +1,14 @@
-"""Linear regularized hillside-surface inversion core (Phase 5b, Task 1).
+"""Gaussian-process hillside-surface inversion driver (Phase 5b, Task 2).
 
-The hillside silhouette is fit as a smooth height field H(x, y) on a
-rectangular grid. Each muon ray with a measured path length places a surface
-point at its exit point ``o + L * d_hat``. Bilinear interpolation of the grid
-at the exit point's (x, y) equals the exit point's z -- this is LINEAR in the
-grid heights, unlike an iterative ray-march forward model (which is a
-non-differentiable step function and stalls gradient-based optimizers on a
-flat surface). This module builds the sparse bilinear sampling matrix, a
-Laplacian smoothness operator, and the regularized normal-equations solve.
-
-Grid flattening convention: for grids ``gx`` (length nx) and ``gy`` (length
-ny), grid index ``(i, j)`` (i indexing gx, j indexing gy) flattens to
-``flat = i * ny + j`` (i.e. ``np.meshgrid(gx, gy, indexing="ij").ravel()``).
-Downstream consumers (Task 2's driver) must use this same convention.
+The hillside silhouette is fit as a smooth height field H(x, y). Each muon
+ray with a measured (gauge-pinned, ASSUMED-scale) opacity places a surface
+point at its exit point ``o + a * lam * d_hat``. Those exit points are the
+training data for a Matern-5/2 Gaussian process (`megido.hillside_gp`),
+fit by ML-II with a heteroscedastic noise model built from Poisson counts
+when available (or geometric leverage otherwise). The GP replaces the
+earlier bilinear + Laplacian linear solver: it gives a real posterior
+per-cell error bar instead of a bootstrap-over-gauge proxy, and needs no
+smoothness-penalty tuning knob.
 """
 
 from __future__ import annotations
@@ -20,151 +16,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
-import scipy.sparse as sp
-import scipy.sparse.linalg as spla
 
 from megido.baseline import position_ids
+from megido.hillside_gp import fit_hyperparams, predict
 
 
-def bilinear_matrix(xy: np.ndarray, gx: np.ndarray, gy: np.ndarray):
-    """Build the sparse bilinear sampling matrix for points ``xy`` on grid (gx, gy).
-
-    Parameters
-    ----------
-    xy : (N, 2) array of (x, y) sample points.
-    gx : (nx,) strictly increasing grid coordinates along x.
-    gy : (ny,) strictly increasing grid coordinates along y.
-
-    Returns
-    -------
-    B : scipy.sparse.csr_matrix, shape (N, nx*ny)
-        Row n has up to 4 nonzero bilinear weights (summing to 1) for the
-        grid cell containing point n, flattened as ``i * ny + j``. Points
-        outside ``[gx[0], gx[-1]] x [gy[0], gy[-1]]`` get an all-zero row.
-    support : (nx*ny,) ndarray
-        Column sums of B -- total data support at each grid node.
-    """
-    xy = np.asarray(xy, dtype=float)
-    gx = np.asarray(gx, dtype=float)
-    gy = np.asarray(gy, dtype=float)
-    nx, ny = len(gx), len(gy)
-    n = xy.shape[0]
-
-    x = xy[:, 0]
-    y = xy[:, 1]
-
-    inside = (
-        (x >= gx[0]) & (x <= gx[-1]) & (y >= gy[0]) & (y <= gy[-1])
-    )
-
-    rows = []
-    cols = []
-    vals = []
-
-    # searchsorted gives the insertion index; clip so i0 in [0, nx-2].
-    i0 = np.clip(np.searchsorted(gx, x, side="right") - 1, 0, nx - 2)
-    j0 = np.clip(np.searchsorted(gy, y, side="right") - 1, 0, ny - 2)
-
-    dx = gx[i0 + 1] - gx[i0]
-    dy = gy[j0 + 1] - gy[j0]
-    tx = np.where(dx > 0, (x - gx[i0]) / np.where(dx > 0, dx, 1.0), 0.0)
-    ty = np.where(dy > 0, (y - gy[j0]) / np.where(dy > 0, dy, 1.0), 0.0)
-    tx = np.clip(tx, 0.0, 1.0)
-    ty = np.clip(ty, 0.0, 1.0)
-
-    w00 = (1 - tx) * (1 - ty)
-    w10 = tx * (1 - ty)
-    w01 = (1 - tx) * ty
-    w11 = tx * ty
-
-    corners = (
-        (i0, j0, w00),
-        (i0 + 1, j0, w10),
-        (i0, j0 + 1, w01),
-        (i0 + 1, j0 + 1, w11),
-    )
-    for ci, cj, cw in corners:
-        flat = ci * ny + cj
-        for row_idx in np.nonzero(inside)[0]:
-            rows.append(row_idx)
-            cols.append(flat[row_idx])
-            vals.append(cw[row_idx])
-
-    G = nx * ny
-    B = sp.coo_matrix((vals, (rows, cols)), shape=(n, G)).tocsr()
-    support = np.asarray(B.sum(axis=0)).ravel()
-    return B, support
-
-
-def laplacian_matrix(nx: int, ny: int):
-    """Interior 2nd-difference (5-point Laplacian) operator over an nx x ny grid.
-
-    Flat index convention matches ``bilinear_matrix``: ``flat = i * ny + j``.
-    Only interior nodes (1 <= i <= nx-2, 1 <= j <= ny-2) produce a row; a
-    plane sampled on the grid has zero 2nd difference at every interior node.
-
-    Returns
-    -------
-    scipy.sparse.csr_matrix, shape ((nx-2)*(ny-2), nx*ny) for nx, ny >= 3;
-    an empty (0, nx*ny) matrix if there are no interior nodes.
-    """
-    G = nx * ny
-    if nx < 3 or ny < 3:
-        return sp.csr_matrix((0, G))
-
-    rows = []
-    cols = []
-    vals = []
-    row_idx = 0
-    for i in range(1, nx - 1):
-        for j in range(1, ny - 1):
-            center = i * ny + j
-            xp = (i + 1) * ny + j
-            xm = (i - 1) * ny + j
-            yp = i * ny + (j + 1)
-            ym = i * ny + (j - 1)
-            for col, val in ((center, 4.0), (xp, -1.0), (xm, -1.0), (yp, -1.0), (ym, -1.0)):
-                rows.append(row_idx)
-                cols.append(col)
-                vals.append(val)
-            row_idx += 1
-
-    return sp.coo_matrix((vals, (rows, cols)), shape=(row_idx, G)).tocsr()
-
-
-def solve_surface(B, z: np.ndarray, w: np.ndarray, lap, mu: float) -> np.ndarray:
-    """Solve ``min ||W(Bh - z)||^2 + mu^2 ||lap h||^2`` for the flat grid heights h.
-
-    Solved via the normal equations ``(B^T W B + mu^2 L^T L) h = B^T W z``.
-    """
-    z = np.asarray(z, dtype=float)
-    w = np.asarray(w, dtype=float)
-    B = sp.csr_matrix(B)
-    lap = sp.csr_matrix(lap)
-
-    W = sp.diags(w)
-    BtW = B.T @ W
-    A = (BtW @ B + (mu ** 2) * (lap.T @ lap)).tocsc()
-    b = BtW @ z
-
-    h = spla.spsolve(A, b)
-    return np.asarray(h).ravel()
-
-
-def variance_explained(B, z: np.ndarray, w: np.ndarray, h: np.ndarray) -> float:
-    """Weighted variance-explained: ``1 - sum(w*(Bh-z)^2) / sum(w*(z-zbar)^2)``."""
-    z = np.asarray(z, dtype=float)
-    w = np.asarray(w, dtype=float)
-    B = sp.csr_matrix(B)
-
-    pred = B @ h
+def variance_explained(z, pred, w=None) -> float:
+    """Weighted variance-explained: ``1 - sum(w*(pred-z)^2) / sum(w*(z-zbar)^2)``."""
+    z = np.asarray(z, float)
+    pred = np.asarray(pred, float)
+    w = np.ones_like(z) if w is None else np.asarray(w, float)
     resid = pred - z
     num = np.sum(w * resid ** 2)
-
     zbar = np.sum(w * z) / np.sum(w)
     denom = np.sum(w * (z - zbar) ** 2)
-
-    return 1.0 - num / denom
+    return float(1.0 - num / denom)
 
 
 def _positions(cfg):
@@ -195,6 +61,8 @@ def exit_points(sol, cfg, a: float = 1.0, transparent_quantile: float = 0.05):
     -------
     pts : (N, 3) ndarray of (x, y, z) exit points, metres.
     pos_index : (N,) int ndarray, index into `sorted(positions)` for each point.
+    dz : (N,) ndarray, the ray's vertical direction cosine `1/norm`.
+    sky_flat : (N,) int ndarray, the ray's flat sky-bin index into `sol.sky`.
     """
     pos_pose = _positions(cfg)
     pids_sorted = sorted(pos_pose)
@@ -204,55 +72,29 @@ def exit_points(sol, cfg, a: float = 1.0, transparent_quantile: float = 0.05):
     sx_flat = sx_grid.ravel()
     sy_flat = sy_grid.ravel()
 
-    pts_list = []
-    idx_list = []
+    pts_list, idx_list, dz_list, flat_list = [], [], [], []
     for k, pid in enumerate(pids_sorted):
         pose = pos_pose[pid]
         lam = sol.normalized_opacity(pid, transparent_quantile=transparent_quantile)
         mask = np.isfinite(lam) & (lam > 0)
         if not mask.any():
             continue
-        sx = sx_flat[mask]
-        sy = sy_flat[mask]
-        l = lam[mask]
+        sx, sy, l = sx_flat[mask], sy_flat[mask], lam[mask]
         norm = np.sqrt(sx ** 2 + sy ** 2 + 1.0)
         dx, dy, dz = sx / norm, sy / norm, 1.0 / norm
         x = pose.x + a * l * dx
         y = pose.y + a * l * dy
         z = pose.z + a * l * dz
         pts_list.append(np.stack([x, y, z], axis=1))
-        idx_list.append(np.full(mask.sum(), k, dtype=int))
+        idx_list.append(np.full(int(mask.sum()), k, dtype=int))
+        dz_list.append(dz)
+        flat_list.append(np.nonzero(mask)[0])
 
     if not pts_list:
-        return np.zeros((0, 3)), np.zeros((0,), dtype=int)
-
-    pts = np.concatenate(pts_list, axis=0)
-    pos_index = np.concatenate(idx_list, axis=0)
-    return pts, pos_index
-
-
-def _solve_with_ridge(B, z: np.ndarray, w: np.ndarray, lap, mu: float,
-                       ridge: float) -> np.ndarray:
-    """Same normal-equations solve as `solve_surface`, plus a tiny ridge term.
-
-    A grid node with zero data support AND no Laplacian coupling (an isolated
-    corner, say) makes B^T W B + mu^2 L^T L singular. `ridge * I` guarantees a
-    non-singular solve everywhere; such nodes are masked to NaN downstream by
-    the coverage mask, so the ridge never fabricates a value that survives.
-    """
-    z = np.asarray(z, dtype=float)
-    w = np.asarray(w, dtype=float)
-    B = sp.csr_matrix(B)
-    lap = sp.csr_matrix(lap)
-
-    W = sp.diags(w)
-    BtW = B.T @ W
-    G = B.shape[1]
-    A = (BtW @ B + (mu ** 2) * (lap.T @ lap) + ridge * sp.eye(G)).tocsc()
-    b = BtW @ z
-
-    h = spla.spsolve(A, b)
-    return np.asarray(h).ravel()
+        z0 = np.zeros((0,), dtype=int)
+        return np.zeros((0, 3)), z0, np.zeros((0,)), z0
+    return (np.concatenate(pts_list), np.concatenate(idx_list),
+            np.concatenate(dz_list), np.concatenate(flat_list))
 
 
 def _footprint_grid(xy: np.ndarray, cell_m: float):
@@ -284,7 +126,9 @@ class SurfaceResult:
 
     `H` and `sigma` are NaN off the data-supported region -- an unconstrained
     grid node is NaN, never 0 or an extrapolated guess (repo convention: NaN
-    means "not constrained", not "measured as zero").
+    means "not constrained", not "measured as zero"). `support` carries
+    `1 - sigma/signal_std`, a data-influence proxy (0 at the prior, 1 where
+    the posterior has collapsed onto the data).
     """
     H: np.ndarray
     sigma: np.ndarray
@@ -301,104 +145,104 @@ class SurfaceResult:
     note: str = ""
 
 
-def fit_surface(sol, cfg, *, a: float = 1.0, cell_m: float = 1.0, mu: float = 0.3,
-                 min_support: float = 0.5, ridge: float = 1e-6, n_boot: int = 8,
-                 quantiles: list[float] | None = None) -> SurfaceResult:
+def fit_surface(sol, cfg, *, a: float = 8.0, cell_m: float = 1.0,
+                 sky_counts: dict | None = None, cov_tau: float = 0.9,
+                 n_restarts: int = 3, max_points: int = 1000) -> SurfaceResult:
     """Fit the hillside height field from a baseline solution's opacity maps.
 
-    Linear inversion only (bilinear sampling + Laplacian smoothness, solved by
-    normal equations) -- no ray-marching, which is a non-differentiable step
-    function that would stall a gradient-based fit on a flat surface.
+    A Matern-5/2 Gaussian process (`megido.hillside_gp`) fit by ML-II,
+    replacing the earlier bilinear + Laplacian linear solve. `sigma` is the
+    GP's real posterior standard deviation per grid cell -- a genuine error
+    bar, not a bootstrap-over-gauge proxy.
 
     Absolute height is on an ASSUMED inverse-density scale `a`
     (opacity-units per metre): this campaign's 2.2 m position baseline does
     not determine it. Only the fitted SHAPE, at that assumed scale, is a
     genuine data-driven result. See `SurfaceResult.note`.
     """
-    pts, _ = exit_points(sol, cfg, a=a)
+    pts, pos_index, dz, sky_flat = exit_points(sol, cfg, a=a)
     if pts.shape[0] == 0:
         raise ValueError("no finite, positive-opacity sky pixels to fit a surface from")
 
-    xy_all = pts[:, :2]
-    z_all = pts[:, 2]
-
-    gx, gy = _footprint_grid(xy_all, cell_m)
+    gx, gy = _footprint_grid(pts[:, :2], cell_m)
     nx, ny = len(gx), len(gy)
+    inside = ((pts[:, 0] >= gx[0]) & (pts[:, 0] <= gx[-1])
+              & (pts[:, 1] >= gy[0]) & (pts[:, 1] <= gy[-1]))
+    X = pts[inside, :2]
+    z = pts[inside, 2]
+    dz_in = dz[inside]
+    flat_in = sky_flat[inside]
+    pos_in = pos_index[inside]
 
-    # Rays landing outside the grid footprint get an all-zero bilinear row
-    # (see bilinear_matrix): drop them before fitting/scoring so they cannot
-    # inflate variance_explained's residual against a prediction of zero.
-    inside = (
-        (xy_all[:, 0] >= gx[0]) & (xy_all[:, 0] <= gx[-1])
-        & (xy_all[:, 1] >= gy[0]) & (xy_all[:, 1] <= gy[-1])
-    )
-    xy = xy_all[inside]
-    z = z_all[inside]
-
-    B, support = bilinear_matrix(xy, gx, gy)
-    lap = laplacian_matrix(nx, ny)
-    w = np.ones(len(z))
-
-    h = _solve_with_ridge(B, z, w, lap, mu, ridge)
-    ve = float(variance_explained(B, z, w, h))
-
-    covered = support >= min_support
-    h_masked = np.where(covered, h, np.nan)
-    H = h_masked.reshape(nx, ny)
-    support_grid = support.reshape(nx, ny)
-
-    coverage_frac = float(np.mean(covered))
+    # Exact-GP cost is O(N^3) per marginal-likelihood evaluation, so a full
+    # campaign's ~3k in-grid rays make each ML-II fit minutes. The height field
+    # is smooth and the footprint is small, so a seeded uniform subsample of the
+    # rays carries the same shape at a fraction of the cost. n_used is reported
+    # honestly; the coverage grid still spans the full footprint.
+    n_total = int(len(z))
+    subsampled = n_total > max_points
+    if subsampled:
+        sel = np.random.default_rng(0).choice(n_total, size=max_points, replace=False)
+        sel.sort()
+        X = X[sel]; z = z[sel]; dz_in = dz_in[sel]
+        flat_in = flat_in[sel]; pos_in = pos_in[sel]
 
     pos_pose = _positions(cfg)
     pids_sorted = sorted(pos_pose)
-    detectors = [
-        {"id": pid, "x": pos_pose[pid].x, "y": pos_pose[pid].y, "z": pos_pose[pid].z}
-        for pid in pids_sorted
-    ]
+
+    # heteroscedastic base variance: (a * dz * sigma_lambda)^2
+    # sigma_lambda ~ |z - pose.z| / sqrt(N_counts)  (Poisson, relative), with a
+    # small relative floor; falls back to pure geometric leverage without counts.
+    heights = np.abs(z - np.array([pos_pose[pids_sorted[p]].z for p in pos_in]))
+    if sky_counts is not None:
+        N = np.array([max(1.0, sky_counts[pids_sorted[p]][f])
+                      for p, f in zip(pos_in, flat_in)])
+        sigma_lam = heights / np.sqrt(N) + 0.02 * heights
+        heteroscedastic = True
+    else:
+        sigma_lam = 0.05 * heights + 0.02 * np.median(heights)  # geometry only
+        heteroscedastic = False
+    noise_base = (dz_in * sigma_lam) ** 2 + 1e-6
+
+    mean = float(np.average(z))
+    hypers = fit_hyperparams(X, z, noise_base, mean, n_restarts=n_restarts)
+    noise_var = noise_base + (hypers.noise_floor * hypers.signal_std) ** 2
+
+    GX, GY = np.meshgrid(gx, gy, indexing="ij")
+    Xstar = np.stack([GX.ravel(), GY.ravel()], axis=1)
+    mstar, sstar = predict(X, z, noise_var, mean, Xstar, hypers)
+
+    # coverage: a node whose posterior std is still ~ the prior std learned
+    # nothing from data -> unconstrained -> NaN (never 0).
+    covered = sstar < cov_tau * hypers.signal_std
+    H = np.where(covered, mstar, np.nan).reshape(nx, ny)
+    sigma = np.where(covered, sstar, np.nan).reshape(nx, ny)
+    support = np.where(covered, 1.0 - sstar / hypers.signal_std, np.nan).reshape(nx, ny)
+
+    pred_train, _ = predict(X, z, noise_var, mean, X, hypers)
+    ve = variance_explained(z, pred_train)
+
+    detectors = [{"id": pid, "x": pos_pose[pid].x, "y": pos_pose[pid].y,
+                  "z": pos_pose[pid].z} for pid in pids_sorted]
     cx = float(np.mean([d["x"] for d in detectors]))
     cy = float(np.mean([d["y"] for d in detectors]))
-    radii = np.sqrt((xy[:, 0] - cx) ** 2 + (xy[:, 1] - cy) ** 2)
+    radii = np.sqrt((X[:, 0] - cx) ** 2 + (X[:, 1] - cy) ** 2)
     coverage_radius_m = float(np.percentile(radii, 95))
-
-    # Bootstrap: re-derive exit points at varied transparent_quantile (Phase
-    # 2's gauge systematic) and refit on the SAME grid, per-cell std across
-    # replicas. This is an honesty check on the opacity-zero-point convention,
-    # not a statistical error bar in the usual sense.
-    if quantiles is None:
-        quantiles = [0.02, 0.05, 0.1, 0.2]
-    boots = np.empty((n_boot, nx * ny))
-    for b in range(n_boot):
-        q = quantiles[b % len(quantiles)]
-        pts_b, _ = exit_points(sol, cfg, a=a, transparent_quantile=q)
-        Bb, _ = bilinear_matrix(pts_b[:, :2], gx, gy)
-        wb = np.ones(pts_b.shape[0])
-        boots[b] = _solve_with_ridge(Bb, pts_b[:, 2], wb, lap, mu, ridge)
-
-    sigma_flat = np.where(covered, np.std(boots, axis=0), np.nan)
-    sigma = sigma_flat.reshape(nx, ny)
+    coverage_frac = float(np.mean(covered))
 
     note = (
-        f"Height is on an ASSUMED inverse-density scale a={a:g} "
-        "(opacity-units per metre) -- this campaign's 2.2 m position baseline "
-        "does NOT determine that scale, only the fitted SHAPE at it is a "
-        f"genuine result. {coverage_frac:.0%} of the grid within "
-        f"~{coverage_radius_m:.1f} m of the detector centroid is data-supported "
-        "(support >= min_support); the rest is NaN (unconstrained, never "
-        f"fabricated). variance_explained={ve:.3f} over {len(z)} rays."
+        f"Height is on an ASSUMED inverse-density scale a={a:g} (opacity-units "
+        "per metre) -- this campaign's 2.2 m baseline does NOT determine it; only "
+        f"the fitted SHAPE at that scale is a genuine result. GP: Matern-5/2, "
+        f"length-scale={hypers.length_scale:.2f} m (ML-II), "
+        f"{'heteroscedastic Poisson+leverage' if heteroscedastic else 'geometry-only (no counts; pass --run)'} "
+        f"noise. sigma is the posterior std (a real per-cell error bar). "
+        f"{coverage_frac:.0%} of the grid within ~{coverage_radius_m:.1f} m of the "
+        f"detector centroid is data-supported; the rest is NaN (unconstrained). "
+        f"variance_explained={ve:.3f} over {len(z)} rays"
+        + (f" (seeded subsample of {n_total})." if subsampled else ".")
     )
-
-    return SurfaceResult(
-        H=H,
-        sigma=sigma,
-        support=support_grid,
-        gx=gx,
-        gy=gy,
-        a=a,
-        variance_explained=ve,
-        coverage_frac=coverage_frac,
-        coverage_radius_m=coverage_radius_m,
-        n_rays=int(len(z)),
-        detectors=detectors,
-        scale_assumed=True,
-        note=note,
-    )
+    return SurfaceResult(H=H, sigma=sigma, support=support, gx=gx, gy=gy, a=a,
+                         variance_explained=ve, coverage_frac=coverage_frac,
+                         coverage_radius_m=coverage_radius_m, n_rays=int(len(z)),
+                         detectors=detectors, scale_assumed=True, note=note)
