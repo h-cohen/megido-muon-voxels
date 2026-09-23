@@ -61,8 +61,11 @@ def exit_points(sol, cfg, a: float = 1.0, transparent_quantile: float = 0.05):
     -------
     pts : (N, 3) ndarray of (x, y, z) exit points, metres.
     pos_index : (N,) int ndarray, index into `sorted(positions)` for each point.
-    dz : (N,) ndarray, the ray's vertical direction cosine `1/norm`.
     sky_flat : (N,) int ndarray, the ray's flat sky-bin index into `sol.sky`.
+
+    Note: the exit z already carries the a*dz factor (z = pose.z + a*lam*dz), so
+    the height-space noise model downstream needs |z - pose.z|, NOT dz separately.
+    dz is therefore intentionally not returned -- see fit_surface's noise model.
     """
     pos_pose = _positions(cfg)
     pids_sorted = sorted(pos_pose)
@@ -72,7 +75,7 @@ def exit_points(sol, cfg, a: float = 1.0, transparent_quantile: float = 0.05):
     sx_flat = sx_grid.ravel()
     sy_flat = sy_grid.ravel()
 
-    pts_list, idx_list, dz_list, flat_list = [], [], [], []
+    pts_list, idx_list, flat_list = [], [], []
     for k, pid in enumerate(pids_sorted):
         pose = pos_pose[pid]
         lam = sol.normalized_opacity(pid, transparent_quantile=transparent_quantile)
@@ -87,14 +90,13 @@ def exit_points(sol, cfg, a: float = 1.0, transparent_quantile: float = 0.05):
         z = pose.z + a * l * dz
         pts_list.append(np.stack([x, y, z], axis=1))
         idx_list.append(np.full(int(mask.sum()), k, dtype=int))
-        dz_list.append(dz)
         flat_list.append(np.nonzero(mask)[0])
 
     if not pts_list:
         z0 = np.zeros((0,), dtype=int)
-        return np.zeros((0, 3)), z0, np.zeros((0,)), z0
+        return np.zeros((0, 3)), z0, z0
     return (np.concatenate(pts_list), np.concatenate(idx_list),
-            np.concatenate(dz_list), np.concatenate(flat_list))
+            np.concatenate(flat_list))
 
 
 def _footprint_grid(xy: np.ndarray, cell_m: float):
@@ -163,7 +165,7 @@ def fit_surface(sol, cfg, *, a: float = 8.0, cell_m: float = 1.0,
     not determine it. Only the fitted SHAPE, at that assumed scale, is a
     genuine data-driven result. See `SurfaceResult.note`.
     """
-    pts, pos_index, dz, sky_flat = exit_points(sol, cfg, a=a)
+    pts, pos_index, sky_flat = exit_points(sol, cfg, a=a)
     if pts.shape[0] == 0:
         raise ValueError("no finite, positive-opacity sky pixels to fit a surface from")
 
@@ -173,7 +175,6 @@ def fit_surface(sol, cfg, *, a: float = 8.0, cell_m: float = 1.0,
               & (pts[:, 1] >= gy[0]) & (pts[:, 1] <= gy[-1]))
     X = pts[inside, :2]
     z = pts[inside, 2]
-    dz_in = dz[inside]
     flat_in = sky_flat[inside]
     pos_in = pos_index[inside]
 
@@ -187,7 +188,7 @@ def fit_surface(sol, cfg, *, a: float = 8.0, cell_m: float = 1.0,
     if subsampled:
         sel = np.random.default_rng(0).choice(n_total, size=max_points, replace=False)
         sel.sort()
-        X = X[sel]; z = z[sel]; dz_in = dz_in[sel]
+        X = X[sel]; z = z[sel]
         flat_in = flat_in[sel]; pos_in = pos_in[sel]
 
     pos_pose = _positions(cfg)

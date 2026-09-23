@@ -168,26 +168,29 @@ def test_absolute_scale_rides_on_assumption_a():
 
 
 def test_heteroscedastic_downweights_low_count_bins():
-    """With sky_counts, low-count (noisy) rays are trusted less than with a
-    flat weighting: the fit at the low-count region moves toward its
-    high-count neighbours."""
+    """Directional gate on the Poisson weighting SIGN: fewer counts must mean a
+    NOISIER observation, hence LARGER posterior uncertainty. Two heteroscedastic
+    fits identical but for the counts -- one all-high, one with a subset knocked
+    to few counts -- must give the low-count fit a larger typical sigma. A sign
+    inversion (counts raising confidence where they should lower it) fails this;
+    the old 'sigma merely differs' check could not catch that."""
     sol = _build_fake_sol_from_hill()
     cfg = _fake_cfg()
-    _, pos_index, _, sky_flat = exit_points(sol, cfg, a=1.0)
-    # fabricate counts: one position's bins all high, other's all low
-    counts = {}
-    for pid in sorted(set(_positions_ids(cfg))):
-        counts[pid] = np.full(sol.sky.flat_size, 500.0)
-    # knock down a contiguous chunk of sky bins to few counts
-    any_pid = sorted(counts)[0]
-    counts[any_pid][:] = 500.0
-    lo = np.unique(sky_flat)[: max(1, len(np.unique(sky_flat)) // 5)]
-    counts[any_pid][lo] = 3.0
-    r_flat = fit_surface(sol, cfg, a=1.0, cell_m=0.5, sky_counts=None,
-                         n_restarts=1, max_points=400)
-    r_het = fit_surface(sol, cfg, a=1.0, cell_m=0.5, sky_counts=counts,
-                        n_restarts=1, max_points=400)
-    # both produce a covered surface; het must not crash and must change sigma
-    cov = np.isfinite(r_het.sigma) & np.isfinite(r_flat.sigma)
+    _, pos_index, sky_flat = exit_points(sol, cfg, a=1.0)
+    pids = sorted(set(_positions_ids(cfg)))
+
+    counts_hi = {pid: np.full(sol.sky.flat_size, 500.0) for pid in pids}
+    counts_lo = {pid: np.full(sol.sky.flat_size, 500.0) for pid in pids}
+    # knock a chunk of actually-used sky bins down to few counts at one position
+    any_pid = pids[0]
+    lo = np.unique(sky_flat)[: max(1, len(np.unique(sky_flat)) // 3)]
+    counts_lo[any_pid][lo] = 2.0
+
+    r_hi = fit_surface(sol, cfg, a=1.0, cell_m=0.5, sky_counts=counts_hi,
+                       n_restarts=1, max_points=400)
+    r_lo = fit_surface(sol, cfg, a=1.0, cell_m=0.5, sky_counts=counts_lo,
+                       n_restarts=1, max_points=400)
+    cov = np.isfinite(r_hi.sigma) & np.isfinite(r_lo.sigma)
     assert cov.sum() > 10
-    assert not np.allclose(r_het.sigma[cov], r_flat.sigma[cov])
+    # fewer counts -> noisier -> larger posterior std (weighting sign correct)
+    assert np.nanmedian(r_lo.sigma[cov]) > np.nanmedian(r_hi.sigma[cov])

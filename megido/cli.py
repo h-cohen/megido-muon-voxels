@@ -371,7 +371,9 @@ def _cmd_hillside_surface(args, sol, cfg, out: Path) -> int:
     exposure_ids = [e.id for e in cfg.exposures]
     if run_dir.is_dir() and all((run_dir / f"counts_{e}.npz").exists() for e in exposure_ids):
         grid = load_analysis_grid(run_dir, exposure_ids, factor=args.rebin)
-        sky_counts = position_sky_counts(grid, cfg)
+        # Use the SOLUTION's sky grid so the per-sky-bin counts line up with
+        # exit_points' sky_flat indexing even if a non-default sky is ever used.
+        sky_counts = position_sky_counts(grid, cfg, sky=sol.sky)
     else:
         print(f"no ingest counts under {run_dir}; heteroscedastic weights off "
               "(geometry-only). Pass --run <ingest dir> for Poisson weighting.")
