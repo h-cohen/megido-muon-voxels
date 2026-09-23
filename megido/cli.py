@@ -410,7 +410,7 @@ def _cmd_hillside_surface(args, sol, cfg, out: Path) -> int:
 
     finite = np.isfinite(result.H)
     relief = (float(np.nanmax(result.H) - np.nanmin(result.H)) if finite.any() else float("nan"))
-    print(f"surface         a={result.a:g}  VE={result.variance_explained:.1%}  "
+    print(f"surface         a={result.a:g}  VE={result.variance_explained:.1%} (per cell)  "
           f"coverage={result.coverage_frac:.1%} (radius {result.coverage_radius_m:.1f} m)  "
           f"relief={relief:.2f} m (convention scale)")
 
@@ -445,7 +445,7 @@ def _cmd_hillside_surface(args, sol, cfg, out: Path) -> int:
     caption = (
         f"ASSUMED scale a={result.a:g} (height ∝ 1/rho; NOT set by the "
         f"2.2 m parallax); surface explains {result.variance_explained:.0%} of "
-        f"directional opacity variance; coverage {result.coverage_frac:.0%} "
+        f"per-cell upper-envelope height variance; coverage {result.coverage_frac:.0%} "
         f"(radius {result.coverage_radius_m:.1f} m)"
     )
     fig.text(0.5, 0.01, caption, ha="center", fontsize=8, wrap=True)

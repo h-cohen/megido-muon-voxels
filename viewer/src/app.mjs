@@ -743,7 +743,7 @@ export function initViewer(root) {
       if (hillSurfaceCaveatEl) {
         const pct = Math.round((hillMeta.variance_explained || 0) * 100);
         hillSurfaceCaveatEl.textContent =
-          `Hillside surface — assumed scale, ${pct}% variance explained`;
+          `Hillside surface — assumed scale, ${pct}% variance explained (per cell)`;
         hillSurfaceCaveatEl.hidden = false;
       }
     } else {
