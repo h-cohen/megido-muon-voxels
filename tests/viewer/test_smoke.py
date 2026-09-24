@@ -248,8 +248,8 @@ def test_real_campaign_output_renders_with_every_control_operable(page, dist_pat
     # render; the clip is off by default.
     caption = page.locator("#hill-surface-caveat").inner_text()
     assert "per cell" in caption and "per ray" in caption and "a=" in caption, caption
-    assert page.locator("#hill-sigma-legend").is_visible()
-    assert "σ" in page.locator("#hill-sigma-range").inner_text()
+    assert page.locator("#hill-colour-legend").is_visible()
+    assert "σ" in page.locator("#hill-colour-range").inner_text()
 
     def toggling_changes_render(selector, action):
         before = gl_canvas_data()
@@ -257,8 +257,14 @@ def test_real_campaign_output_renders_with_every_control_operable(page, dist_pat
         page.wait_for_timeout(50)
         return gl_canvas_data() != before
 
-    assert toggling_changes_render("#toggle-hill-sigma", "uncheck")
-    assert toggling_changes_render("#toggle-hill-sigma", "check")
+    hill_colour_mode = page.locator("#hill-colour-mode")
+    before_mode = gl_canvas_data()
+    hill_colour_mode.select_option("flat")
+    page.wait_for_timeout(50)
+    assert gl_canvas_data() != before_mode
+    hill_colour_mode.select_option("sigma")
+    page.wait_for_timeout(50)
+    assert gl_canvas_data() == before_mode
     assert toggling_changes_render("#toggle-shading", "uncheck")
     assert toggling_changes_render("#toggle-smooth", "uncheck")
     page.locator("#toggle-smooth").check()

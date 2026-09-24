@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { surfaceMesh, smoothHeightfield, surfaceVertexColors, robustRange, SIGMA_RAMP, surfaceHeightAt, surfaceTextureData } from '../src/surfacemesh.mjs';
+import { surfaceMesh, smoothHeightfield, surfaceVertexColors, robustRange, SIGMA_RAMP, surfaceHeightAt, surfaceTextureData, residualVertexColors, DIVERGING_RAMP } from '../src/surfacemesh.mjs';
 
 test('surfaceMesh: 2x2 all-finite grid -> 4 verts, one quad -> 6 indices', () => {
   const gx = [0, 1];
@@ -105,6 +105,44 @@ test('surfaceHeightAt is exact on a plane, NaN outside or at a NaN corner', () =
   assert.ok(Number.isNaN(surfaceHeightAt(H, gx, gy, 1, 3.5)));
   const H2 = Float32Array.from(H); H2[1 * 4 + 1] = NaN;
   assert.ok(Number.isNaN(surfaceHeightAt(H2, gx, gy, 0.5, 0.5)));
+});
+
+test('residualVertexColors maps -lim to blue end, 0 to neutral, +lim to red end, and clamps', () => {
+  const [blue, neutral, red] = DIVERGING_RAMP;
+  const c = residualVertexColors(Float32Array.from([-1, 0, 1, -5, 5]), 1);
+  for (let k = 0; k < 3; k++) {
+    assert.ok(Math.abs(c[k] - blue[k]) < 1e-6);        // r=-lim -> blue
+    assert.ok(Math.abs(c[3 + k] - neutral[k]) < 1e-6); // r=0 -> neutral
+    assert.ok(Math.abs(c[6 + k] - red[k]) < 1e-6);     // r=+lim -> red
+    assert.ok(Math.abs(c[9 + k] - blue[k]) < 1e-6);    // below -lim clamps to blue
+    assert.ok(Math.abs(c[12 + k] - red[k]) < 1e-6);    // above +lim clamps to red
+  }
+});
+
+test('residualVertexColors lerps midway between neutral and each end', () => {
+  const [blue, neutral, red] = DIVERGING_RAMP;
+  const c = residualVertexColors(Float32Array.from([-0.5, 0.5]), 1);
+  for (let k = 0; k < 3; k++) {
+    assert.ok(Math.abs(c[k] - (neutral[k] + blue[k]) / 2) < 1e-6);
+    assert.ok(Math.abs(c[3 + k] - (neutral[k] + red[k]) / 2) < 1e-6);
+  }
+});
+
+test('residualVertexColors gives NaN residual the neutral colour', () => {
+  const [, neutral] = DIVERGING_RAMP;
+  const c = residualVertexColors(Float32Array.from([NaN]), 1);
+  for (let k = 0; k < 3; k++) assert.ok(Math.abs(c[k] - neutral[k]) < 1e-6);
+});
+
+test('residualVertexColors treats a non-positive or non-finite lim as 1', () => {
+  const [blue, , red] = DIVERGING_RAMP;
+  for (const lim of [0, -1, NaN, Infinity]) {
+    const c = residualVertexColors(Float32Array.from([-1, 1]), lim);
+    for (let k = 0; k < 3; k++) {
+      assert.ok(Math.abs(c[k] - blue[k]) < 1e-6);
+      assert.ok(Math.abs(c[3 + k] - red[k]) < 1e-6);
+    }
+  }
 });
 
 test('surfaceTextureData transposes to x-fastest and sentinels NaN', () => {

@@ -12,7 +12,7 @@ import { COLORMAP_NAMES, colormapStops } from './colormap.mjs';
 import { captureView, loadViews, saveViews } from './views.mjs';
 import { SHORTCUTS, keyToAction } from './shortcuts.mjs';
 import { markerVertices, silhouetteVertices, SILHOUETTE_RAYLEN_M, dedupeDetectors, projectToScreen } from './markers.mjs';
-import { surfaceMesh, smoothHeightfield, surfaceVertexColors, robustRange, surfaceHeightAt, surfaceTextureData } from './surfacemesh.mjs';
+import { surfaceMesh, smoothHeightfield, surfaceVertexColors, robustRange, surfaceHeightAt, surfaceTextureData, residualVertexColors } from './surfacemesh.mjs';
 
 const VERTEX_SRC = `#version 300 es
 out vec2 vUv;
@@ -397,7 +397,7 @@ export function initViewer(root) {
     showHillSurface: false,
     hillSurfaceIndexCount: 0,
     hillSurfaceSmooth: 0, // display-only smoothing pass count; 0 = raw fit
-    hillSigmaColor: false, // colour the surface by GP posterior sigma instead of flat amber
+    hillColourMode: 'flat', // 'sigma' | 'residual' | 'flat' - reset by loadRun
     hillSigmaRange: null, // [lo, hi] robust range of sigma, set by loadRun
     surfClip: false, // display-only: skip volume samples above the fitted surface
     hillDisplayH: null, // the DISPLAYED (possibly smoothed) height field the clip must match
@@ -675,9 +675,11 @@ export function initViewer(root) {
   // surf.H (never cumulatively from a previous smoothed result), so moving
   // the slider back to 0 exactly restores the raw fit. Also rebuilds the
   // per-vertex colour buffer: the GP posterior sigma ramp when
-  // state.hillSigmaColor is on and sigma data is loaded, otherwise a flat
-  // amber matching HILL_SURFACE_COLOR (so the flat-fill look is unchanged
-  // when sigma coloring is off or unavailable).
+  // state.hillColourMode is 'sigma' and sigma data is loaded, the diverging
+  // residual ramp when it is 'residual' and residual data is loaded,
+  // otherwise a flat amber matching HILL_SURFACE_COLOR (so the flat-fill
+  // look is unchanged when colouring is off or the chosen mode's data is
+  // unavailable).
   function rebuildHillSurfaceBuffer() {
     const surf = state.hillSurface;
     if (!surf) {
@@ -712,9 +714,11 @@ export function initViewer(root) {
     const { positions, indices } = surfaceMesh(H, surf.gx, surf.gy);
     const vertexCount = positions.length / 3;
     let colors;
-    if (state.hillSigmaColor && surf.sigma) {
+    if (state.hillColourMode === 'sigma' && surf.sigma) {
       const [lo, hi] = state.hillSigmaRange || robustRange(surf.sigma);
       colors = surfaceVertexColors(surf.sigma, lo, hi);
+    } else if (state.hillColourMode === 'residual' && surf.residual) {
+      colors = residualVertexColors(surf.residual, surf.residualLim);
     } else {
       colors = new Float32Array(vertexCount * 3);
       for (let k = 0; k < vertexCount; k++) {
@@ -922,13 +926,15 @@ export function initViewer(root) {
     const hillSurfaceFile = byName.get('hill_surface.npy');
     const hillSurfaceMetaFile = byName.get('hill_surface_meta.json');
     const hillSurfaceSigmaFile = byName.get('hill_surface_sigma.npy');
+    const hillResidualFile = byName.get('hill_residual_grid.npy');
     const toggleHillSurfaceEl = root.querySelector('#toggle-hill-surface');
     const hillSurfaceCaveatEl = root.querySelector('#hill-surface-caveat');
     const hillSurfaceSmoothEl = root.querySelector('#hill-surface-smooth');
     const hillSurfaceSmoothReadoutEl = root.querySelector('#hill-surface-smooth-readout');
-    const toggleHillSigmaEl = root.querySelector('#toggle-hill-sigma');
-    const hillSigmaLegendEl = root.querySelector('#hill-sigma-legend');
-    const hillSigmaRangeEl = root.querySelector('#hill-sigma-range');
+    const hillColourModeEl = root.querySelector('#hill-colour-mode');
+    const hillColourLegendEl = root.querySelector('#hill-colour-legend');
+    const hillColourBarEl = root.querySelector('#hill-colour-bar');
+    const hillColourRangeEl = root.querySelector('#hill-colour-range');
     const toggleSurfClipEl = root.querySelector('#toggle-surf-clip');
     // Display-only clip is always OFF by default on a fresh load, even when
     // a surface is present - it is opt-in every time, never carried over
@@ -940,11 +946,48 @@ export function initViewer(root) {
     state.hillSurfaceSmooth = 0;
     if (hillSurfaceSmoothEl) hillSurfaceSmoothEl.value = '0';
     if (hillSurfaceSmoothReadoutEl) hillSurfaceSmoothReadoutEl.textContent = '0';
-    // Sigma coloring is reset on every load too - it must never carry a
-    // stale range or a stale "on" state from a previous run into one that
-    // has no sigma data.
-    state.hillSigmaColor = false;
+    // Colour mode is reset on every load too - it must never carry a stale
+    // range/lim or a stale mode from a previous run into one that has
+    // different (or no) colouring data.
+    state.hillColourMode = 'flat';
     state.hillSigmaRange = null;
+
+    // Renders the legend block (#hill-colour-legend) for the CURRENT
+    // state.hillColourMode. Called on load and every mode switch, so the
+    // legend never shows a range/text for a mode that isn't active.
+    function updateHillColourLegend() {
+      const surf = state.hillSurface;
+      if (!hillColourLegendEl) return;
+      if (state.hillColourMode === 'sigma' && surf && surf.sigma) {
+        hillColourLegendEl.hidden = false;
+        if (hillColourBarEl) {
+          hillColourBarEl.style.background = 'linear-gradient(90deg,rgb(245,184,92),rgb(115,41,8))';
+        }
+        if (hillColourRangeEl) {
+          const [lo, hi] = state.hillSigmaRange || robustRange(surf.sigma);
+          hillColourRangeEl.textContent =
+            `σ ${lo.toFixed(2)} – ${hi.toFixed(2)} m · raw posterior std, assumed scale`;
+        }
+      } else if (state.hillColourMode === 'residual' && surf && surf.residual) {
+        hillColourLegendEl.hidden = false;
+        if (hillColourBarEl) {
+          hillColourBarEl.style.background =
+            'linear-gradient(90deg,rgb(48,102,199),rgb(237,237,237),rgb(204,51,41))';
+        }
+        if (hillColourRangeEl) {
+          const lim = surf.residualLim;
+          const limText = Number.isFinite(lim) && lim > 0 ? lim.toFixed(2) : '1.00';
+          hillColourRangeEl.textContent =
+            `Δλ after per-position offset −${limText} … +${limText} · ` +
+            `red: more opacity than the uniform-solid prediction · ` +
+            `not separable from an a/density-scale misfit`;
+        }
+      } else {
+        hillColourLegendEl.hidden = true;
+      }
+    }
+    state.updateHillColourLegend = updateHillColourLegend;
+
     if (hillSurfaceFile && hillSurfaceMetaFile) {
       const { data: H } = parseNpy(await readFile(hillSurfaceFile));
       const hillMeta = JSON.parse(await hillSurfaceMetaFile.text());
@@ -953,11 +996,15 @@ export function initViewer(root) {
         const { data } = parseNpy(await readFile(hillSurfaceSigmaFile));
         if (data.length === H.length) sigma = data;
       }
-      state.hillSurface = { H, gx: hillMeta.gx, gy: hillMeta.gy, meta: hillMeta, sigma };
-      if (sigma) {
-        state.hillSigmaRange = robustRange(sigma);
-        state.hillSigmaColor = true;
+      let residual = null;
+      if (hillResidualFile) {
+        const { data } = parseNpy(await readFile(hillResidualFile));
+        if (data.length === H.length) residual = data;
       }
+      const residualLim = hillMeta.residual_grid_lim;
+      state.hillSurface = { H, gx: hillMeta.gx, gy: hillMeta.gy, meta: hillMeta, sigma, residual, residualLim };
+      state.hillColourMode = sigma ? 'sigma' : 'flat';
+      if (sigma) state.hillSigmaRange = robustRange(sigma);
       rebuildHillSurfaceBuffer();
       if (toggleHillSurfaceEl) {
         toggleHillSurfaceEl.disabled = false;
@@ -969,16 +1016,13 @@ export function initViewer(root) {
       // for a degenerate grid (fewer than 2 nodes on an axis) - the clip
       // toggle must stay disabled in that case, not just default-off.
       if (toggleSurfClipEl) toggleSurfClipEl.disabled = state.surfSize[0] === 0 || state.surfSize[1] === 0;
-      if (toggleHillSigmaEl) {
-        toggleHillSigmaEl.disabled = !sigma;
-        toggleHillSigmaEl.checked = !!sigma;
+      if (hillColourModeEl) {
+        hillColourModeEl.disabled = false;
+        hillColourModeEl.value = state.hillColourMode;
+        const residualOption = hillColourModeEl.querySelector('option[value="residual"]');
+        if (residualOption) residualOption.disabled = !residual;
       }
-      if (hillSigmaLegendEl) hillSigmaLegendEl.hidden = !sigma;
-      if (sigma && hillSigmaRangeEl) {
-        const [lo, hi] = state.hillSigmaRange;
-        hillSigmaRangeEl.textContent =
-          `σ ${lo.toFixed(2)} – ${hi.toFixed(2)} m · raw posterior std, assumed scale`;
-      }
+      updateHillColourLegend();
       if (hillSurfaceCaveatEl) {
         const pctCell = Math.round((hillMeta.variance_explained || 0) * 100);
         const rayVe = hillMeta.ray_ve;
@@ -1002,11 +1046,13 @@ export function initViewer(root) {
       }
       if (hillSurfaceSmoothEl) hillSurfaceSmoothEl.disabled = true;
       if (hillSurfaceCaveatEl) hillSurfaceCaveatEl.hidden = true;
-      if (toggleHillSigmaEl) {
-        toggleHillSigmaEl.disabled = true;
-        toggleHillSigmaEl.checked = false;
+      if (hillColourModeEl) {
+        hillColourModeEl.disabled = true;
+        hillColourModeEl.value = 'flat';
+        const residualOption = hillColourModeEl.querySelector('option[value="residual"]');
+        if (residualOption) residualOption.disabled = true;
       }
-      if (hillSigmaLegendEl) hillSigmaLegendEl.hidden = true;
+      updateHillColourLegend();
       if (toggleSurfClipEl) {
         toggleSurfClipEl.disabled = true;
         toggleSurfClipEl.checked = false;
@@ -1268,11 +1314,12 @@ export function initViewer(root) {
     });
   }
 
-  const toggleHillSigmaEl = root.querySelector('#toggle-hill-sigma');
-  if (toggleHillSigmaEl) {
-    toggleHillSigmaEl.disabled = true; // enabled by loadRun once sigma data is present
-    toggleHillSigmaEl.addEventListener('change', (ev) => {
-      state.hillSigmaColor = ev.target.checked;
+  const hillColourModeEl = root.querySelector('#hill-colour-mode');
+  if (hillColourModeEl) {
+    hillColourModeEl.disabled = true; // enabled by loadRun once a surface is present
+    hillColourModeEl.addEventListener('change', (ev) => {
+      state.hillColourMode = ev.target.value;
+      if (state.updateHillColourLegend) state.updateHillColourLegend();
       rebuildHillSurfaceBuffer();
       render();
     });

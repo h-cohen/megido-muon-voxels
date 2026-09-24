@@ -117,6 +117,37 @@ export function surfaceVertexColors(sigma, lo, hi) {
   return out;
 }
 
+// Diverging ramp for the surface's per-node ray residual (mean offset-removed
+// path-length residual, `hill_residual_grid.npy`): blue (less opacity than
+// the uniform-solid prediction) - neutral grey (no residual) - red (more
+// opacity than predicted). Readable on both themes.
+export const DIVERGING_RAMP = [[0.19, 0.40, 0.78], [0.93, 0.93, 0.93], [0.80, 0.20, 0.16]];
+
+// residualVertexColors(res, lim) -> Float32Array, length 3*res.length.
+// Maps each residual value onto DIVERGING_RAMP by t = clamp(r/lim, -1, 1):
+// t<0 lerps neutral->blue, t>0 lerps neutral->red. A non-finite residual
+// (NaN off-coverage/no-ray node) gets the neutral colour, since "no ray
+// landed here" is neither more nor less opaque than predicted. A
+// non-positive or non-finite `lim` (degenerate/absent scale) is treated as 1
+// so every vertex still gets a defined colour instead of dividing by zero.
+export function residualVertexColors(res, lim) {
+  const out = new Float32Array(res.length * 3);
+  const [blue, neutral, red] = DIVERGING_RAMP;
+  const L = Number.isFinite(lim) && lim > 0 ? lim : 1;
+  for (let k = 0; k < res.length; k++) {
+    const r = res[k];
+    if (!Number.isFinite(r)) {
+      for (let c = 0; c < 3; c++) out[k * 3 + c] = neutral[c];
+      continue;
+    }
+    const t = Math.min(1, Math.max(-1, r / L));
+    const end = t < 0 ? blue : red;
+    const f = Math.abs(t);
+    for (let c = 0; c < 3; c++) out[k * 3 + c] = neutral[c] + (end[c] - neutral[c]) * f;
+  }
+  return out;
+}
+
 // surfaceHeightAt(H, gx, gy, x, y) -> number: bilinear interpolation of the
 // fitted/displayed height field on its (possibly non-square) node grid.
 // Returns NaN outside the grid's [gx0,gxN]x[gy0,gyN] bounding box, or if any
