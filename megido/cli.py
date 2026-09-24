@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import itertools
 import json
 from pathlib import Path
@@ -69,8 +70,24 @@ def _grid_ids(cfg) -> list[str]:
     return ids
 
 
-def _phase2_solver(cfg):
-    return solve_skyref if cfg.sky_reference is not None else solve_baseline
+def _live_times(run_dir: Path, cfg) -> dict[str, float] | None:
+    """Per-id live time (s) recorded at ROOT ingest, or None if any is missing.
+
+    All-or-nothing: a measured gauge needs every run's live time; a partial
+    set would silently mix a measured and a conventional scale."""
+    meta = Path(run_dir) / "meta.json"
+    if cfg.sky_reference is None or not meta.exists():
+        return None
+    exps = json.loads(meta.read_text()).get("exposures", {})
+    out = {i: exps.get(i, {}).get("live_time_s") for i in _grid_ids(cfg)}
+    return out if all(v for v in out.values()) else None
+
+
+def _phase2_solver(cfg, run_dir: Path | None = None):
+    if cfg.sky_reference is None:
+        return solve_baseline
+    live = _live_times(run_dir, cfg) if run_dir is not None else None
+    return functools.partial(solve_skyref, live_time=live)
 
 
 def _cmd_ingest(args) -> int:
@@ -106,7 +123,7 @@ def _cmd_solve(args) -> int:
 
     grid = load_analysis_grid(run_dir, exposure_ids, factor=args.rebin)
     if cfg.sky_reference is not None:
-        return _cmd_solve_skyref(args, cfg, grid)
+        return _cmd_solve_skyref(args, cfg, grid, run_dir)
     sol = solve_baseline(grid, cfg, n_iter=args.iters)
 
     out = Path(args.out)
@@ -134,21 +151,29 @@ def _cmd_solve(args) -> int:
     return 0 if all(c.passed for c in checks) else 1
 
 
-def _cmd_solve_skyref(args, cfg, grid) -> int:
+def _cmd_solve_skyref(args, cfg, grid, run_dir: Path) -> int:
     """Phase 2 by open-sky division (megido.skyref) instead of the joint solve."""
-    sol = solve_skyref(grid, cfg)
+    live = _live_times(run_dir, cfg)
+    sol = solve_skyref(grid, cfg, live_time=live)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     sol.save(out / "baseline.npz")
     print(f"phase 2         open-sky ratio against {cfg.sky_reference.id!r} "
           f"(response and flux cancel; no joint fit)")
-    print("scale           " + "  ".join(f"{p}={v:.4g}" for p, v in sorted(sol.norms.items()))
-          + "  (norm_quantile convention, degenerate with the opacity zero point)")
+    if live is not None:
+        print("live time       " + "  ".join(f"{k}={v:,.0f} s" for k, v in live.items()))
+        print("scale           " + "  ".join(f"{p}={v:.4g}" for p, v in sorted(sol.norms.items()))
+              + "  (MEASURED live-time ratio: opacity is absolute, c_p will be fixed at 0)")
+    else:
+        print("scale           " + "  ".join(f"{p}={v:.4g}" for p, v in sorted(sol.norms.items()))
+              + "  (norm_quantile convention, degenerate with the opacity zero point)")
     for pid in sorted(sol.opacity):
         lam = sol.opacity[pid]
         norm = sol.normalized_opacity(pid)
+        ref = ("absolute" if sol.absolute
+               else "referenced to most transparent")
         print(f"opacity {pid}: {int(np.isfinite(lam).sum())} sky bins constrained; "
-              f"referenced to most transparent: median {np.nanmedian(norm):.4f}  "
+              f"{ref}: min {np.nanmin(norm):+.4f}  median {np.nanmedian(norm):.4f}  "
               f"p95 {np.nanpercentile(norm, 95):.4f}  max {np.nanmax(norm):.4f}")
     return 0
 
@@ -178,7 +203,11 @@ def _cmd_reconstruct(args) -> int:
 
     sigma = None
     counts_grid = None
-    solver = _phase2_solver(cfg)
+    solver = _phase2_solver(cfg, Path(args.run) if args.run else None)
+    if sol.absolute and args.run and _live_times(Path(args.run), cfg) is None:
+        print("baseline is absolute (live-time gauge) but --run has no live times; "
+              "bootstrap replicas would fall back to the conventional gauge")
+        return 1
     if args.run:
         counts_grid = load_analysis_grid(Path(args.run), _grid_ids(cfg), factor=args.rebin)
         if args.bootstrap:
@@ -206,8 +235,16 @@ def _cmd_reconstruct(args) -> int:
     print(f"rows            {data.rows.n_rows} over "
           f"{len(data.rows.position_ids)} positions")
     print(f"chi2            {full.info.get('best_chi2', float('nan')):.4f}")
-    print("offsets         " + "  ".join(f"{k}={v:+.4f}"
-                                         for k, v in sorted(full.offsets.items())))
+    if sol.absolute:
+        print("offsets         fixed at 0 (opacity gauge measured from the sky run's live time)")
+        free = solve_voxels(sol, cfg, sigma=sigma, cache_dir=args.cache, holdouts=False,
+                            fit_offsets=True)["full"]
+        print("  diagnostic    a free-offset fit would take c_p = "
+              + "  ".join(f"{k}={v:+.4f}" for k, v in sorted(free.offsets.items()))
+              + "  (that much level moved out of the voxels)")
+    else:
+        print("offsets         " + "  ".join(f"{k}={v:+.4f}"
+                                             for k, v in sorted(full.offsets.items())))
     rho = full.rho3()
     print(f"opacity density median {np.median(rho[rho > 0]) if (rho > 0).any() else 0:.4f}"
           f"  p95 {np.percentile(rho, 95):.4f}  max {rho.max():.4f} 1/m")
@@ -239,7 +276,8 @@ def _cmd_reconstruct(args) -> int:
     if not args.no_systematic:
         sysmap = systematic_map(sol, cfg, cache_dir=args.cache)
         np.save(out / "systematic.npy", sysmap.astype(np.float32))
-        print(f"gauge systematic  max |delta rho| {np.abs(sysmap).max():.4f} 1/m "
+        label = "flux-scale systematic (+3%)" if sol.absolute else "gauge systematic"
+        print(f"{label}  max |delta rho| {np.abs(sysmap).max():.4f} 1/m "
               f"({np.abs(sysmap).max() / max(rho.max(), 1e-12):.1%} of the peak)")
 
     if args.backproject_z is not None:

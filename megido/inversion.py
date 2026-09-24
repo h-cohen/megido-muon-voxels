@@ -45,8 +45,8 @@ def _named(c: np.ndarray, position_ids) -> dict[str, float]:
     return {pid: float(v) for pid, v in zip(position_ids, c)}
 
 
-def sirt(fwd: ForwardModel, data: FitData, rc: Reconstruction
-         ) -> tuple[np.ndarray, dict]:
+def sirt(fwd: ForwardModel, data: FitData, rc: Reconstruction, *,
+         fit_offsets: bool = True) -> tuple[np.ndarray, dict]:
     """Weighted SIRT with nonnegativity and per-position offset refinement.
 
     Stops at rc.chi2_target by the discrepancy principle: fitting past the noise
@@ -64,7 +64,8 @@ def sirt(fwd: ForwardModel, data: FitData, rc: Reconstruction
     k = -1
     for k in range(rc.n_iter):
         resid = lam - (A @ x + c[data.rows.pos_of_row])
-        c = c + _update_offsets(resid, w, data.rows.pos_of_row, n_pos)
+        if fit_offsets:
+            c = c + _update_offsets(resid, w, data.rows.pos_of_row, n_pos)
         resid = lam - (A @ x + c[data.rows.pos_of_row])
         chi2 = float(np.sum(w * resid**2) / n_used)
         if k % 20 == 0:
@@ -118,8 +119,8 @@ def _prox_tv(v: np.ndarray, gamma: float, zw: float, dual: np.ndarray,
     return np.maximum(v + _div3(dual, zw), 0.0)
 
 
-def sirt_tv(fwd: ForwardModel, data: FitData, rc: Reconstruction
-            ) -> tuple[np.ndarray, dict]:
+def sirt_tv(fwd: ForwardModel, data: FitData, rc: Reconstruction, *,
+            fit_offsets: bool = True) -> tuple[np.ndarray, dict]:
     """SIRT with a per-iteration anisotropic-TV proximal (denoising) step.
 
     tv_alpha is a fraction of the reconstructed scale (x's p95), so it transfers
@@ -140,7 +141,8 @@ def sirt_tv(fwd: ForwardModel, data: FitData, rc: Reconstruction
     best = (float("inf"), x.copy(), c.copy())
     for k in range(rc.n_iter):
         resid = lam - (A @ x + c[data.rows.pos_of_row])
-        c = c + _update_offsets(resid, w, data.rows.pos_of_row, n_pos)
+        if fit_offsets:
+            c = c + _update_offsets(resid, w, data.rows.pos_of_row, n_pos)
         resid = lam - (A @ x + c[data.rows.pos_of_row])
         chi2 = float(np.sum(w * resid**2) / n_used)
         if chi2 < best[0]:
@@ -165,8 +167,12 @@ def sirt_tv(fwd: ForwardModel, data: FitData, rc: Reconstruction
 SOLVERS = {"sirt": sirt, "tv": sirt_tv}
 
 
-def solve(fwd: ForwardModel, data: FitData, rc: Reconstruction
-          ) -> tuple[np.ndarray, dict]:
+def solve(fwd: ForwardModel, data: FitData, rc: Reconstruction, *,
+          fit_offsets: bool = True) -> tuple[np.ndarray, dict]:
+    """`fit_offsets=False` holds every c_p at 0: only for a MEASURED opacity
+    gauge (BaselineSolution.absolute). Fitting c_p against a measured level
+    re-opens the degeneracy that moves a flat overburden into the offset and
+    its oblique excess into the outer shell of the volume."""
     if rc.algorithm not in SOLVERS:
         raise ValueError(f"unknown algorithm {rc.algorithm!r}; have {sorted(SOLVERS)}")
-    return SOLVERS[rc.algorithm](fwd, data, rc)
+    return SOLVERS[rc.algorithm](fwd, data, rc, fit_offsets=fit_offsets)

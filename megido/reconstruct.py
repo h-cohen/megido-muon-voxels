@@ -74,7 +74,8 @@ def solve_voxels(sol: BaselineSolution, cfg: SiteConfig, *,
                  transparent_quantile: float = 0.05,
                  cache_dir: str | Path | None = "runs/.cache",
                  holdouts: bool = True,
-                 grid: VoxelGrid | None = None) -> dict[str, VoxelSolution]:
+                 grid: VoxelGrid | None = None,
+                 fit_offsets: bool | None = None) -> dict[str, VoxelSolution]:
     """Full fit plus one single-position fit per position.
 
     Every fit shares one system matrix; a holdout is a row-weight mask, not a
@@ -89,10 +90,14 @@ def solve_voxels(sol: BaselineSolution, cfg: SiteConfig, *,
                           transparent_quantile=transparent_quantile)
     fwd = build_forward_model(data.rows, cfg, grid=grid, cache_dir=cache_dir)
     rc = cfg.reconstruction
+    # A measured opacity zero point (sky run + live times) fixes c_p at 0;
+    # otherwise the level is a gauge and c_p must be fitted. `fit_offsets`
+    # overrides, for the diagnostic that shows what the free fit would do.
+    fit_c = (not sol.absolute) if fit_offsets is None else fit_offsets
 
     def run(keep: np.ndarray) -> VoxelSolution:
         restricted = data.restricted(keep)
-        x, info = solve(fwd, restricted, rc)
+        x, info = solve(fwd, restricted, rc, fit_offsets=fit_c)
         info["n_rows_used"] = int(np.count_nonzero(restricted.w))
         info["algorithm"] = rc.algorithm
         return VoxelSolution(rho=x, grid=fwd.grid,

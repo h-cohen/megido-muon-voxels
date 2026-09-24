@@ -16,7 +16,7 @@ megido.resolution.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
@@ -107,6 +107,7 @@ def voxel_bootstrap(grid: AnalysisGrid, cfg: SiteConfig, *,
 def systematic_map(sol: BaselineSolution, cfg: SiteConfig, *,
                    base_quantile: float = 0.05,
                    alt_quantile: float = 0.25,
+                   flux_scale_frac: float = 0.03,
                    cache_dir: str | Path | None = "runs/.cache") -> np.ndarray:
     """How much of the volume comes from the gauge choice rather than the data.
 
@@ -126,6 +127,16 @@ def systematic_map(sol: BaselineSolution, cfg: SiteConfig, *,
     leaves the result bit-identical — an additive probe would report a
     systematic of exactly zero and look reassuring while measuring nothing.
     """
+    if sol.absolute:
+        # A measured gauge has no quantile convention to vary (normalized_opacity
+        # ignores it, so the quantile probe would report exactly zero). What
+        # remains uncertain is the flux scale between the sky run and the
+        # position runs: scale -> scale*(1+f) shifts every lambda by ln(1+f).
+        shift = float(np.log1p(flux_scale_frac))
+        alt_sol = replace(sol, opacity={p: lam + shift for p, lam in sol.opacity.items()})
+        base = solve_voxels(sol, cfg, cache_dir=cache_dir, holdouts=False)["full"]
+        alt = solve_voxels(alt_sol, cfg, cache_dir=cache_dir, holdouts=False)["full"]
+        return alt.rho3() - base.rho3()
     base = solve_voxels(sol, cfg, cache_dir=cache_dir, holdouts=False,
                         transparent_quantile=base_quantile)["full"]
     alt = solve_voxels(sol, cfg, cache_dir=cache_dir, holdouts=False,

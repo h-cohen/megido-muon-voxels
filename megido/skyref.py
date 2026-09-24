@@ -13,11 +13,13 @@ formed in the DETECTOR frame, where the response lives, then scattered to the
 world-frame sky grid through each exposure's pose, exactly like the joint
 solve's opacity.
 
-The absolute level is still not measured: `scale` (the live-time / rate ratio
-between runs) is set by the `norm_quantile` convention and is degenerate with
-lambda's zero point, so the solution is gauge-pinned to median zero like the
-joint solve and consumed through `normalized_opacity`. Only differences and
-shape are meaningful -- the same honest limit as Megiddo.
+`scale` is the live-time ratio between the runs. When the live times are
+known (`live_time=`, read from each file's `dT` at ingest) it is MEASURED and
+lambda is absolute: the one external reference that breaks the gauge
+degeneracy Megiddo cannot escape. Without them the scale falls back to the
+`norm_quantile` convention, is degenerate with lambda's zero point, and the
+solution is gauge-pinned to median zero like the joint solve -- only
+differences and shape are then meaningful.
 
 The result is an ordinary `BaselineSolution` so reconstruct / export /
 hillside run unchanged. It carries no smooth detector correction (coeffs are
@@ -41,8 +43,15 @@ T_FLOOR = 0.05           # cafeteria clip; caps lambda at -ln(0.05) ~ 3.0
 
 
 def _accumulate(grid: AnalysisGrid, cfg: SiteConfig, geom: DetectorGeometry,
-                sky: SkyGrid, min_sky: float) -> dict[str, tuple[np.ndarray, np.ndarray]]:
-    """Per position: (observed position counts, reference sky counts) per sky bin."""
+                sky: SkyGrid, min_sky: float,
+                weight: dict[str, float] | None = None
+                ) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """Per position: (observed position counts, reference sky counts) per sky bin.
+
+    `weight[eid]` scales the sky reference paired with exposure `eid` (its
+    live time over the sky run's), so the reference is already the EXPECTED
+    open-sky count for that exposure. Without it the reference is raw.
+    """
     if cfg.sky_reference is None:
         raise ValueError("config has no sky_reference; use megido.baseline.solve_baseline")
     sky_id = cfg.sky_reference.id
@@ -64,7 +73,8 @@ def _accumulate(grid: AnalysisGrid, cfg: SiteConfig, geom: DetectorGeometry,
         obs, ref = out.setdefault(positions[eid], (np.zeros(sky.flat_size),
                                                    np.zeros(sky.flat_size)))
         np.add.at(obs, flat[live], counts[live].astype(np.float64))
-        np.add.at(ref, flat[live], n_sky[live])
+        wt = 1.0 if weight is None else float(weight[eid])
+        np.add.at(ref, flat[live], wt * n_sky[live])
     return out
 
 
@@ -75,9 +85,19 @@ def solve_skyref(grid: AnalysisGrid, cfg: SiteConfig, *,
                  norm_quantile: float = NORM_QUANTILE,
                  t_floor: float = T_FLOOR,
                  flux_index: float = 2.0,
+                 live_time: dict[str, float] | None = None,
                  **_solver_kwargs) -> BaselineSolution:
     """Sky-ratio opacity per position. Extra kwargs (e.g. `n_iter` from the
     bootstrap drivers) are accepted and ignored: this solve is closed-form.
+
+    With `live_time` (seconds per exposure id and for the sky reference id)
+    the scale is the MEASURED live-time ratio and lambda is absolute: no
+    quantile convention, no median pin, `absolute=True`. That removes the
+    per-position offset the voxel inversion otherwise has to fit -- and with
+    it the degeneracy that moves a flat ceiling into that offset and its
+    oblique excess into the outer shell (tests/test_absolute_gauge.py).
+    Residual systematic: any real flux difference between the sky run and the
+    position runs (pressure, epoch) enters as a constant in lambda.
 
     `flux_index` is not used by the ratio (flux cancels); it is carried only
     because the hillside surface's flux weighting reads it off the solution.
@@ -88,6 +108,22 @@ def solve_skyref(grid: AnalysisGrid, cfg: SiteConfig, *,
 
     opacity: dict[str, np.ndarray] = {}
     norms: dict[str, float] = {}
+    if live_time is not None:
+        t_sky = float(live_time[cfg.sky_reference.id])
+        weight = {e.id: float(live_time[e.id]) / t_sky for e in cfg.exposures}
+        positions = position_ids(cfg)
+        acc = _accumulate(grid, cfg, geom, sky, min_sky, weight)
+        for pid, (obs, ref) in sorted(acc.items()):
+            seen = ref > 0
+            lam = np.full(sky.flat_size, np.nan)
+            lam[seen] = -np.log(np.clip(obs[seen] / ref[seen], t_floor, None))
+            opacity[pid] = lam
+            ws = [weight[e] for e, p in positions.items() if p == pid]
+            norms[pid] = float(np.mean(ws))
+        return BaselineSolution(coeffs=np.zeros(basis.n_coeff), opacity=opacity,
+                                norms=norms, flux_index=flux_index, nll_history=[],
+                                grid=grid, sky=sky, basis=basis, absolute=True)
+
     for pid, (obs, ref) in sorted(_accumulate(grid, cfg, geom, sky, min_sky).items()):
         seen = ref > 0
         lam = np.full(sky.flat_size, np.nan)

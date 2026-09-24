@@ -22,6 +22,39 @@ Without `--bootstrap`, `reconstruct --run` uses the analytic Poisson sigma
 See the header of `configs/cafeteria.yaml`. The hillside stage was run with
 `--surface-a 48` (see below).
 
+## The bright outer shell (diagnosed 2026-09-24)
+
+Symptom: the outermost voxels outshine the interior and mask the beams.
+Two causes, established with phantoms through the real geometry:
+
+1. **Fitted opacity gauge (FIXED).** With a relative gauge the per-position
+   offset `c_p` absorbs the constant part of a flat ceiling (phantom: c_p =
+   0.0996 of a true 0.100) and only the oblique `(sec θ − 1)` excess reaches
+   the voxels, in the outer shell. Pinning c_p at its true value restores the
+   slab flat (centre 0.100, rim 0.099). The cafeteria gauge is now
+   **measured**: live time per run = Σ `dT` (rate ratios cross-checked
+   against the `dT` slope and the `rate` profile to 0.3%), λ absolute, c_p
+   fixed at 0 (`BaselineSolution.absolute`, `solve(..., fit_offsets=False)`;
+   gate: `tests/test_absolute_gauge.py`). Real data: inner column opacity
+   0.065 → 0.084 (vertical λ ≈ 0.08, σ 0.007); negative-λ bins are all
+   within 3σ (acceptance-edge noise). A free fit would take c_p = +0.03 /
+   +0.02. Residual systematic: flux difference roof vs cafeteria epoch,
+   shown as the +3% flux-scale systematic map (7% of peak).
+2. **Noise overfitted into exclusive voxels (NOT fixed; a design choice).**
+   306 k voxels vs 2586 rows: near the grid edge every oblique ray has voxels
+   no other ray crosses. Under non-negativity, positive noise becomes mass
+   there and negative noise can only erode the shared interior. Flat-ceiling
+   phantom + real-σ noise, measured gauge: shell/covered density 17.5× at
+   `tv_alpha` 0.01 (χ² 0.26), 3.3× at 0.2; noiseless 1.1×. Early stopping
+   removes the shell only by stopping before the ceiling is reconstructed
+   (χ² < 1 after 2 iterations; column 45% of truth). Real-data TV sweep:
+   shell 5.2× / 2.8× / 2.2× / 1.2× at `tv_alpha` 0.01 / 0.03 / 0.08 / 0.2,
+   χ² 0.31 → 2.66; out-of-sample r best at 0.2 in both directions
+   (0.13 / 0.22), weak everywhere.
+
+Previous (relative-gauge) results are kept in `runs/cafeteria/solve_relgauge`
+and `voxels_relgauge`; `voxels/gauge_before_after.png` compares them.
+
 ## Results (2026-09-24)
 
 - Ingest: pos0 6.33 M, pos1 2.41 M, sky 28.5 M tracks, 100% inside ±1.25.

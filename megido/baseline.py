@@ -83,6 +83,10 @@ class BaselineSolution:
     sky: SkyGrid
     basis: SmoothBasis
     terms: dict[str, _ExposureTerms] = field(default_factory=dict, repr=False)
+    # True when the opacity zero point was MEASURED (a live-time-normalised
+    # open-sky run, megido.skyref), not pinned by convention. The joint solve
+    # never sets it: without an external reference the level is degenerate.
+    absolute: bool = False
 
     def normalized_opacity(self, position_id_: str,
                            transparent_quantile: float = 0.05) -> np.ndarray:
@@ -96,6 +100,10 @@ class BaselineSolution:
         more flux than open sky, which is not a thing.
         """
         lam = np.array(self.opacity[position_id_], dtype=np.float64)
+        if self.absolute:
+            # Measured zero point: re-pinning it to a quantile would throw the
+            # measurement away and hand the level back to the fitted offset.
+            return lam
         seen = np.isfinite(lam)
         if not seen.any():
             return lam
@@ -139,6 +147,7 @@ class BaselineSolution:
             "meta": np.array(json.dumps({
                 "norms": self.norms,
                 "positions": sorted(self.opacity),
+                "absolute": bool(self.absolute),
             })),
         }
         for pid, lam in self.opacity.items():
@@ -159,6 +168,7 @@ class BaselineSolution:
             grid=AnalysisGrid(edges=d["grid_edges"], counts={}),
             sky=SkyGrid(edges=d["sky_edges"]),
             basis=SmoothBasis(centers=d["basis_centers"], sigma=float(d["basis_sigma"])),
+            absolute=bool(meta.get("absolute", False)),
         )
 
 
