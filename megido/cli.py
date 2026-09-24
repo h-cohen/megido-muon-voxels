@@ -383,7 +383,7 @@ def _cmd_hillside_surface(args, sol, cfg, out: Path) -> int:
                          n_restarts=args.surface_restarts,
                          q_hi=args.surface_qhi, min_count=args.surface_min_count)
 
-    from megido.hillside_check import surface_ray_check
+    from megido.hillside_check import cross_position_check, residual_grid, surface_ray_check
     check = surface_ray_check(sol, cfg, result)
     print(f"ray check       VE={check.ray_ve:.1%} (per ray, gauge-invariant, a={check.a:g})  "
           f"RMS(after offset)={check.ray_rms:.3f}  over {check.n_checked} rays "
@@ -394,6 +394,32 @@ def _cmd_hillside_surface(args, sol, cfg, out: Path) -> int:
 
     np.save(out / "hill_surface.npy", result.H.astype(np.float32))
     np.save(out / "hill_surface_sigma.npy", result.sigma.astype(np.float32))
+
+    grid = residual_grid(check, result.gx, result.gy)
+    np.save(out / "hill_residual_grid.npy", grid.astype(np.float32))
+    finite_grid = grid[np.isfinite(grid)]
+    residual_grid_lim = (float(np.percentile(np.abs(finite_grid), 98))
+                        if finite_grid.size else None)
+
+    fit_kwargs = dict(a=args.surface_a, cell_m=args.surface_cell,
+                      sky_counts=sky_counts, max_points=args.surface_max_points,
+                      n_restarts=args.surface_restarts, q_hi=args.surface_qhi,
+                      min_count=args.surface_min_count)
+    xpos = cross_position_check(sol, cfg, fit_kwargs=fit_kwargs)
+
+    def _fmt(st):
+        if "error" in st:
+            return f"error: {st['error']}"
+        return f"r={st['corr']:.2f} VE={st['ve']:.0%}"
+
+    fit_pairs = []
+    for p, scores in sorted(xpos["fit_on"].items()):
+        for q, st in sorted(scores.items()):
+            fit_pairs.append(f"fit {p} -> {q}: {_fmt(st)}")
+    null_pairs = ", ".join(f"{q} {st['corr']:.2f}" if "error" not in st else f"{q} error"
+                           for q, st in sorted(xpos["null_flat"].items()))
+    print(f"cross-position  (out-of-sample, a={xpos['a']:g})  " + "  |  ".join(fit_pairs)
+          + f"   [flat null r: {null_pairs}]")
 
     meta = {
         "gx": list(result.gx),
@@ -423,6 +449,9 @@ def _cmd_hillside_surface(args, sol, cfg, out: Path) -> int:
                            "gauge-invariant: each position's unmeasured opacity level (plus any constant "
                            "per-position model bias) is fitted as an additive offset and "
                            "removed before scoring; the value moves with a and fit settings"),
+        "ray_cross_position": xpos,
+        "residual_grid_file": "hill_residual_grid.npy",
+        "residual_grid_lim": residual_grid_lim,
     }
     (out / "hill_surface_meta.json").write_text(
         json.dumps(_json_nan_to_null(_json_safe(meta)), indent=2) + "\n")
@@ -441,7 +470,8 @@ def _cmd_hillside_surface(args, sol, cfg, out: Path) -> int:
     except ImportError:
         print("matplotlib not installed; skipped hill_surface.png and hill_residual.png")
         print(f"written {out / 'hill_surface.npy'}, "
-              f"{out / 'hill_surface_sigma.npy'}, {out / 'hill_surface_meta.json'}")
+              f"{out / 'hill_surface_sigma.npy'}, {out / 'hill_surface_meta.json'}, "
+              f"{out / 'hill_residual_grid.npy'}")
         return 0
 
     fig, ax = plt.subplots(figsize=(7, 6))
@@ -476,7 +506,8 @@ def _cmd_hillside_surface(args, sol, cfg, out: Path) -> int:
     _write_residual_png(check, sol, residual_path)
 
     print(f"written {out / 'hill_surface.npy'}, {out / 'hill_surface_sigma.npy'}, "
-          f"{out / 'hill_surface_meta.json'}, {png_path}, {residual_path}")
+          f"{out / 'hill_surface_meta.json'}, {out / 'hill_residual_grid.npy'}, "
+          f"{png_path}, {residual_path}")
     return 0
 
 

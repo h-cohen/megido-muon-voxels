@@ -21,10 +21,11 @@ makes when it places the surface, so the check is consistent with the fit.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 import numpy as np
 
-from megido.hillside_surface import _positions
+from megido.hillside_surface import _positions, fit_surface
 
 
 def _bilinear(H, gx, gy, x, y) -> np.ndarray:
@@ -117,6 +118,8 @@ class RayCheck:
     ray_ve_raw gauge-naive VE (no offsets) -- secondary, not meaningful alone.
     offsets    {pid: fitted additive offset, measured - predicted}.
     per_position {pid: {"n", "corr", "ve"}} after that position's offset.
+    exit_xy    per-position (n_bins, n_bins, 2) array of the predicted exit
+               point (x, y) = origin_xy + t*·d_xy; NaN wherever t* is NaN.
     """
     residual: dict
     predicted: dict
@@ -127,6 +130,7 @@ class RayCheck:
     ray_ve_raw: float = float("nan")
     offsets: dict = field(default_factory=dict)
     per_position: dict = field(default_factory=dict)
+    exit_xy: dict = field(default_factory=dict)
 
 
 def surface_ray_check(sol, cfg, result, *, a=None) -> RayCheck:
@@ -140,7 +144,7 @@ def surface_ray_check(sol, cfg, result, *, a=None) -> RayCheck:
     norm = np.sqrt(1.0 + sx ** 2 + sy ** 2)
     dirs = np.stack([sx / norm, sy / norm, 1.0 / norm], axis=1)
 
-    residual, predicted, offsets, per_position = {}, {}, {}, {}
+    residual, predicted, offsets, per_position, exit_xy = {}, {}, {}, {}, {}
     raw_r, raw_m, gi_r, gi_m = [], [], [], []
     for pid, pose in sorted(_positions(cfg).items()):
         lam = np.asarray(sol.normalized_opacity(pid), float)
@@ -148,6 +152,9 @@ def surface_ray_check(sol, cfg, result, *, a=None) -> RayCheck:
         t = np.full(lam.shape, np.nan)
         if live.any():
             t[live] = ray_exit_distance((pose.x, pose.y, pose.z), dirs[live], H, gx, gy)
+        ex = pose.x + t * dirs[:, 0]
+        ey = pose.y + t * dirs[:, 1]
+        exit_xy[pid] = np.stack([ex, ey], axis=-1).reshape(nb, nb, 2)
         p = t / a
         r = lam - p
         ok = np.isfinite(r)
@@ -172,7 +179,7 @@ def surface_ray_check(sol, cfg, result, *, a=None) -> RayCheck:
 
     if not raw_r:
         return RayCheck(residual, predicted, float("nan"), float("nan"), 0, a,
-                        float("nan"), offsets, per_position)
+                        float("nan"), offsets, per_position, exit_xy)
     rr, mm = np.concatenate(gi_r), np.concatenate(gi_m)
     ss = float(np.sum(mm ** 2))
     ve = float(1.0 - np.sum(rr ** 2) / ss) if ss > 0 else float("nan")
@@ -180,4 +187,109 @@ def surface_ray_check(sol, cfg, result, *, a=None) -> RayCheck:
     ss_raw = float(np.sum((m_all - m_all.mean()) ** 2))
     ve_raw = float(1.0 - np.sum(raw ** 2) / ss_raw) if ss_raw > 0 else float("nan")
     return RayCheck(residual, predicted, ve, float(np.sqrt(np.mean(rr ** 2))),
-                    int(rr.size), a, ve_raw, offsets, per_position)
+                    int(rr.size), a, ve_raw, offsets, per_position, exit_xy)
+
+
+def residual_grid(check: RayCheck, gx, gy) -> np.ndarray:
+    """Assign each checked ray's offset-removed residual to the nearest
+    surface grid node of its predicted exit point.
+
+    Value at a node is the MEAN of the residuals of the rays that land there
+    (nearest-node rounding on the uniform `gx`/`gy` spacing); NaN where no
+    ray lands -- never 0, this is "unchecked", not "measured zero".
+    """
+    gx = np.asarray(gx, float); gy = np.asarray(gy, float)
+    nx, ny = gx.size, gy.size
+    dx = float(gx[1] - gx[0]) if nx > 1 else 1.0
+    dy = float(gy[1] - gy[0]) if ny > 1 else 1.0
+    sums = np.zeros((nx, ny))
+    counts = np.zeros((nx, ny), dtype=int)
+    for pid in check.residual:
+        r = np.asarray(check.residual[pid], float).ravel()
+        xy = check.exit_xy.get(pid)
+        if xy is None:
+            continue
+        xy = np.asarray(xy, float).reshape(-1, 2)
+        ok = np.isfinite(r) & np.isfinite(xy[:, 0]) & np.isfinite(xy[:, 1])
+        if not ok.any():
+            continue
+        x, y, rv = xy[ok, 0], xy[ok, 1], r[ok]
+        i = np.round((x - gx[0]) / dx).astype(int)
+        j = np.round((y - gy[0]) / dy).astype(int)
+        inside = (i >= 0) & (i < nx) & (j >= 0) & (j < ny)
+        i, j, rv = i[inside], j[inside], rv[inside]
+        np.add.at(sums, (i, j), rv)
+        np.add.at(counts, (i, j), 1)
+    out = np.full((nx, ny), np.nan)
+    has = counts > 0
+    out[has] = sums[has] / counts[has]
+    return out
+
+
+class _OnlyPositionSol:
+    """Wrap a sol so `normalized_opacity` is visible only for one position;
+    every other position reads back as fully NaN ("unconstrained", never a
+    fabricated zero). `.sky` and everything else (e.g. `.flux_index`)
+    delegate to the wrapped sol -- `fit_surface` reads both."""
+
+    def __init__(self, sol, pid: str):
+        self._sol = sol
+        self._pid = pid
+        self.sky = sol.sky
+
+    def normalized_opacity(self, position_id, transparent_quantile=0.05):
+        lam = np.asarray(
+            self._sol.normalized_opacity(position_id, transparent_quantile=transparent_quantile),
+            dtype=float)
+        if position_id != self._pid:
+            return np.full_like(lam, np.nan)
+        return lam
+
+    def __getattr__(self, name):
+        return getattr(self._sol, name)
+
+
+def cross_position_check(sol, cfg, *, fit_kwargs: dict) -> dict:
+    """Out-of-sample cross-position check: fit the surface from ONE
+    position's opacities only, score it (via `surface_ray_check`, against the
+    REAL sol) on every position -- including a flat-slab null for scale.
+
+    A throwaway spike found the joint (both-position) in-sample VE overstates
+    predictive power; this is the honest, held-out number. See the module
+    docstring in `megido/hillside_check.py` and the Task 1 brief.
+    """
+    a = float(fit_kwargs.get("a", 8.0))
+    pids = sorted(_positions(cfg))
+
+    fit_on: dict = {}
+    in_sample: dict = {}
+    for p in pids:
+        wrapper = _OnlyPositionSol(sol, p)
+        try:
+            surf = fit_surface(wrapper, cfg, **fit_kwargs)
+        except Exception as e:
+            fit_on[p] = {"error": str(e)}
+            in_sample[p] = {"error": str(e)}
+            continue
+        chk = surface_ray_check(sol, cfg, surf)
+        fit_on[p] = {q: {"n": st["n"], "corr": st["corr"], "ve": st["ve"]}
+                    for q, st in chk.per_position.items() if q != p}
+        if p in chk.per_position:
+            st = chk.per_position[p]
+            in_sample[p] = {"n": st["n"], "corr": st["corr"], "ve": st["ve"]}
+        else:
+            in_sample[p] = {"error": "no in-sample rays"}
+
+    null_flat: dict = {}
+    try:
+        both = fit_surface(sol, cfg, **fit_kwargs)
+        h0 = float(np.nanmedian(both.H))
+        g = np.arange(-60.0, 61.0, 1.0)
+        flat = SimpleNamespace(H=np.full((g.size, g.size), h0), gx=g, gy=g.copy(), a=a)
+        chk_flat = surface_ray_check(sol, cfg, flat)
+        null_flat = {q: {"n": st["n"], "corr": st["corr"], "ve": st["ve"]}
+                    for q, st in chk_flat.per_position.items()}
+    except Exception as e:
+        null_flat = {"error": str(e)}
+
+    return {"fit_on": fit_on, "in_sample": in_sample, "null_flat": null_flat, "a": a}

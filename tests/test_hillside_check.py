@@ -4,7 +4,10 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from megido.hillside_check import _bilinear, ray_exit_distance, surface_ray_check
+from megido.hillside_check import (
+    RayCheck, _bilinear, cross_position_check, ray_exit_distance,
+    residual_grid, surface_ray_check,
+)
 
 
 def _flat(h0, lo=-30.0, hi=30.0, step=1.0):
@@ -169,3 +172,129 @@ def test_per_position_stats_are_reported():
         assert st["n"] > 100
         assert st["corr"] > 0.99 and st["ve"] > 0.99
     assert sum(st["n"] for st in chk.per_position.values()) == chk.n_checked
+
+
+# --- Task 1: per-ray exit points, residual grid, cross-position check -----
+
+
+def test_exit_xy_matches_flat_slab_formula():
+    """Flat-slab surface, detector at origin: exit xy must equal
+    (h0/d_z)*d_xy exactly, NaN wherever t* is NaN (matches ray_exit_distance)."""
+    from tests.test_hillside_surface import _build_fake_sol_from_hill, _fake_cfg
+    sol = _build_fake_sol_from_hill(n_bins=32)
+    cfg = _fake_cfg()
+    h0 = 8.0
+    g = np.arange(-4.0, 4.0 + 0.5, 0.5)     # small enough that oblique rays leave it
+    H = np.full((g.size, g.size), h0)
+    res = SimpleNamespace(H=H, gx=g, gy=g.copy(), a=1.0)
+    chk = surface_ray_check(sol, cfg, res)
+
+    exit0 = chk.exit_xy["pos0"]
+    assert exit0.shape == (32, 32, 2)
+
+    centers = sol.sky.centers
+    SX, SY = np.meshgrid(centers, centers, indexing="ij")
+    norm = np.sqrt(1.0 + SX ** 2 + SY ** 2)
+    dx, dy, dzc = SX / norm, SY / norm, 1.0 / norm
+    t = h0 / dzc
+    expect_x, expect_y = t * dx, t * dy
+
+    t_pred = chk.predicted["pos0"] * res.a           # predicted is t*/a
+    ok = np.isfinite(t_pred)
+    assert ok.sum() > 100
+    np.testing.assert_allclose(exit0[..., 0][ok], expect_x[ok], rtol=1e-6)
+    np.testing.assert_allclose(exit0[..., 1][ok], expect_y[ok], rtol=1e-6)
+    assert np.array_equal(np.isnan(exit0[..., 0]), np.isnan(t_pred))
+    assert (~ok).any()                                # some off-grid rays are NaN
+
+
+def test_residual_grid_is_mean_per_node_and_nan_where_no_ray():
+    from tests.test_hillside_surface import _build_fake_sol_from_hill, _fake_cfg, _true_hill
+    sol = _build_fake_sol_from_hill(n_bins=48)
+    cfg = _fake_cfg()
+    g = np.arange(-30.0, 30.0 + 0.2, 0.2)
+    GX, GY = np.meshgrid(g, g, indexing="ij")
+    res = SimpleNamespace(H=_true_hill(GX, GY), gx=g, gy=g.copy(), a=1.0)
+    chk = surface_ray_check(sol, cfg, res)
+
+    # far corners (radius > the rays' reach) get no ray -> guaranteed NaN
+    gx = gy = np.arange(-20.0, 20.0 + 4.0, 4.0)
+    grid = residual_grid(chk, gx, gy)
+    assert grid.shape == (gx.size, gy.size)
+    finite = np.isfinite(grid)
+    assert finite.any()
+    assert np.all(np.abs(grid[finite]) < 0.05)
+    assert (~finite).any()                            # some nodes have no ray
+
+
+def test_residual_grid_averages_rays_on_the_same_node():
+    gx = np.array([0.0, 1.0, 2.0])
+    gy = np.array([0.0, 1.0, 2.0])
+    residual = {"p0": np.array([[1.0, 2.0], [np.nan, np.nan]])}
+    exit_xy = {"p0": np.array([[[1.0, 1.0], [1.1, 0.9]],
+                               [[np.nan, np.nan], [5.0, 5.0]]])}
+    chk = RayCheck(residual=residual, predicted={}, ray_ve=float("nan"),
+                  ray_rms=float("nan"), n_checked=2, a=1.0, exit_xy=exit_xy)
+    grid = residual_grid(chk, gx, gy)
+    assert np.isclose(grid[1, 1], 1.5)                # both finite rays round to (1,1)
+    assert np.isnan(grid[0, 0])
+
+
+def test_cross_position_check_out_of_sample_recovery():
+    """A surface fit from ONE position's opacities must still predict the
+    OTHER position's rays well on this synthetic (both positions see the
+    same true hill), and beat the flat-slab null for that scored position."""
+    from tests.test_hillside_surface import _build_fake_sol_from_hill, _fake_cfg
+    sol = _build_fake_sol_from_hill(n_bins=128)
+    cfg = _fake_cfg()
+    fit_kwargs = dict(a=1.0, cell_m=0.5, n_restarts=1, max_points=400)
+    out = cross_position_check(sol, cfg, fit_kwargs=fit_kwargs)
+
+    assert set(out["fit_on"]) == {"pos0", "pos1"}
+    c01 = out["fit_on"]["pos0"]["pos1"]["corr"]
+    c10 = out["fit_on"]["pos1"]["pos0"]["corr"]
+    assert c01 > 0.8, c01
+    assert c10 > 0.8, c10
+    assert c01 > out["null_flat"]["pos1"]["corr"]
+    assert c10 > out["null_flat"]["pos0"]["corr"]
+
+
+class _ScrambledSol:
+    """Wrap a sol, replacing one position's opacities with a seeded random
+    permutation of themselves (same values, scrambled sky directions) --
+    breaks the correspondence between direction and measured opacity so a
+    surface fit from the OTHER position should fail to predict it."""
+
+    def __init__(self, sol, pid, seed=0):
+        self._sol, self._pid = sol, pid
+        self.sky = sol.sky
+        self._rng_seed = seed
+        self._perm = None
+
+    def normalized_opacity(self, position_id, transparent_quantile=0.05):
+        lam = np.asarray(
+            self._sol.normalized_opacity(position_id, transparent_quantile=transparent_quantile),
+            dtype=float)
+        if position_id != self._pid:
+            return lam
+        if self._perm is None:
+            self._perm = np.random.default_rng(self._rng_seed).permutation(lam.size)
+        return lam.ravel()[self._perm].reshape(lam.shape)
+
+    def __getattr__(self, name):
+        return getattr(self._sol, name)
+
+
+def test_cross_position_check_negative_control_scrambled_pos1():
+    """Must be able to FAIL: with pos1's opacities scrambled, a surface fit
+    from pos0 (unaffected) can no longer predict pos1's (scrambled) rays,
+    while pos0 scored on its own fit is unaffected."""
+    from tests.test_hillside_surface import _build_fake_sol_from_hill, _fake_cfg
+    sol = _build_fake_sol_from_hill(n_bins=128)
+    scrambled = _ScrambledSol(sol, "pos1")
+    cfg = _fake_cfg()
+    fit_kwargs = dict(a=1.0, cell_m=0.5, n_restarts=1, max_points=400)
+    out = cross_position_check(scrambled, cfg, fit_kwargs=fit_kwargs)
+
+    assert out["fit_on"]["pos0"]["pos1"]["corr"] < 0.3, out["fit_on"]["pos0"]["pos1"]
+    assert out["in_sample"]["pos0"]["corr"] > 0.8, out["in_sample"]["pos0"]

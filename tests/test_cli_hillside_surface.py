@@ -60,6 +60,17 @@ def test_hillside_writes_surface_artifacts(tmp_path):
     assert meta["n_rays_checked"] > 0
     assert meta["ray_rms"] is None or meta["ray_rms"] >= 0
 
+    grid_path = out / "hill_residual_grid.npy"
+    assert grid_path.exists()
+    grid = np.load(grid_path)
+    assert grid.shape == H.shape
+
+    assert "ray_cross_position" in meta
+    xpos = meta["ray_cross_position"]
+    assert "fit_on" in xpos and "null_flat" in xpos
+    assert meta.get("residual_grid_file") == "hill_residual_grid.npy"
+    assert "residual_grid_lim" in meta
+
     try:
         import matplotlib  # noqa: F401
     except ImportError:
