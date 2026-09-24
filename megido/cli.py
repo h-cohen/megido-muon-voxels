@@ -383,6 +383,12 @@ def _cmd_hillside_surface(args, sol, cfg, out: Path) -> int:
                          n_restarts=args.surface_restarts,
                          q_hi=args.surface_qhi, min_count=args.surface_min_count)
 
+    from megido.hillside_check import surface_ray_check
+    check = surface_ray_check(sol, cfg, result)
+    print(f"ray check       VE={check.ray_ve:.1%} (per ray, a={check.a:g})  "
+          f"RMS={check.ray_rms:.3f}  over {check.n_checked} rays "
+          f"(surface as uniform solid, density 1/a)")
+
     np.save(out / "hill_surface.npy", result.H.astype(np.float32))
     np.save(out / "hill_surface_sigma.npy", result.sigma.astype(np.float32))
 
@@ -404,6 +410,9 @@ def _cmd_hillside_surface(args, sol, cfg, out: Path) -> int:
         "length_scale_m": result.length_scale_m,
         "signal_std": result.signal_std,
         "noise_floor": result.noise_floor,
+        "ray_ve": check.ray_ve,
+        "ray_rms": check.ray_rms,
+        "n_rays_checked": check.n_checked,
     }
     (out / "hill_surface_meta.json").write_text(
         json.dumps(_json_nan_to_null(_json_safe(meta)), indent=2) + "\n")
@@ -452,9 +461,41 @@ def _cmd_hillside_surface(args, sol, cfg, out: Path) -> int:
 
     fig.savefig(png_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
+
+    residual_path = out / "hill_residual.png"
+    _write_residual_png(check, sol, residual_path)
+
     print(f"written {out / 'hill_surface.npy'}, {out / 'hill_surface_sigma.npy'}, "
-          f"{out / 'hill_surface_meta.json'}, {png_path}")
+          f"{out / 'hill_surface_meta.json'}, {png_path}, {residual_path}")
     return 0
+
+
+def _write_residual_png(check, sol, path: Path) -> None:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    pids = sorted(check.residual)
+    c = np.asarray(sol.sky.centers, float)
+    finite = np.concatenate([v[np.isfinite(v)] for v in check.residual.values()]) \
+        if pids else np.zeros(0)
+    lim = float(np.percentile(np.abs(finite), 98)) if finite.size else 1.0
+    lim = lim if lim > 0 else 1.0
+    fig, axes = plt.subplots(1, max(len(pids), 1), figsize=(5 * max(len(pids), 1), 4.4),
+                             squeeze=False)
+    im = None
+    for ax, pid in zip(axes[0], pids):
+        im = ax.imshow(check.residual[pid].T, origin="lower",
+                       extent=[c[0], c[-1], c[0], c[-1]],
+                       cmap="RdBu_r", vmin=-lim, vmax=lim)
+        ax.set_title(f"{pid}: measured − predicted opacity")
+        ax.set_xlabel("sky tangent x"); ax.set_ylabel("sky tangent y")
+    if im is not None:
+        fig.colorbar(im, ax=axes[0].tolist(),
+                     label="Δλ  (red: more rock than a uniform hill; blue: less)")
+    fig.suptitle(f"Surface ray check, a={check.a:g}: VE={check.ray_ve:.0%} per ray, "
+                 f"RMS={check.ray_rms:.3f}, N={check.n_checked}")
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
 
 
 def main(argv: list[str] | None = None) -> int:

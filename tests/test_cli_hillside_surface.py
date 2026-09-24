@@ -54,11 +54,17 @@ def test_hillside_writes_surface_artifacts(tmp_path):
     assert 0.0 <= meta["variance_explained"] <= 1.0 or meta["variance_explained"] < 0
     assert 0.0 <= meta["coverage_frac"] <= 1.0
 
+    for key in ("ray_ve", "ray_rms", "n_rays_checked"):
+        assert key in meta, f"meta missing {key}"
+    assert meta["n_rays_checked"] > 0
+    assert meta["ray_rms"] is None or meta["ray_rms"] >= 0
+
     try:
         import matplotlib  # noqa: F401
     except ImportError:
         return
     assert (out / "hill_surface.png").exists()
+    assert (out / "hill_residual.png").exists()
 
 
 @pytest.mark.skipif(not REAL_CONFIG.exists() or not (REAL_SOLVE / "baseline.npz").exists()
