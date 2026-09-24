@@ -1503,5 +1503,8 @@ export function initViewer(root) {
     }
   });
 
+  // Test hook: lets Playwright force a code path (e.g. floatLinear=false to
+  // exercise the manual trilinear fallback) and redraw without a UI event.
+  state.render = render;
   window.__viewerState = state; // inspected by Playwright tests
 }
