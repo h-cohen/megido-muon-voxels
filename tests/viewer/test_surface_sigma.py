@@ -66,3 +66,21 @@ def test_residual_option_disabled_without_residual_file(page, dist_path, run_fix
     residual_option = page.locator("#hill-colour-mode option[value='residual']")
     assert residual_option.is_disabled()
     assert not errors, errors
+
+
+def test_residual_legend_uses_data_scale_when_meta_limit_is_null(page, dist_path, run_fixture):
+    """residual_grid_lim null -> the viewer derives the 98th-percentile |r|
+    from the grid (fixture ramps -0.5..0.5, so ~0.5), never a default 1.00."""
+    errors = []
+    page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+    run = run_fixture(hill=True, residual_lim=None)
+    page.goto(dist_path.resolve().as_uri())
+    page.locator("#load-run-input").set_input_files(str(run))
+    page.wait_for_function("() => window.__viewerState && window.__viewerState.ready")
+    lim = page.evaluate("() => window.__viewerState.hillSurface.residualLim")
+    assert 0.4 < lim <= 0.5, lim
+    page.locator("#hill-colour-mode").select_option("residual")
+    page.wait_for_timeout(100)
+    legend = page.locator("#hill-colour-legend").inner_text()
+    assert "1.00" not in legend, legend
+    assert not errors, errors

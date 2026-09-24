@@ -27,7 +27,7 @@ def run_fixture(tmp_path):
     """Write a synthetic run dir; returns its Path. shape/layers overridable."""
     def _make(shape=(6, 5, 4), layers=("volume",), spacing_m=0.5,
               origin_m=(0.0, 0.0, 1.0), depth_resolved=False, hill=False,
-              hill_residual=True):
+              hill_residual=True, residual_lim=0.5):
         run = tmp_path / "run"
         run.mkdir()
         rng = np.random.default_rng(0)
@@ -79,7 +79,7 @@ def run_fixture(tmp_path):
                 )
                 np.save(run / "hill_residual_grid.npy", residual)
                 hill_meta["residual_grid_file"] = "hill_residual_grid.npy"
-                hill_meta["residual_grid_lim"] = 0.5
+                hill_meta["residual_grid_lim"] = residual_lim   # None -> JSON null
             (run / "hill_surface_meta.json").write_text(json.dumps(hill_meta))
         meta = {
             "shape": list(shape),

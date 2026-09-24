@@ -12,7 +12,7 @@ import { COLORMAP_NAMES, colormapStops } from './colormap.mjs';
 import { captureView, loadViews, saveViews } from './views.mjs';
 import { SHORTCUTS, keyToAction } from './shortcuts.mjs';
 import { markerVertices, silhouetteVertices, SILHOUETTE_RAYLEN_M, dedupeDetectors, projectToScreen } from './markers.mjs';
-import { surfaceMesh, smoothHeightfield, surfaceVertexColors, robustRange, surfaceHeightAt, surfaceTextureData, residualVertexColors } from './surfacemesh.mjs';
+import { surfaceMesh, smoothHeightfield, surfaceVertexColors, robustRange, symmetricLimit, surfaceHeightAt, surfaceTextureData, residualVertexColors } from './surfacemesh.mjs';
 
 const VERTEX_SRC = `#version 300 es
 out vec2 vUv;
@@ -1001,7 +1001,12 @@ export function initViewer(root) {
         const { data } = parseNpy(await readFile(hillResidualFile));
         if (data.length === H.length) residual = data;
       }
-      const residualLim = hillMeta.residual_grid_lim;
+      // The CLI records residual_grid_lim; when it is null (no finite residual
+      // at write time, or an older run) derive the same 98th-percentile |r|
+      // scale from the data rather than a meaningless default.
+      const residualLim = Number.isFinite(hillMeta.residual_grid_lim)
+        ? hillMeta.residual_grid_lim
+        : (residual ? symmetricLimit(residual) : NaN);
       state.hillSurface = { H, gx: hillMeta.gx, gy: hillMeta.gy, meta: hillMeta, sigma, residual, residualLim };
       state.hillColourMode = sigma ? 'sigma' : 'flat';
       if (sigma) state.hillSigmaRange = robustRange(sigma);

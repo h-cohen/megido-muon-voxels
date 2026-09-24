@@ -188,6 +188,15 @@ export function surfaceTextureData(H, nx, ny, sentinel = 1e6) {
 // excluded, not treated as zero). Returns [NaN, NaN] when nothing is finite,
 // so callers can detect "no usable sigma" rather than silently getting a
 // degenerate [0, 0] range.
+// Symmetric colour limit for a diverging map: the p-quantile of |finite values|
+// (linear interpolation). NaN when there is no finite value.
+export function symmetricLimit(values, p = 0.98) {
+  const v = Array.from(values).filter(Number.isFinite).map(Math.abs).sort((x, y) => x - y);
+  if (!v.length) return NaN;
+  const pos = p * (v.length - 1), i = Math.floor(pos), f = pos - i;
+  return i + 1 < v.length ? v[i] + (v[i + 1] - v[i]) * f : v[i];
+}
+
 export function robustRange(values, pLo = 0.05, pHi = 0.95) {
   const v = Array.from(values).filter(Number.isFinite).sort((x, y) => x - y);
   if (!v.length) return [NaN, NaN];

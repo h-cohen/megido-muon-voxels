@@ -152,3 +152,12 @@ test('surfaceTextureData transposes to x-fastest and sentinels NaN', () => {
   // out[j*nx+i] = H[i*ny+j]
   assert.deepEqual(Array.from(t), [0, 10, 1e6, 1, 11, 21]);
 });
+
+
+import { symmetricLimit } from '../src/surfacemesh.mjs';
+
+test('symmetricLimit is the p-quantile of |finite values|, NaN when none', () => {
+  const v = Float32Array.from([...Array(101).keys()].map((k) => (k % 2 ? -k : k)).concat([NaN]));
+  assert.ok(Math.abs(symmetricLimit(v, 0.98) - 98) < 1e-6);
+  assert.ok(Number.isNaN(symmetricLimit(Float32Array.from([NaN]))));
+});
