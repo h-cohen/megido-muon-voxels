@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { surfaceMesh, smoothHeightfield, surfaceVertexColors, robustRange, SIGMA_RAMP } from '../src/surfacemesh.mjs';
+import { surfaceMesh, smoothHeightfield, surfaceVertexColors, robustRange, SIGMA_RAMP, surfaceHeightAt, surfaceTextureData } from '../src/surfacemesh.mjs';
 
 test('surfaceMesh: 2x2 all-finite grid -> 4 verts, one quad -> 6 indices', () => {
   const gx = [0, 1];
@@ -94,4 +94,23 @@ test('robustRange ignores NaN and returns 5th/95th percentiles', () => {
   assert.ok(Math.abs(lo - 5) < 1e-6 && Math.abs(hi - 95) < 1e-6);
   const [n1, n2] = robustRange(Float32Array.from([NaN]));
   assert.ok(Number.isNaN(n1) && Number.isNaN(n2));
+});
+
+test('surfaceHeightAt is exact on a plane, NaN outside or at a NaN corner', () => {
+  const gx = [0, 1, 2], gy = [0, 1, 2, 3];
+  const H = new Float32Array(12);
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 4; j++) H[i * 4 + j] = 2 * gx[i] + 3 * gy[j] + 1;
+  assert.ok(Math.abs(surfaceHeightAt(H, gx, gy, 0.5, 2.25) - (1 + 6.75 + 1)) < 1e-5);
+  assert.ok(Number.isNaN(surfaceHeightAt(H, gx, gy, -0.1, 1)));
+  assert.ok(Number.isNaN(surfaceHeightAt(H, gx, gy, 1, 3.5)));
+  const H2 = Float32Array.from(H); H2[1 * 4 + 1] = NaN;
+  assert.ok(Number.isNaN(surfaceHeightAt(H2, gx, gy, 0.5, 0.5)));
+});
+
+test('surfaceTextureData transposes to x-fastest and sentinels NaN', () => {
+  const nx = 3, ny = 2;
+  const H = Float32Array.from([0, 1, 10, 11, NaN, 21]); // H[i*ny+j] = 10*i + j
+  const t = surfaceTextureData(H, nx, ny, 1e6);
+  // out[j*nx+i] = H[i*ny+j]
+  assert.deepEqual(Array.from(t), [0, 10, 1e6, 1, 11, 21]);
 });

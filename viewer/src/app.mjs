@@ -12,7 +12,7 @@ import { COLORMAP_NAMES, colormapStops } from './colormap.mjs';
 import { captureView, loadViews, saveViews } from './views.mjs';
 import { SHORTCUTS, keyToAction } from './shortcuts.mjs';
 import { markerVertices, silhouetteVertices, SILHOUETTE_RAYLEN_M, dedupeDetectors, projectToScreen } from './markers.mjs';
-import { surfaceMesh, smoothHeightfield, surfaceVertexColors, robustRange } from './surfacemesh.mjs';
+import { surfaceMesh, smoothHeightfield, surfaceVertexColors, robustRange, surfaceHeightAt, surfaceTextureData } from './surfacemesh.mjs';
 
 const VERTEX_SRC = `#version 300 es
 out vec2 vUv;
@@ -46,7 +46,28 @@ uniform float uSigmaGateValue;
 uniform int uSteps;
 uniform bool uManualTrilinear;
 uniform bool uShading;
-uniform vec3 uVolSize;   // float(nx, ny, nz)
+uniform vec3 uVolSize;    // float(nx, ny, nz)
+uniform float uRefStep;   // path length the transfer-function alpha is defined per
+uniform bool uSurfClip;
+uniform sampler2D uSurfTex;
+uniform vec2 uSurfMin;     // (gx[0], gy[0])
+uniform vec2 uSurfStep;    // (gx[1]-gx[0], gy[1]-gy[0])  (the fit grid is uniform)
+uniform ivec2 uSurfSize;   // (nx, ny)
+
+bool aboveSurface(vec3 world) {
+  vec2 q = (world.xy - uSurfMin) / uSurfStep;
+  if (q.x < 0.0 || q.y < 0.0 || q.x > float(uSurfSize.x - 1) || q.y > float(uSurfSize.y - 1))
+    return false;
+  ivec2 i0 = min(ivec2(floor(q)), uSurfSize - 2);
+  vec2 f = q - vec2(i0);
+  float h00 = texelFetch(uSurfTex, i0, 0).r;
+  float h10 = texelFetch(uSurfTex, i0 + ivec2(1, 0), 0).r;
+  float h01 = texelFetch(uSurfTex, i0 + ivec2(0, 1), 0).r;
+  float h11 = texelFetch(uSurfTex, i0 + ivec2(1, 1), 0).r;
+  if (max(max(h00, h10), max(h01, h11)) > 1.0e5) return false;   // unknown ground: never clip
+  float h = mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y);
+  return world.z > h;
+}
 
 vec3 unproject(vec2 ndc, float z) {
   vec4 clip = vec4(ndc, z, 1.0);
@@ -79,14 +100,33 @@ void main() {
   vec3 farP = unproject(ndc, 1.0);
   vec3 dir = normalize(farP - nearP);
 
-  float stepLen = length(farP - nearP) / float(uSteps);
-  vec3 pos = nearP;
+  // March ONLY inside the volume box (slab intersection). A ray that misses
+  // the box costs nothing, and all samples land in the volume at a fixed
+  // fraction of a voxel -- the old loop spread uSteps over the whole
+  // near..far frustum (~100 m), sampling the 0.25 m campaign grid only every
+  // other voxel while most steps fell in empty space.
+  vec3 invDir = 1.0 / dir;
+  vec3 t0s = (uWorldMin - nearP) * invDir;
+  vec3 t1s = (uWorldMin + uWorldExtent - nearP) * invDir;
+  vec3 tsm = min(t0s, t1s), tbg = max(t0s, t1s);
+  float tEnter = max(max(max(tsm.x, tsm.y), tsm.z), 0.0);
+  float tExit = min(min(tbg.x, tbg.y), tbg.z);
+  if (tExit <= tEnter) { outColor = vec4(0.0); return; }
+
+  float voxel = uWorldExtent.x / uVolSize.x;       // cubic voxels (single spacing)
+  float stepLen = max(0.5 * voxel, (tExit - tEnter) / float(uSteps));
+  // Opacity correction: the transfer function's alpha is defined per
+  // uRefStep of path (the legacy sampling length), so the calibrated look is
+  // independent of how finely we now sample.
+  float alphaExp = stepLen / uRefStep;
   vec4 accum = vec4(0.0);
 
-  for (int i = 0; i < 512; i++) {
-    if (i >= uSteps || accum.a > 0.98) break;
-    vec3 tex = (pos - uWorldMin) / uWorldExtent;
-    if (tex.x >= 0.0 && tex.x <= 1.0 && tex.y >= 0.0 && tex.y <= 1.0 && tex.z >= 0.0 && tex.z <= 1.0) {
+  for (int i = 0; i < 1024; i++) {
+    float tt = tEnter + (float(i) + 0.5) * stepLen;
+    if (tt > tExit || accum.a > 0.98) break;
+    vec3 pos = nearP + dir * tt;
+    vec3 tex = clamp((pos - uWorldMin) / uWorldExtent, 0.0, 1.0);
+    {
       bool clipped = any(lessThan(tex, uClipMin)) || any(greaterThan(tex, uClipMax));
       if (uClipPlaneEnabled) {
         float d = dot(tex - vec3(0.5), uClipPlaneNormal) - uClipPlaneD;
@@ -96,11 +136,12 @@ void main() {
         float sigma = texture(uSigmaTex, tex).r;
         clipped = clipped || sigma > uSigmaGateValue;
       }
+      if (uSurfClip && !clipped) clipped = aboveSurface(pos);
       if (!clipped) {
         float density = sampleDensity(tex);
         float t = clamp((density - uWindow.x) / max(uWindow.y - uWindow.x, 1e-6), 0.0, 1.0);
         vec4 c = texture(uTransferLUT, vec2(t, 0.5));
-        if (uShading && c.a > 0.0) {
+        if (uShading && c.a > 0.004) {   // gradient only where the sample shows
           vec3 h = 1.0 / uVolSize;   // one voxel per axis; voxels are cubic, so the
                                      // tex-space difference is proportional to the world gradient
           vec3 g = vec3(
@@ -113,11 +154,11 @@ void main() {
             c.rgb *= 0.35 + 0.65 * lambert;
           }
         }
+        c.a = 1.0 - pow(1.0 - clamp(c.a, 0.0, 0.999), alphaExp);
         c.rgb *= c.a;
         accum += (1.0 - accum.a) * c;
       }
     }
-    pos += dir * stepLen;
   }
 
   outColor = accum;
@@ -196,6 +237,19 @@ function makeVolumeTexture(gl, shape, data) {
   gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
   gl.texImage3D(gl.TEXTURE_3D, 0, gl.R32F, nx, ny, nz, 0, gl.RED, gl.FLOAT, reorderForTexture(data, shape));
+  return tex;
+}
+
+function makeSurfaceTexture(gl) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  // NEAREST + texelFetch in the shader (no OES_texture_float_linear
+  // dependency); the shader does its own bilinear from the four texel
+  // fetches, mirroring surfaceHeightAt on the CPU side.
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   return tex;
 }
 
@@ -282,6 +336,8 @@ export function initViewer(root) {
   gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, hillSurfaceIndexBuffer);
   gl.bindVertexArray(null);
   // Warm amber, distinct from the teal/magenta silhouette fan.
+  const CAMERA_NEAR = 0.05, CAMERA_FAR = 100;
+  const RAY_STEPS = 200; // max samples per ray INSIDE the volume box
   const HILL_SURFACE_COLOR = [0.95, 0.6, 0.15, 0.35];
 
   const uniforms = {};
@@ -289,7 +345,8 @@ export function initViewer(root) {
     'uInvViewProj', 'uCameraPos', 'uVolume', 'uSigmaTex', 'uTransferLUT',
     'uWindow', 'uClipMin', 'uClipMax', 'uClipPlaneEnabled', 'uClipPlaneNormal',
     'uClipPlaneD', 'uSigmaGateEnabled', 'uSigmaGateValue', 'uSteps',
-    'uWorldMin', 'uWorldExtent', 'uManualTrilinear', 'uShading', 'uVolSize',
+    'uWorldMin', 'uWorldExtent', 'uManualTrilinear', 'uShading', 'uVolSize', 'uRefStep',
+    'uSurfClip', 'uSurfTex', 'uSurfMin', 'uSurfStep', 'uSurfSize',
   ]) {
     uniforms[name] = gl.getUniformLocation(program, name);
   }
@@ -336,6 +393,12 @@ export function initViewer(root) {
     hillSurfaceSmooth: 0, // display-only smoothing pass count; 0 = raw fit
     hillSigmaColor: false, // colour the surface by GP posterior sigma instead of flat amber
     hillSigmaRange: null, // [lo, hi] robust range of sigma, set by loadRun
+    surfClip: false, // display-only: skip volume samples above the fitted surface
+    hillDisplayH: null, // the DISPLAYED (possibly smoothed) height field the clip must match
+    surfTex: null,
+    surfMin: [0, 0],
+    surfStep: [1, 1],
+    surfSize: [0, 0],
   };
 
   function worldBounds() {
@@ -359,7 +422,7 @@ export function initViewer(root) {
     const eye = orbitToEye(target, yaw, pitch, distance);
     const up = Math.abs(pitch) > PITCH_GIMBAL_LIMIT ? [0, 1, 0] : [0, 0, 1];
     const view = lookAt(eye, target, up);
-    const proj = perspective(Math.PI / 4, canvas.width / canvas.height, 0.05, 100);
+    const proj = perspective(Math.PI / 4, canvas.width / canvas.height, CAMERA_NEAR, CAMERA_FAR);
     const viewProj = multiply(proj, view);
     const invViewProj = invert(viewProj) || identity();
     return { eye, view, proj, viewProj, invViewProj };
@@ -417,11 +480,18 @@ export function initViewer(root) {
     gl.uniform1f(uniforms.uClipPlaneD, state.clipPlaneD);
     gl.uniform1i(uniforms.uSigmaGateEnabled, state.sigmaGateEnabled ? 1 : 0);
     gl.uniform1f(uniforms.uSigmaGateValue, state.sigmaGateValue);
-    gl.uniform1i(uniforms.uSteps, 200);
+    gl.uniform1i(uniforms.uSteps, RAY_STEPS);
+    // Legacy per-sample path: uSteps spread over the whole near..far span. The
+    // LUT/window were tuned against it, so alpha stays defined per this length.
+    gl.uniform1f(uniforms.uRefStep, (CAMERA_FAR - CAMERA_NEAR) / RAY_STEPS);
     gl.uniform1i(uniforms.uManualTrilinear, (state.smoothSampling && !state.floatLinear) ? 1 : 0);
     gl.uniform1i(uniforms.uShading, state.shading ? 1 : 0);
     const volShape = state.meta ? state.meta.shape : [1, 1, 1];
     gl.uniform3fv(uniforms.uVolSize, [volShape[0], volShape[1], volShape[2]]);
+    gl.uniform1i(uniforms.uSurfClip, (state.surfClip && !!state.surfTex) ? 1 : 0);
+    gl.uniform2fv(uniforms.uSurfMin, state.surfMin);
+    gl.uniform2fv(uniforms.uSurfStep, state.surfStep);
+    gl.uniform2i(uniforms.uSurfSize, state.surfSize[0], state.surfSize[1]);
 
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_3D, state.volumeTex);
@@ -432,6 +502,9 @@ export function initViewer(root) {
     gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_2D, state.lutTex);
     gl.uniform1i(uniforms.uTransferLUT, 2);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, state.surfTex);
+    gl.uniform1i(uniforms.uSurfTex, 3);
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     if (state.showDetectors && state.meta && state.markerVertexCount > 0) {
@@ -598,6 +671,25 @@ export function initViewer(root) {
     const H = iterations > 0
       ? smoothHeightfield(surf.H, surf.gx.length, surf.gy.length, iterations)
       : surf.H;
+    state.hillDisplayH = H;
+    // Clip texture always mirrors the DISPLAYED (possibly smoothed) field, so
+    // "clip above surface" never disagrees with the surface actually drawn.
+    // A degenerate grid (fewer than 2 nodes on an axis) has no cell to
+    // interpolate uSurfStep from, so the clip is disabled entirely rather
+    // than guessing a step.
+    const nx = surf.gx.length, ny = surf.gy.length;
+    if (nx >= 2 && ny >= 2) {
+      if (!state.surfTex) state.surfTex = makeSurfaceTexture(gl);
+      gl.bindTexture(gl.TEXTURE_2D, state.surfTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, nx, ny, 0, gl.RED, gl.FLOAT, surfaceTextureData(H, nx, ny));
+      state.surfMin = [surf.gx[0], surf.gy[0]];
+      state.surfStep = [surf.gx[1] - surf.gx[0], surf.gy[1] - surf.gy[0]];
+      state.surfSize = [nx, ny];
+    } else {
+      state.surfTex = null;
+      state.surfClip = false;
+      state.surfSize = [0, 0];
+    }
     const { positions, indices } = surfaceMesh(H, surf.gx, surf.gy);
     const vertexCount = positions.length / 3;
     let colors;
@@ -818,6 +910,12 @@ export function initViewer(root) {
     const toggleHillSigmaEl = root.querySelector('#toggle-hill-sigma');
     const hillSigmaLegendEl = root.querySelector('#hill-sigma-legend');
     const hillSigmaRangeEl = root.querySelector('#hill-sigma-range');
+    const toggleSurfClipEl = root.querySelector('#toggle-surf-clip');
+    // Display-only clip is always OFF by default on a fresh load, even when
+    // a surface is present - it is opt-in every time, never carried over
+    // from a previous run.
+    state.surfClip = false;
+    if (toggleSurfClipEl) toggleSurfClipEl.checked = false;
     // A fresh run always starts unsmoothed, whatever a previous run's slider
     // was left at - display-only smoothing must never carry across loads.
     state.hillSurfaceSmooth = 0;
@@ -848,6 +946,7 @@ export function initViewer(root) {
       }
       if (hillSurfaceSmoothEl) hillSurfaceSmoothEl.disabled = false;
       state.showHillSurface = true;
+      if (toggleSurfClipEl) toggleSurfClipEl.disabled = false;
       if (toggleHillSigmaEl) {
         toggleHillSigmaEl.disabled = !sigma;
         toggleHillSigmaEl.checked = !!sigma;
@@ -886,6 +985,12 @@ export function initViewer(root) {
         toggleHillSigmaEl.checked = false;
       }
       if (hillSigmaLegendEl) hillSigmaLegendEl.hidden = true;
+      if (toggleSurfClipEl) {
+        toggleSurfClipEl.disabled = true;
+        toggleSurfClipEl.checked = false;
+      }
+      state.surfClip = false;
+      state.hillDisplayH = null;
     }
 
     const banner = root.querySelector('#resolution-banner');
@@ -1151,6 +1256,18 @@ export function initViewer(root) {
     });
   }
 
+  // Display-only volume clip above the fitted (possibly smoothed) surface -
+  // never touches the reconstruction, just what's drawn. Off by default,
+  // enabled by loadRun once a surface is present.
+  const toggleSurfClipEl = root.querySelector('#toggle-surf-clip');
+  if (toggleSurfClipEl) {
+    toggleSurfClipEl.disabled = true;
+    toggleSurfClipEl.addEventListener('change', (ev) => {
+      state.surfClip = ev.target.checked;
+      render();
+    });
+  }
+
   // Display-only smoothing slider for the hillside surface mesh: always
   // rebuilds from the RAW fitted state.hillSurface.H (see
   // rebuildHillSurfaceBuffer), so it adds no information and changing the
@@ -1375,6 +1492,10 @@ export function initViewer(root) {
       ];
       if (!insideClipBox(tex, state.clipMin, state.clipMax)) continue;
       if (state.clipPlaneEnabled && !insideClipPlane(tex, state.clipPlaneNormal, state.clipPlaneD)) continue;
+      if (state.surfClip && state.hillSurface && state.hillDisplayH) {
+        const hs = surfaceHeightAt(state.hillDisplayH, state.hillSurface.gx, state.hillSurface.gy, world[0], world[1]);
+        if (Number.isFinite(hs) && world[2] > hs) continue;
+      }
       const [i, j, k] = worldToVoxel(world, state.meta);
       const value = sampleNearest(data, state.meta.shape, i, j, k);
       if (!Number.isNaN(value) && value > (state.window ? state.window[0] : 0)) {

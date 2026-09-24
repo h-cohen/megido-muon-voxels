@@ -117,6 +117,41 @@ export function surfaceVertexColors(sigma, lo, hi) {
   return out;
 }
 
+// surfaceHeightAt(H, gx, gy, x, y) -> number: bilinear interpolation of the
+// fitted/displayed height field on its (possibly non-square) node grid.
+// Returns NaN outside the grid's [gx0,gxN]x[gy0,gyN] bounding box, or if any
+// of the four cell corners used is NaN (off-coverage) - mirrors surfaceMesh's
+// "a NaN corner makes the whole cell a hole" rule, so hover picking never
+// reports a height the drawn mesh doesn't actually show.
+export function surfaceHeightAt(H, gx, gy, x, y) {
+  const nx = gx.length, ny = gy.length;
+  if (!(x >= gx[0] && x <= gx[nx - 1] && y >= gy[0] && y <= gy[ny - 1])) return NaN;
+  let i = 0; while (i < nx - 2 && x > gx[i + 1]) i++;
+  let j = 0; while (j < ny - 2 && y > gy[j + 1]) j++;
+  const tx = (x - gx[i]) / (gx[i + 1] - gx[i]);
+  const ty = (y - gy[j]) / (gy[j + 1] - gy[j]);
+  const h00 = H[i * ny + j], h10 = H[(i + 1) * ny + j];
+  const h01 = H[i * ny + j + 1], h11 = H[(i + 1) * ny + j + 1];
+  if (![h00, h10, h01, h11].every(Number.isFinite)) return NaN;
+  return (1 - tx) * (1 - ty) * h00 + tx * (1 - ty) * h10 + (1 - tx) * ty * h01 + tx * ty * h11;
+}
+
+// surfaceTextureData(H, nx, ny, sentinel=1e6) -> Float32Array: transposes the
+// row-major (i*ny+j) height field into the x-fastest layout a 2D GL texture
+// needs (out[j*nx+i] = H[i*ny+j]), and replaces NaN (off-coverage) with a
+// large sentinel the fragment shader recognises as "unknown ground, never
+// clip" rather than a spurious height of zero.
+export function surfaceTextureData(H, nx, ny, sentinel = 1e6) {
+  const out = new Float32Array(nx * ny);
+  for (let i = 0; i < nx; i++) {
+    for (let j = 0; j < ny; j++) {
+      const v = H[i * ny + j];
+      out[j * nx + i] = Number.isFinite(v) ? v : sentinel;
+    }
+  }
+  return out;
+}
+
 // robustRange(values, pLo=0.05, pHi=0.95) -> [lo, hi]: linear-interpolated
 // percentiles over the FINITE values only (NaN off-coverage cells are
 // excluded, not treated as zero). Returns [NaN, NaN] when nothing is finite,
