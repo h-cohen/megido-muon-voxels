@@ -75,9 +75,21 @@ def test_nan_residual_where_surface_unconstrained():
     res = SimpleNamespace(H=_true_hill(GX, GY), gx=g, gy=g.copy(), a=1.0)
     chk = surface_ray_check(sol, cfg, res)
     r = np.concatenate([v.ravel() for v in chk.residual.values()])
+    p = np.concatenate([v.ravel() for v in chk.predicted.values()])
     assert np.isnan(r).any()                        # off-grid rays are NaN
     assert chk.n_checked == int(np.isfinite(r).sum())
-    assert not np.any(r[np.isnan(r)] == 0.0)
+    # the fake sol measures every direction, so a NaN residual must mean
+    # "unpredicted" -- a residual of 0 for an unpredicted ray would break this
+    assert np.array_equal(np.isnan(r), np.isnan(p))
+
+
+def test_detector_at_or_above_surface_is_nan_not_zero():
+    """Without the below-surface guard the tracer would return t* ~ 0 -- a
+    finite 'no rock' answer where the truth is 'model does not apply'."""
+    up = np.array([[0.0, 0.0, 1.0]])
+    for h0 in (-1.0, 0.0):          # surface below / exactly at the detector
+        H, gx, gy = _flat(h0, lo=-10.0, hi=10.0)
+        assert np.isnan(ray_exit_distance((0.0, 0.0, 0.0), up, H, gx, gy)[0])
 
 
 def test_prediction_is_nearly_scale_free():

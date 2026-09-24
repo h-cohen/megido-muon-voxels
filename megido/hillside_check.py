@@ -8,8 +8,13 @@ the data actually lives in; the per-cell VE of the surface fit is not that.
 
 Because H scales ~linearly with a about each detector, t* scales by a and the
 prediction is ~scale-free: this checks the surface's SHAPE (measured), not its
-assumed scale. Unpredictable rays (surface unknown / off-grid / never crossed)
-are NaN, never 0, and excluded from every metric.
+assumed scale. Unpredictable rays (surface unknown / off-grid / never crossed /
+detector not below the surface) are NaN, never 0, and excluded from every
+metric.
+
+t* is the FIRST exit: a ray that leaves the terrain and re-enters it further
+out is under-predicted. That is the same single-exit assumption `exit_points`
+makes when it places the surface, so the check is consistent with the fit.
 """
 from __future__ import annotations
 
@@ -78,7 +83,11 @@ def ray_exit_distance(origin, dirs, H, gx, gy, *, t_max=None, step=None,
                 mid = 0.5 * (lo + hi)
                 pm = o[None, :] + mid[:, None] * d[ci]
                 hm = _bilinear(H, gx, gy, pm[:, 0], pm[:, 1])
-                above = pm[:, 2] >= hm          # NaN -> False -> treat as below
+                # NaN -> False -> treat as below. Both bracket ends are finite,
+                # so a NaN here means the segment grazes a NaN-cornered cell at
+                # the edge of the unknown mask; the result stays within one
+                # march step (cell/4) of the crossing rather than going NaN.
+                above = pm[:, 2] >= hm
                 hi = np.where(above, mid, hi)
                 lo = np.where(above, lo, mid)
             t_out[ci] = hi
