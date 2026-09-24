@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { modelMatrixFromMeta, worldToVoxel, voxelToWorld, sampleNearest, reorderForTexture } from '../src/grid.mjs';
+import { modelMatrixFromMeta, worldToVoxel, voxelToWorld, sampleNearest, reorderForTexture, rayBox } from '../src/grid.mjs';
 
 const META = { shape: [4, 3, 2], spacing_m: 0.5, origin_m: [1, 2, 3] };
 
@@ -33,6 +33,18 @@ test('sampleNearest reads C-order [nx,ny,nz] data', () => {
   assert.equal(sampleNearest(data, shape, 0, 0, 0), 0);
   assert.equal(sampleNearest(data, shape, 1, 0, 1), 5);
   assert.equal(sampleNearest(data, shape, 1, 1, 1), 7);
+});
+
+test('sampleNearest floors a fractional voxel coordinate to the containing box, not the nearest integer', () => {
+  // Voxel k occupies [k, k+1) in worldToVoxel units (center k+0.5), matching
+  // GL NEAREST texture filtering (texel index = floor(coord)). i=1.8 lies in
+  // box [1,2) -- a round-to-nearest-integer implementation would wrongly
+  // read voxel 2 (round(1.8) = 2) instead of voxel 1.
+  const shape = [4, 1, 1];
+  const data = new Float32Array([10, 20, 30, 40]);
+  assert.equal(sampleNearest(data, shape, 1.8, 0, 0), 20);
+  assert.equal(sampleNearest(data, shape, 1.01, 0, 0), 20);
+  assert.equal(sampleNearest(data, shape, 1.99, 0, 0), 20);
 });
 
 test('sampleNearest returns NaN out of bounds', () => {
@@ -68,4 +80,41 @@ test('reorderForTexture passthrough for [1,1,1]', () => {
   const out = reorderForTexture(data, [1, 1, 1]);
   assert.deepEqual(Array.from(out), [42]);
   assert.notEqual(out, data);
+});
+
+// rayBox mirrors the shader's slab intersection (FRAGMENT_SRC in app.mjs):
+// same sign-preserving 1e-8 guard on a zero direction component, tEnter
+// clamped at 0, null when the ray misses the box (tExit <= tEnter).
+
+test('rayBox: axis-aligned ray through a unit box gives the expected entry/exit', () => {
+  const min = [0, 0, 0], max = [1, 1, 1];
+  const hit = rayBox([0.5, 0.5, -2], [0, 0, 1], min, max);
+  assert.ok(hit);
+  const [tEnter, tExit] = hit;
+  assert.ok(Math.abs(tEnter - 2) < 1e-6);
+  assert.ok(Math.abs(tExit - 3) < 1e-6);
+});
+
+test('rayBox: a miss returns null', () => {
+  const min = [0, 0, 0], max = [1, 1, 1];
+  const hit = rayBox([5, 5, -2], [0, 0, 1], min, max);
+  assert.equal(hit, null);
+});
+
+test('rayBox: origin inside the box clamps tEnter to 0', () => {
+  const min = [0, 0, 0], max = [1, 1, 1];
+  const hit = rayBox([0.5, 0.5, 0.5], [0, 0, 1], min, max);
+  assert.ok(hit);
+  const [tEnter, tExit] = hit;
+  assert.equal(tEnter, 0);
+  assert.ok(Math.abs(tExit - 0.5) < 1e-6);
+});
+
+test('rayBox: a ray with a zero direction component still works (guard)', () => {
+  const min = [0, 0, 0], max = [1, 1, 1];
+  const hit = rayBox([0.5, -2, 0.5], [0, 1, 0], min, max);
+  assert.ok(hit);
+  const [tEnter, tExit] = hit;
+  assert.ok(Math.abs(tEnter - 2) < 1e-6);
+  assert.ok(Math.abs(tExit - 3) < 1e-6);
 });

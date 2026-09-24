@@ -25,11 +25,43 @@ export function voxelToWorld(v, meta) {
   ];
 }
 
+// Nearest-voxel lookup for a fractional voxel-space coordinate (as returned
+// by worldToVoxel). Voxel k occupies the half-open box [k, k+1) in this
+// coordinate (center at k+0.5) -- the SAME convention GL's NEAREST texture
+// filtering uses for a texture coordinate scaled by the axis size (texel
+// index = floor(coord)). Uses Math.floor, not Math.round: rounding to the
+// nearest INTEGER (rather than the nearest voxel BOX) is off by up to half a
+// voxel and disagrees with which voxel the GPU actually sampled -- exactly
+// the kind of drift hover picking must not have from the renderer.
 export function sampleNearest(data, shape, i, j, k) {
   const [nx, ny, nz] = shape;
-  const ii = Math.round(i), jj = Math.round(j), kk = Math.round(k);
+  const ii = Math.floor(i), jj = Math.floor(j), kk = Math.floor(k);
   if (ii < 0 || ii >= nx || jj < 0 || jj >= ny || kk < 0 || kk >= nz) return NaN;
   return data[ii * ny * nz + jj * nz + kk];
+}
+
+// Slab intersection mirroring the shader's box march (FRAGMENT_SRC in
+// app.mjs): same sign-preserving 1e-8 guard on a zero/near-zero direction
+// component (so 1/dir never divides by exact zero), tEnter clamped at 0, and
+// null when the ray misses the box (tExit <= tEnter). castHoverRay uses this
+// so CPU-side hover picking marches the same box the GPU shader does.
+export function rayBox(origin, dir, min, max) {
+  const invDir = [0, 0, 0];
+  for (let a = 0; a < 3; a++) {
+    const d = dir[a];
+    const safe = Math.abs(d) < 1e-8 ? (d >= 0 ? 1e-8 : -1e-8) : d;
+    invDir[a] = 1 / safe;
+  }
+  let tEnter = -Infinity, tExit = Infinity;
+  for (let a = 0; a < 3; a++) {
+    const t0 = (min[a] - origin[a]) * invDir[a];
+    const t1 = (max[a] - origin[a]) * invDir[a];
+    tEnter = Math.max(tEnter, Math.min(t0, t1));
+    tExit = Math.min(tExit, Math.max(t0, t1));
+  }
+  tEnter = Math.max(tEnter, 0);
+  if (tExit <= tEnter) return null;
+  return [tEnter, tExit];
 }
 
 // numpy C-order for shape [nx,ny,nz] is z-fastest: data[x*ny*nz + y*nz + z].

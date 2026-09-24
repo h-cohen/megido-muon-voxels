@@ -1,6 +1,6 @@
 import { parseNpy } from './npy.mjs';
 import { identity, multiply, perspective, lookAt, invert } from './mat4.mjs';
-import { worldToVoxel, sampleNearest, reorderForTexture } from './grid.mjs';
+import { worldToVoxel, sampleNearest, reorderForTexture, rayBox } from './grid.mjs';
 import { insideClipBox, insideClipPlane } from './clip.mjs';
 import { buildTransferLUT } from './transfer.mjs';
 import { orbitToEye, CAMERA_PRESETS } from './camera.mjs';
@@ -1580,6 +1580,16 @@ export function initViewer(root) {
   // unproject() in FRAGMENT_SRC), so hover picking always agrees with what
   // was actually drawn. If the projection convention changes, update
   // cameraMatrices() and the shader together.
+  //
+  // Marches ONLY inside the volume box via rayBox (grid.mjs), using the SAME
+  // step rule and sample positions as FRAGMENT_SRC's box march (RAY_STEPS,
+  // uMinStepVoxels, cubic voxel size, tEnter+(i+0.5)*stepLen) -- always the
+  // FULL-quality step count, never the adaptive-preview one, since hover
+  // picking is a discrete user action, not a per-frame render. Applies clip
+  // box, clip plane, sigma gate and surface clip in the same order as the
+  // shader; the sigma gate reads the CPU-side sigma layer array with
+  // sampleNearest (there is no readback from uSigmaTex) and only applies
+  // when the gate is enabled AND a sigma layer is loaded.
   function castHoverRay(clientX, clientY) {
     if (!state.meta) return null;
     const rect = canvas.getBoundingClientRect();
@@ -1602,36 +1612,57 @@ export function initViewer(root) {
     const nearP = unproject(-1), farP = unproject(1);
     const dir = [farP[0] - nearP[0], farP[1] - nearP[1], farP[2] - nearP[2]];
     const len = Math.hypot(...dir);
-    const step = [dir[0] / len, dir[1] / len, dir[2] / len];
+    const dirN = [dir[0] / len, dir[1] / len, dir[2] / len];
     const data = state.layerData.get(state.activeLayer);
     if (!data) return null;
 
-    const steps = 200;
-    const stepLen = len / steps;
     const { min, extent } = worldBounds();
-    for (let s = 0; s < steps; s++) {
-      const world = [nearP[0] + step[0] * stepLen * s,
-                     nearP[1] + step[1] * stepLen * s,
-                     nearP[2] + step[2] * stepLen * s];
+    const boxMax = [min[0] + extent[0], min[1] + extent[1], min[2] + extent[2]];
+    const hit = rayBox(nearP, dirN, min, boxMax);
+    if (!hit) return null;
+    const [tEnter, tExit] = hit;
+
+    const voxel = extent[0] / state.meta.shape[0]; // cubic voxels (single spacing)
+    const minStepVoxels = state.minStepVoxels != null ? state.minStepVoxels : 0.5;
+    const stepLen = Math.max(minStepVoxels * voxel, (tExit - tEnter) / RAY_STEPS);
+
+    const sigmaData = state.layerData.get('sigma');
+    const sigmaGateActive = state.sigmaGateEnabled && !!sigmaData;
+
+    for (let i = 0; i < RAY_STEPS; i++) {
+      const tt = tEnter + (i + 0.5) * stepLen;
+      if (tt > tExit) break;
+      const world = [nearP[0] + dirN[0] * tt, nearP[1] + dirN[1] * tt, nearP[2] + dirN[2] * tt];
       const tex = [
         (world[0] - min[0]) / extent[0],
         (world[1] - min[1]) / extent[1],
         (world[2] - min[2]) / extent[2],
       ];
-      if (!insideClipBox(tex, state.clipMin, state.clipMax)) continue;
-      if (state.clipPlaneEnabled && !insideClipPlane(tex, state.clipPlaneNormal, state.clipPlaneD)) continue;
-      if (state.surfClip && state.hillSurface && state.hillDisplayH) {
-        const hs = surfaceHeightAt(state.hillDisplayH, state.hillSurface.gx, state.hillSurface.gy, world[0], world[1]);
-        if (Number.isFinite(hs) && world[2] > hs) continue;
+      let clipped = !insideClipBox(tex, state.clipMin, state.clipMax);
+      if (!clipped && state.clipPlaneEnabled) {
+        clipped = !insideClipPlane(tex, state.clipPlaneNormal, state.clipPlaneD);
       }
-      const [i, j, k] = worldToVoxel(world, state.meta);
-      const value = sampleNearest(data, state.meta.shape, i, j, k);
-      if (!Number.isNaN(value) && value > (state.window ? state.window[0] : 0)) {
-        return { i: Math.round(i), j: Math.round(j), k: Math.round(k), value };
+      const [vi, vj, vk] = worldToVoxel(world, state.meta);
+      if (!clipped && sigmaGateActive) {
+        const sigma = sampleNearest(sigmaData, state.meta.shape, vi, vj, vk);
+        clipped = !Number.isNaN(sigma) && sigma > state.sigmaGateValue;
+      }
+      if (!clipped && state.surfClip && state.hillSurface && state.hillDisplayH) {
+        const hs = surfaceHeightAt(state.hillDisplayH, state.hillSurface.gx, state.hillSurface.gy, world[0], world[1]);
+        if (Number.isFinite(hs) && world[2] > hs) clipped = true;
+      }
+      if (!clipped) {
+        const value = sampleNearest(data, state.meta.shape, vi, vj, vk);
+        if (!Number.isNaN(value) && value > (state.window ? state.window[0] : 0)) {
+          return { i: Math.floor(vi), j: Math.floor(vj), k: Math.floor(vk), value };
+        }
       }
     }
     return null;
   }
+  // Test hook: state.pick(x, y) -> {i,j,k,value} | null, exercised directly
+  // by Playwright tests without simulating pointermove events.
+  state.pick = (x, y) => castHoverRay(x, y);
 
   canvas.addEventListener('pointermove', (ev) => {
     const hit = castHoverRay(ev.clientX, ev.clientY);
