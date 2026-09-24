@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from megido.hillside_check import (
-    RayCheck, _bilinear, cross_position_check, ray_exit_distance,
+    RayCheck, _bilinear, _OnlyPositionSol, cross_position_check, ray_exit_distance,
     residual_grid, surface_ray_check,
 )
 
@@ -230,14 +230,20 @@ def test_residual_grid_is_mean_per_node_and_nan_where_no_ray():
 def test_residual_grid_averages_rays_on_the_same_node():
     gx = np.array([0.0, 1.0, 2.0])
     gy = np.array([0.0, 1.0, 2.0])
-    residual = {"p0": np.array([[1.0, 2.0], [np.nan, np.nan]])}
+    # a THIRD ray at [1,0] has a finite residual (5.0) but an exit point far
+    # outside the grid -- it must be skipped (F6: exercise that branch), not
+    # silently pulled into whichever node the rounding would nearest-match.
+    residual = {"p0": np.array([[1.0, 2.0], [5.0, np.nan]])}
     exit_xy = {"p0": np.array([[[1.0, 1.0], [1.1, 0.9]],
-                               [[np.nan, np.nan], [5.0, 5.0]]])}
+                               [[50.0, 50.0], [5.0, 5.0]]])}
     chk = RayCheck(residual=residual, predicted={}, ray_ve=float("nan"),
-                  ray_rms=float("nan"), n_checked=2, a=1.0, exit_xy=exit_xy)
+                  ray_rms=float("nan"), n_checked=3, a=1.0, exit_xy=exit_xy)
     grid = residual_grid(chk, gx, gy)
-    assert np.isclose(grid[1, 1], 1.5)                # both finite rays round to (1,1)
+    assert np.isclose(grid[1, 1], 1.5)                # both in-range finite rays round to (1,1)
     assert np.isnan(grid[0, 0])
+    finite = np.isfinite(grid)
+    assert finite.sum() == 1                          # only (1,1) populated -- the out-of-range
+    assert not np.any(np.isclose(grid[finite], 5.0))  # ray never lands anywhere
 
 
 def test_cross_position_check_out_of_sample_recovery():
@@ -248,7 +254,7 @@ def test_cross_position_check_out_of_sample_recovery():
     sol = _build_fake_sol_from_hill(n_bins=128)
     cfg = _fake_cfg()
     fit_kwargs = dict(a=1.0, cell_m=0.5, n_restarts=1, max_points=400)
-    out = cross_position_check(sol, cfg, fit_kwargs=fit_kwargs)
+    out = cross_position_check(sol, cfg, fit_kwargs=fit_kwargs, n_shuffle=1)
 
     assert set(out["fit_on"]) == {"pos0", "pos1"}
     c01 = out["fit_on"]["pos0"]["pos1"]["corr"]
@@ -257,6 +263,28 @@ def test_cross_position_check_out_of_sample_recovery():
     assert c10 > 0.8, c10
     assert c01 > out["null_flat"]["pos1"]["corr"]
     assert c10 > out["null_flat"]["pos0"]["corr"]
+
+
+def test_shuffled_null_is_beaten_by_the_real_out_of_sample_corr():
+    """Decides whether the surface shows real directional structure: the
+    flat-slab null alone is too weak (a scrambled single-position fit still
+    forms a dome-like upper envelope). The real out-of-sample corr must beat
+    the shuffled-opacity null's WORST CASE (corr_max over seeds) in both
+    directions on the synthetic hill -- if it does not, that is reported, not
+    weakened away."""
+    from tests.test_hillside_surface import _build_fake_sol_from_hill, _fake_cfg
+    sol = _build_fake_sol_from_hill(n_bins=128)
+    cfg = _fake_cfg()
+    fit_kwargs = dict(a=1.0, cell_m=0.5, n_restarts=1, max_points=400)
+    out = cross_position_check(sol, cfg, fit_kwargs=fit_kwargs, n_shuffle=3)
+
+    c01 = out["fit_on"]["pos0"]["pos1"]["corr"]
+    c10 = out["fit_on"]["pos1"]["pos0"]["corr"]
+    s01 = out["null_shuffled"]["pos0"]["pos1"]
+    s10 = out["null_shuffled"]["pos1"]["pos0"]
+    assert s01["n_seeds"] == 3 and s10["n_seeds"] == 3
+    assert c01 > s01["corr_max"], (c01, s01)
+    assert c10 > s10["corr_max"], (c10, s10)
 
 
 class _ScrambledSol:
@@ -288,13 +316,58 @@ class _ScrambledSol:
 def test_cross_position_check_negative_control_scrambled_pos1():
     """Must be able to FAIL: with pos1's opacities scrambled, a surface fit
     from pos0 (unaffected) can no longer predict pos1's (scrambled) rays,
-    while pos0 scored on its own fit is unaffected."""
+    while pos0 scored on its own fit is unaffected. Gate raised to 0.95
+    (real: 0.9995) -- a leaky wrapper that let pos1 through this same fixture
+    only reaches 0.863, so 0.95 cleanly separates leaked from clean."""
     from tests.test_hillside_surface import _build_fake_sol_from_hill, _fake_cfg
     sol = _build_fake_sol_from_hill(n_bins=128)
     scrambled = _ScrambledSol(sol, "pos1")
     cfg = _fake_cfg()
     fit_kwargs = dict(a=1.0, cell_m=0.5, n_restarts=1, max_points=400)
-    out = cross_position_check(scrambled, cfg, fit_kwargs=fit_kwargs)
+    out = cross_position_check(scrambled, cfg, fit_kwargs=fit_kwargs, n_shuffle=1)
 
     assert out["fit_on"]["pos0"]["pos1"]["corr"] < 0.3, out["fit_on"]["pos0"]["pos1"]
-    assert out["in_sample"]["pos0"]["corr"] > 0.8, out["in_sample"]["pos0"]
+    assert out["in_sample"]["pos0"]["corr"] > 0.95, out["in_sample"]["pos0"]
+
+
+def test_only_position_sol_hides_every_other_position():
+    """Direct unit test of the wrapper F1 targets: the hidden position reads
+    back as all-NaN (never a fabricated zero), the visible position is passed
+    through exactly."""
+    from tests.test_hillside_surface import _build_fake_sol_from_hill
+    sol = _build_fake_sol_from_hill(n_bins=16)
+    w = _OnlyPositionSol(sol, "pos0")
+    lam0 = w.normalized_opacity("pos0")
+    lam1 = w.normalized_opacity("pos1")
+    np.testing.assert_array_equal(lam0, sol.normalized_opacity("pos0"))
+    assert np.isnan(lam1).all()
+
+
+def test_in_sample_pos0_is_invariant_to_pos1_scrambling():
+    """The strongest leak detector (F1): a fit on pos0 alone must not depend
+    on pos1's data AT ALL. If `_OnlyPositionSol` ever let pos1's (here
+    scrambled) opacities leak into the pos0-only fit, `in_sample["pos0"]`
+    would move between the clean and scrambled runs; it must not, exactly."""
+    from tests.test_hillside_surface import _build_fake_sol_from_hill, _fake_cfg
+    sol = _build_fake_sol_from_hill(n_bins=128)
+    scrambled = _ScrambledSol(sol, "pos1")
+    cfg = _fake_cfg()
+    fit_kwargs = dict(a=1.0, cell_m=0.5, n_restarts=1, max_points=400)
+    clean = cross_position_check(sol, cfg, fit_kwargs=fit_kwargs, n_shuffle=1)
+    dirty = cross_position_check(scrambled, cfg, fit_kwargs=fit_kwargs, n_shuffle=1)
+    assert clean["in_sample"]["pos0"] == dirty["in_sample"]["pos0"]
+
+
+def test_cross_position_check_records_fit_failure_without_crashing():
+    """F2: a fit that raises (here forced via an absurd min_count) must be
+    recorded as {"error": ...} at fit_on/in_sample/null_shuffled, never crash
+    cross_position_check itself."""
+    from tests.test_hillside_surface import _build_fake_sol_from_hill, _fake_cfg
+    sol = _build_fake_sol_from_hill(n_bins=32)
+    cfg = _fake_cfg()
+    fit_kwargs = dict(a=1.0, cell_m=0.5, n_restarts=1, max_points=400,
+                      min_count=10 ** 9)
+    out = cross_position_check(sol, cfg, fit_kwargs=fit_kwargs, n_shuffle=1)
+    assert "error" in out["fit_on"]["pos0"]
+    assert "error" in out["in_sample"]["pos0"]
+    assert "error" in out["null_shuffled"]["pos0"]

@@ -359,6 +359,47 @@ def _cmd_hillside(args) -> int:
     return _cmd_hillside_surface(args, sol, cfg, out)
 
 
+def _format_cross_position_line(xpos: dict) -> str:
+    """Render `cross_position_check`'s dict as the one-line CLI summary.
+
+    Must survive every error shape `cross_position_check` can produce
+    (a fit that raised records `{"error": ...}` in place of the normal
+    per-position stats dict, at the `fit_on[p]`, `null_flat`, and
+    `null_shuffled[p][q]` levels) without raising -- a single small-scale
+    single-position fit failing must never crash the whole `hillside` run.
+    """
+    def _fmt_pair(st):
+        if "error" in st:
+            return f"failed ({st['error']})"
+        return f"r={st['corr']:.2f} VE={st['ve']:.0%}"
+
+    def _fmt_shuffled(p, q):
+        sh = (xpos.get("null_shuffled") or {}).get(p, {})
+        if "error" in sh or q not in sh:
+            return ""
+        v = sh[q]
+        return f" (shuffled null r={v['corr_mean']:.2f}..{v['corr_max']:.2f})"
+
+    pieces = []
+    for p, scores in sorted((xpos.get("fit_on") or {}).items()):
+        if "error" in scores:
+            pieces.append(f"fit {p} -> ...: failed ({scores['error']})")
+            continue
+        for q, st in sorted(scores.items()):
+            pieces.append(f"fit {p} -> {q}: {_fmt_pair(st)}{_fmt_shuffled(p, q)}")
+
+    null_flat = xpos.get("null_flat") or {}
+    if "error" in null_flat:
+        null_str = f"error: {null_flat['error']}"
+    else:
+        null_str = ", ".join(
+            f"{q} {st['corr']:.2f}" if "error" not in st else f"{q} error"
+            for q, st in sorted(null_flat.items()))
+
+    return (f"cross-position  (out-of-sample, a={xpos.get('a', float('nan')):g})  "
+           + "  |  ".join(pieces) + f"   [flat null r: {null_str}]")
+
+
 def _cmd_hillside_surface(args, sol, cfg, out: Path) -> int:
     """Fit and write the Phase 5b regularized hillside-surface artifacts.
 
@@ -405,21 +446,8 @@ def _cmd_hillside_surface(args, sol, cfg, out: Path) -> int:
                       sky_counts=sky_counts, max_points=args.surface_max_points,
                       n_restarts=args.surface_restarts, q_hi=args.surface_qhi,
                       min_count=args.surface_min_count)
-    xpos = cross_position_check(sol, cfg, fit_kwargs=fit_kwargs)
-
-    def _fmt(st):
-        if "error" in st:
-            return f"error: {st['error']}"
-        return f"r={st['corr']:.2f} VE={st['ve']:.0%}"
-
-    fit_pairs = []
-    for p, scores in sorted(xpos["fit_on"].items()):
-        for q, st in sorted(scores.items()):
-            fit_pairs.append(f"fit {p} -> {q}: {_fmt(st)}")
-    null_pairs = ", ".join(f"{q} {st['corr']:.2f}" if "error" not in st else f"{q} error"
-                           for q, st in sorted(xpos["null_flat"].items()))
-    print(f"cross-position  (out-of-sample, a={xpos['a']:g})  " + "  |  ".join(fit_pairs)
-          + f"   [flat null r: {null_pairs}]")
+    xpos = cross_position_check(sol, cfg, fit_kwargs=fit_kwargs, joint=result)
+    print(_format_cross_position_line(xpos))
 
     meta = {
         "gx": list(result.gx),
@@ -450,6 +478,9 @@ def _cmd_hillside_surface(args, sol, cfg, out: Path) -> int:
                            "per-position model bias) is fitted as an additive offset and "
                            "removed before scoring; the value moves with a and fit settings"),
         "ray_cross_position": xpos,
+        "ray_cross_position_note": ("out-of-sample lateral-shape correlation at assumed a; "
+                                    "not a measurement of depth or scale; compare against "
+                                    "null_shuffled"),
         "residual_grid_file": "hill_residual_grid.npy",
         "residual_grid_lim": residual_grid_lim,
     }

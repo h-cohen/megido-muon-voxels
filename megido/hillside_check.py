@@ -249,27 +249,73 @@ class _OnlyPositionSol:
         return getattr(self._sol, name)
 
 
-def cross_position_check(sol, cfg, *, fit_kwargs: dict) -> dict:
+class _ShuffledSinglePositionSol:
+    """Like `_OnlyPositionSol`, but the one visible position's FINITE
+    opacities are also permuted among its finite directions (seeded).
+
+    A shuffled-opacity null: it fits a surface from the same marginal
+    distribution of opacities as the real single-position fit, but with the
+    direction <-> opacity correspondence destroyed. A flat-slab null alone is
+    too weak (a scrambled fit can still form a dome-like upper envelope and
+    beat it); this null isolates whether the recovered shape needs the real
+    directional correspondence, not just the value distribution.
+    """
+
+    def __init__(self, sol, pid: str, seed: int):
+        self._sol = sol
+        self._pid = pid
+        self.sky = sol.sky
+        self._seed = seed
+
+    def normalized_opacity(self, position_id, transparent_quantile=0.05):
+        lam = np.asarray(
+            self._sol.normalized_opacity(position_id, transparent_quantile=transparent_quantile),
+            dtype=float)
+        if position_id != self._pid:
+            return np.full_like(lam, np.nan)
+        out = np.full_like(lam, np.nan)
+        finite = np.isfinite(lam)
+        if finite.any():
+            vals = lam[finite]
+            perm = np.random.default_rng(self._seed).permutation(vals.size)
+            out[finite] = vals[perm]
+        return out
+
+    def __getattr__(self, name):
+        return getattr(self._sol, name)
+
+
+def cross_position_check(sol, cfg, *, fit_kwargs: dict, joint=None,
+                         n_shuffle: int = 3) -> dict:
     """Out-of-sample cross-position check: fit the surface from ONE
     position's opacities only, score it (via `surface_ray_check`, against the
-    REAL sol) on every position -- including a flat-slab null for scale.
+    REAL sol) on every position -- including a flat-slab null and a
+    shuffled-opacity null for scale.
 
     A throwaway spike found the joint (both-position) in-sample VE overstates
     predictive power; this is the honest, held-out number. See the module
     docstring in `megido/hillside_check.py` and the Task 1 brief.
+
+    `joint`, if given, is a `SurfaceResult` already fit with these SAME
+    `fit_kwargs` on the full (both-position) `sol` -- reused for the
+    flat-slab null's height instead of re-fitting. Only `fit_surface`'s
+    documented failure (`ValueError`, too few populated cells) is caught and
+    recorded as `{"error": ...}`; anything else is a real bug and propagates.
     """
     a = float(fit_kwargs.get("a", 8.0))
     pids = sorted(_positions(cfg))
 
     fit_on: dict = {}
     in_sample: dict = {}
+    null_shuffled: dict = {}
     for p in pids:
         wrapper = _OnlyPositionSol(sol, p)
         try:
             surf = fit_surface(wrapper, cfg, **fit_kwargs)
-        except Exception as e:
+        except ValueError as e:
             fit_on[p] = {"error": str(e)}
             in_sample[p] = {"error": str(e)}
+            null_shuffled[p] = {"error": str(e)}
             continue
         chk = surface_ray_check(sol, cfg, surf)
         fit_on[p] = {q: {"n": st["n"], "corr": st["corr"], "ve": st["ve"]}
@@ -280,16 +326,39 @@ def cross_position_check(sol, cfg, *, fit_kwargs: dict) -> dict:
         else:
             in_sample[p] = {"error": "no in-sample rays"}
 
+        per_q: dict = {}
+        for seed in range(n_shuffle):
+            shuf_wrapper = _ShuffledSinglePositionSol(sol, p, seed)
+            try:
+                shuf_surf = fit_surface(shuf_wrapper, cfg, **fit_kwargs)
+            except ValueError:
+                continue
+            shuf_chk = surface_ray_check(sol, cfg, shuf_surf)
+            for q, st in shuf_chk.per_position.items():
+                if q == p:
+                    continue
+                per_q.setdefault(q, {"corr": [], "ve": []})
+                per_q[q]["corr"].append(st["corr"])
+                per_q[q]["ve"].append(st["ve"])
+        null_shuffled[p] = {
+            q: {"corr_mean": float(np.nanmean(v["corr"])),
+                "corr_max": float(np.nanmax(v["corr"])),
+                "ve_mean": float(np.nanmean(v["ve"])),
+                "n_seeds": len(v["corr"])}
+            for q, v in per_q.items()
+        } if per_q else {"error": "no successful shuffled fits"}
+
     null_flat: dict = {}
     try:
-        both = fit_surface(sol, cfg, **fit_kwargs)
+        both = joint if joint is not None else fit_surface(sol, cfg, **fit_kwargs)
         h0 = float(np.nanmedian(both.H))
         g = np.arange(-60.0, 61.0, 1.0)
         flat = SimpleNamespace(H=np.full((g.size, g.size), h0), gx=g, gy=g.copy(), a=a)
         chk_flat = surface_ray_check(sol, cfg, flat)
         null_flat = {q: {"n": st["n"], "corr": st["corr"], "ve": st["ve"]}
                     for q, st in chk_flat.per_position.items()}
-    except Exception as e:
+    except ValueError as e:
         null_flat = {"error": str(e)}
 
-    return {"fit_on": fit_on, "in_sample": in_sample, "null_flat": null_flat, "a": a}
+    return {"fit_on": fit_on, "in_sample": in_sample, "null_flat": null_flat,
+           "null_shuffled": null_shuffled, "a": a}

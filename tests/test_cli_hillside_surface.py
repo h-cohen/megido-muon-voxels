@@ -4,11 +4,36 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from megido.cli import main
+from megido.cli import _format_cross_position_line, main
 
 REAL_CONFIG = Path("configs/megido.yaml")
 REAL_SOLVE = Path("runs/solve")
 REAL_INGEST = Path("runs/ingest")
+
+
+def test_format_cross_position_line_survives_every_error_shape():
+    """F2: the formatter must not crash on any of the error shapes
+    cross_position_check can produce (a raised fit at fit_on[p], at
+    null_flat, or at null_shuffled[p][q]), and must still render the
+    successful entries."""
+    xpos = {
+        "a": 8.0,
+        "fit_on": {
+            "pos0": {"error": "too few populated cells"},
+            "pos1": {"pos0": {"n": 5, "corr": 0.5, "ve": 0.1}},
+        },
+        "in_sample": {},
+        "null_flat": {"error": "boom"},
+        "null_shuffled": {
+            "pos1": {"pos0": {"corr_mean": 0.1, "corr_max": 0.2,
+                              "ve_mean": 0.05, "n_seeds": 2}},
+        },
+    }
+    line = _format_cross_position_line(xpos)
+    assert "fit pos0 -> ...: failed (too few populated cells)" in line
+    assert "fit pos1 -> pos0: r=0.50 VE=10%" in line
+    assert "shuffled null r=0.10..0.20" in line
+    assert "error: boom" in line
 
 
 @pytest.mark.skipif(not REAL_CONFIG.exists() or not (REAL_SOLVE / "baseline.npz").exists(),
@@ -67,7 +92,8 @@ def test_hillside_writes_surface_artifacts(tmp_path):
 
     assert "ray_cross_position" in meta
     xpos = meta["ray_cross_position"]
-    assert "fit_on" in xpos and "null_flat" in xpos
+    assert "fit_on" in xpos and "null_flat" in xpos and "null_shuffled" in xpos
+    assert "ray_cross_position_note" in meta
     assert meta.get("residual_grid_file") == "hill_residual_grid.npy"
     assert "residual_grid_lim" in meta
 
