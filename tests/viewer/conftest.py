@@ -26,7 +26,7 @@ def dist_path() -> Path:
 def run_fixture(tmp_path):
     """Write a synthetic run dir; returns its Path. shape/layers overridable."""
     def _make(shape=(6, 5, 4), layers=("volume",), spacing_m=0.5,
-              origin_m=(0.0, 0.0, 1.0), depth_resolved=False):
+              origin_m=(0.0, 0.0, 1.0), depth_resolved=False, hill=False):
         run = tmp_path / "run"
         run.mkdir()
         rng = np.random.default_rng(0)
@@ -37,6 +37,29 @@ def run_fixture(tmp_path):
                 continue
             arr = rng.random(shape, dtype=np.float32)
             np.save(run / f"{name}.npy", arr)
+        if hill:
+            gx = list(np.arange(0.0, 3.5, 0.5))
+            gy = list(np.arange(0.0, 3.0, 0.5))
+            nx, ny = len(gx), len(gy)
+            H = np.full((nx, ny), 2.0, dtype=np.float32)
+            # sigma varies with i (row) only, spanning 0.1..1.0, so the fixture
+            # exercises a non-degenerate robustRange without depending on j.
+            sigma = np.array(
+                [[0.1 + 0.9 * i / (nx - 1) for _ in range(ny)] for i in range(nx)],
+                dtype=np.float32,
+            )
+            np.save(run / "hill_surface.npy", H)
+            np.save(run / "hill_surface_sigma.npy", sigma)
+            hill_meta = {
+                "gx": gx,
+                "gy": gy,
+                "a": 8.0,
+                "variance_explained": 0.81,
+                "ray_ve": 0.5,
+                "scale_assumed": True,
+                "note": "fixture",
+            }
+            (run / "hill_surface_meta.json").write_text(json.dumps(hill_meta))
         meta = {
             "shape": list(shape),
             "axis_order": "xyz",

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { surfaceMesh, smoothHeightfield } from '../src/surfacemesh.mjs';
+import { surfaceMesh, smoothHeightfield, surfaceVertexColors, robustRange, SIGMA_RAMP } from '../src/surfacemesh.mjs';
 
 test('surfaceMesh: 2x2 all-finite grid -> 4 verts, one quad -> 6 indices', () => {
   const gx = [0, 1];
@@ -68,4 +68,30 @@ test('smoothHeightfield: a constant field is unchanged by smoothing', () => {
   const H = new Float32Array(nx * ny).fill(7);
   const out = smoothHeightfield(H, nx, ny, 5);
   for (const v of out) assert.equal(v, 7);
+});
+
+test('surfaceVertexColors maps lo/hi to ramp ends and clamps', () => {
+  const c = surfaceVertexColors(Float32Array.from([0, 1, 2, -5, 9]), 0, 2);
+  const [a, b] = SIGMA_RAMP;
+  for (let k = 0; k < 3; k++) {
+    assert.ok(Math.abs(c[k] - a[k]) < 1e-6);          // sigma=lo -> start
+    assert.ok(Math.abs(c[6 + k] - b[k]) < 1e-6);      // sigma=hi -> end
+    assert.ok(Math.abs(c[9 + k] - a[k]) < 1e-6);      // below lo clamps
+    assert.ok(Math.abs(c[12 + k] - b[k]) < 1e-6);     // above hi clamps
+    assert.ok(Math.abs(c[3 + k] - (a[k] + b[k]) / 2) < 1e-6); // midpoint
+  }
+});
+
+test('surfaceVertexColors gives NaN sigma the mid colour', () => {
+  const c = surfaceVertexColors(Float32Array.from([NaN]), 0, 1);
+  const [a, b] = SIGMA_RAMP;
+  for (let k = 0; k < 3; k++) assert.ok(Math.abs(c[k] - (a[k] + b[k]) / 2) < 1e-6);
+});
+
+test('robustRange ignores NaN and returns 5th/95th percentiles', () => {
+  const v = Float32Array.from([...Array(101).keys()].map(Number).concat([NaN]));
+  const [lo, hi] = robustRange(v);
+  assert.ok(Math.abs(lo - 5) < 1e-6 && Math.abs(hi - 95) < 1e-6);
+  const [n1, n2] = robustRange(Float32Array.from([NaN]));
+  assert.ok(Number.isNaN(n1) && Number.isNaN(n2));
 });

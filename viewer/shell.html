@@ -22,6 +22,7 @@
   *{box-sizing:border-box;}
   .mono{font-family:var(--mono);font-variant-numeric:tabular-nums;}
   .dim{color:var(--text-dim);}
+  .sigma-bar{height:8px;border-radius:4px;background:linear-gradient(90deg,rgb(245,184,92),rgb(115,41,8));margin:4px 0 2px}
   :focus-visible{outline:2px solid var(--accent);}
   @media (prefers-reduced-motion:reduce){*{transition:none!important;}}
 
@@ -239,6 +240,11 @@
         <label><input id="toggle-silhouette" type="checkbox" style="width:auto" disabled> Silhouette <span class="dim">(angular, convention length)</span></label>
         <label><input id="toggle-hill-surface" type="checkbox" style="width:auto" disabled> Hillside surface</label>
         <div id="hill-surface-caveat" class="dim" hidden></div>
+        <label><input id="toggle-hill-sigma" type="checkbox" style="width:auto" disabled> Colour by uncertainty</label>
+        <div id="hill-sigma-legend" hidden>
+          <div class="sigma-bar" aria-hidden="true"></div>
+          <span id="hill-sigma-range" class="dim mono"></span>
+        </div>
         <label for="hill-surface-smooth" class="dim">smoothing (display only)</label>
         <input id="hill-surface-smooth" type="range" min="0" max="12" step="1" value="0" disabled>
         <span id="hill-surface-smooth-readout" class="dim mono">0</span>

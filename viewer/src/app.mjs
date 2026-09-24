@@ -12,7 +12,7 @@ import { COLORMAP_NAMES, colormapStops } from './colormap.mjs';
 import { captureView, loadViews, saveViews } from './views.mjs';
 import { SHORTCUTS, keyToAction } from './shortcuts.mjs';
 import { markerVertices, silhouetteVertices, SILHOUETTE_RAYLEN_M, dedupeDetectors, projectToScreen } from './markers.mjs';
-import { surfaceMesh, smoothHeightfield } from './surfacemesh.mjs';
+import { surfaceMesh, smoothHeightfield, surfaceVertexColors, robustRange } from './surfacemesh.mjs';
 
 const VERTEX_SRC = `#version 300 es
 out vec2 vUv;
@@ -122,6 +122,24 @@ void main() {
   outColor = uFillColor;
 }`;
 
+// Hillside surface, per-vertex colour path (sigma-coloured mode): a second
+// mesh program alongside fillProgram/FILL_FRAGMENT_SRC above, needed because
+// this one takes a per-vertex aColor attribute (location 1) instead of a
+// single uFillColor uniform. MARKER_*/FILL_FRAGMENT_SRC stay untouched -
+// markers and the flat-fill path still use them.
+const MESH_VERTEX_SRC = `#version 300 es
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aColor;
+uniform mat4 uMarkerViewProj;
+out vec3 vColor;
+void main() { vColor = aColor; gl_Position = uMarkerViewProj * vec4(aPos, 1.0); }`;
+const MESH_FRAGMENT_SRC = `#version 300 es
+precision highp float;
+in vec3 vColor;
+uniform float uAlpha;
+out vec4 outColor;
+void main() { outColor = vec4(vColor, uAlpha); }`;
+
 function compileShader(gl, type, src) {
   const sh = gl.createShader(type);
   gl.shaderSource(sh, src);
@@ -218,23 +236,29 @@ export function initViewer(root) {
   gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
   gl.bindVertexArray(null);
 
-  // Hillside SURFACE mesh (Task 4, primary hillside display): a filled
-  // height-field "lid" over the fitted overburden. Own program (FILL_FRAGMENT_SRC
-  // above) so the translucent fill doesn't touch the opaque marker/silhouette
-  // color path, and its own VAO/position+index buffers since it is indexed
-  // triangles, not a flat gl.LINES vertex list.
-  const fillProgram = linkProgram(gl, MARKER_VERTEX_SRC, FILL_FRAGMENT_SRC);
-  const fillUniforms = {
-    uMarkerViewProj: gl.getUniformLocation(fillProgram, 'uMarkerViewProj'),
-    uFillColor: gl.getUniformLocation(fillProgram, 'uFillColor'),
+  // Hillside SURFACE mesh (Task 4, primary hillside display; Task 3
+  // sigma-colouring): a filled height-field "lid" over the fitted
+  // overburden, drawn with meshProgram/MESH_*_SRC above (per-vertex colour,
+  // needed both for the flat amber fill and the sigma ramp) so it doesn't
+  // touch the opaque marker/silhouette color path. Own VAO/position+index+
+  // color buffers since it is indexed triangles, not a flat gl.LINES vertex
+  // list.
+  const meshProgram = linkProgram(gl, MESH_VERTEX_SRC, MESH_FRAGMENT_SRC);
+  const meshUniforms = {
+    uMarkerViewProj: gl.getUniformLocation(meshProgram, 'uMarkerViewProj'),
+    uAlpha: gl.getUniformLocation(meshProgram, 'uAlpha'),
   };
   const hillSurfaceVao = gl.createVertexArray();
   const hillSurfacePositionBuffer = gl.createBuffer();
+  const hillSurfaceColorBuffer = gl.createBuffer();
   const hillSurfaceIndexBuffer = gl.createBuffer();
   gl.bindVertexArray(hillSurfaceVao);
   gl.bindBuffer(gl.ARRAY_BUFFER, hillSurfacePositionBuffer);
   gl.enableVertexAttribArray(0);
   gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, hillSurfaceColorBuffer);
+  gl.enableVertexAttribArray(1);
+  gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
   gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, hillSurfaceIndexBuffer);
   gl.bindVertexArray(null);
   // Warm amber, distinct from the teal/magenta silhouette fan.
@@ -287,6 +311,8 @@ export function initViewer(root) {
     showHillSurface: false,
     hillSurfaceIndexCount: 0,
     hillSurfaceSmooth: 0, // display-only smoothing pass count; 0 = raw fit
+    hillSigmaColor: false, // colour the surface by GP posterior sigma instead of flat amber
+    hillSigmaRange: null, // [lo, hi] robust range of sigma, set by loadRun
   };
 
   function worldBounds() {
@@ -499,10 +525,10 @@ export function initViewer(root) {
   function drawHillSurface(viewProj) {
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-    gl.useProgram(fillProgram);
+    gl.useProgram(meshProgram);
     gl.bindVertexArray(hillSurfaceVao);
-    gl.uniformMatrix4fv(fillUniforms.uMarkerViewProj, false, viewProj);
-    gl.uniform4fv(fillUniforms.uFillColor, HILL_SURFACE_COLOR);
+    gl.uniformMatrix4fv(meshUniforms.uMarkerViewProj, false, viewProj);
+    gl.uniform1f(meshUniforms.uAlpha, HILL_SURFACE_COLOR[3]);
     gl.drawElements(gl.TRIANGLES, state.hillSurfaceIndexCount, gl.UNSIGNED_INT, 0);
     gl.bindVertexArray(null);
     gl.disable(gl.BLEND);
@@ -512,7 +538,11 @@ export function initViewer(root) {
   // re-applying state.hillSurfaceSmooth passes of display-only smoothing
   // (smoothHeightfield) each time. Smoothing always starts from the raw
   // surf.H (never cumulatively from a previous smoothed result), so moving
-  // the slider back to 0 exactly restores the raw fit.
+  // the slider back to 0 exactly restores the raw fit. Also rebuilds the
+  // per-vertex colour buffer: the GP posterior sigma ramp when
+  // state.hillSigmaColor is on and sigma data is loaded, otherwise a flat
+  // amber matching HILL_SURFACE_COLOR (so the flat-fill look is unchanged
+  // when sigma coloring is off or unavailable).
   function rebuildHillSurfaceBuffer() {
     const surf = state.hillSurface;
     if (!surf) {
@@ -524,9 +554,24 @@ export function initViewer(root) {
       ? smoothHeightfield(surf.H, surf.gx.length, surf.gy.length, iterations)
       : surf.H;
     const { positions, indices } = surfaceMesh(H, surf.gx, surf.gy);
+    const vertexCount = positions.length / 3;
+    let colors;
+    if (state.hillSigmaColor && surf.sigma) {
+      const [lo, hi] = state.hillSigmaRange || robustRange(surf.sigma);
+      colors = surfaceVertexColors(surf.sigma, lo, hi);
+    } else {
+      colors = new Float32Array(vertexCount * 3);
+      for (let k = 0; k < vertexCount; k++) {
+        colors[k * 3] = HILL_SURFACE_COLOR[0];
+        colors[k * 3 + 1] = HILL_SURFACE_COLOR[1];
+        colors[k * 3 + 2] = HILL_SURFACE_COLOR[2];
+      }
+    }
     gl.bindVertexArray(hillSurfaceVao);
     gl.bindBuffer(gl.ARRAY_BUFFER, hillSurfacePositionBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, hillSurfaceColorBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, colors, gl.STATIC_DRAW);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, hillSurfaceIndexBuffer);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
     gl.bindVertexArray(null);
@@ -720,19 +765,37 @@ export function initViewer(root) {
     // runs) must not error, and the toggle stays disabled and unchecked.
     const hillSurfaceFile = byName.get('hill_surface.npy');
     const hillSurfaceMetaFile = byName.get('hill_surface_meta.json');
+    const hillSurfaceSigmaFile = byName.get('hill_surface_sigma.npy');
     const toggleHillSurfaceEl = root.querySelector('#toggle-hill-surface');
     const hillSurfaceCaveatEl = root.querySelector('#hill-surface-caveat');
     const hillSurfaceSmoothEl = root.querySelector('#hill-surface-smooth');
     const hillSurfaceSmoothReadoutEl = root.querySelector('#hill-surface-smooth-readout');
+    const toggleHillSigmaEl = root.querySelector('#toggle-hill-sigma');
+    const hillSigmaLegendEl = root.querySelector('#hill-sigma-legend');
+    const hillSigmaRangeEl = root.querySelector('#hill-sigma-range');
     // A fresh run always starts unsmoothed, whatever a previous run's slider
     // was left at - display-only smoothing must never carry across loads.
     state.hillSurfaceSmooth = 0;
     if (hillSurfaceSmoothEl) hillSurfaceSmoothEl.value = '0';
     if (hillSurfaceSmoothReadoutEl) hillSurfaceSmoothReadoutEl.textContent = '0';
+    // Sigma coloring is reset on every load too - it must never carry a
+    // stale range or a stale "on" state from a previous run into one that
+    // has no sigma data.
+    state.hillSigmaColor = false;
+    state.hillSigmaRange = null;
     if (hillSurfaceFile && hillSurfaceMetaFile) {
       const { data: H } = parseNpy(await readFile(hillSurfaceFile));
       const hillMeta = JSON.parse(await hillSurfaceMetaFile.text());
-      state.hillSurface = { H, gx: hillMeta.gx, gy: hillMeta.gy, meta: hillMeta };
+      let sigma = null;
+      if (hillSurfaceSigmaFile) {
+        const { data } = parseNpy(await readFile(hillSurfaceSigmaFile));
+        if (data.length === H.length) sigma = data;
+      }
+      state.hillSurface = { H, gx: hillMeta.gx, gy: hillMeta.gy, meta: hillMeta, sigma };
+      if (sigma) {
+        state.hillSigmaRange = robustRange(sigma);
+        state.hillSigmaColor = true;
+      }
       rebuildHillSurfaceBuffer();
       if (toggleHillSurfaceEl) {
         toggleHillSurfaceEl.disabled = false;
@@ -740,10 +803,27 @@ export function initViewer(root) {
       }
       if (hillSurfaceSmoothEl) hillSurfaceSmoothEl.disabled = false;
       state.showHillSurface = true;
+      if (toggleHillSigmaEl) {
+        toggleHillSigmaEl.disabled = !sigma;
+        toggleHillSigmaEl.checked = !!sigma;
+      }
+      if (hillSigmaLegendEl) hillSigmaLegendEl.hidden = !sigma;
+      if (sigma && hillSigmaRangeEl) {
+        const [lo, hi] = state.hillSigmaRange;
+        hillSigmaRangeEl.textContent =
+          `σ ${lo.toFixed(2)} – ${hi.toFixed(2)} m · raw posterior std, assumed scale`;
+      }
       if (hillSurfaceCaveatEl) {
-        const pct = Math.round((hillMeta.variance_explained || 0) * 100);
+        const pctCell = Math.round((hillMeta.variance_explained || 0) * 100);
+        const rayVe = hillMeta.ray_ve;
+        // The per-ray VE depends strongly on the assumed inverse-density
+        // scale `a` (see Honest limits in CLAUDE.md), so it must never be
+        // shown without naming that scale.
+        const rayText = Number.isFinite(rayVe)
+          ? ` · ${Math.round(rayVe * 100)}% per ray (a=${hillMeta.a})`
+          : '';
         hillSurfaceCaveatEl.textContent =
-          `Hillside surface — assumed scale, ${pct}% variance explained (per cell)`;
+          `Hillside surface — assumed scale, ${pctCell}% VE per cell${rayText}`;
         hillSurfaceCaveatEl.hidden = false;
       }
     } else {
@@ -756,6 +836,11 @@ export function initViewer(root) {
       }
       if (hillSurfaceSmoothEl) hillSurfaceSmoothEl.disabled = true;
       if (hillSurfaceCaveatEl) hillSurfaceCaveatEl.hidden = true;
+      if (toggleHillSigmaEl) {
+        toggleHillSigmaEl.disabled = true;
+        toggleHillSigmaEl.checked = false;
+      }
+      if (hillSigmaLegendEl) hillSigmaLegendEl.hidden = true;
     }
 
     const banner = root.querySelector('#resolution-banner');
@@ -988,6 +1073,16 @@ export function initViewer(root) {
     toggleHillSurfaceEl.disabled = true; // enabled by loadRun once the artifact is present
     toggleHillSurfaceEl.addEventListener('change', (ev) => {
       state.showHillSurface = ev.target.checked;
+      render();
+    });
+  }
+
+  const toggleHillSigmaEl = root.querySelector('#toggle-hill-sigma');
+  if (toggleHillSigmaEl) {
+    toggleHillSigmaEl.disabled = true; // enabled by loadRun once sigma data is present
+    toggleHillSigmaEl.addEventListener('change', (ev) => {
+      state.hillSigmaColor = ev.target.checked;
+      rebuildHillSurfaceBuffer();
       render();
     });
   }
