@@ -385,9 +385,12 @@ def _cmd_hillside_surface(args, sol, cfg, out: Path) -> int:
 
     from megido.hillside_check import surface_ray_check
     check = surface_ray_check(sol, cfg, result)
-    print(f"ray check       VE={check.ray_ve:.1%} (per ray, a={check.a:g})  "
+    print(f"ray check       VE={check.ray_ve:.1%} (per ray, gauge-invariant, a={check.a:g})  "
           f"RMS={check.ray_rms:.3f}  over {check.n_checked} rays "
           f"(surface as uniform solid, density 1/a)")
+    for pid, st in sorted((check.per_position or {}).items()):
+        print(f"                {pid}: n={st['n']}  shape corr r={st['corr']:.2f}  "
+              f"VE={st['ve']:.1%}  offset={check.offsets[pid]:+.3f} (unmeasured level)")
 
     np.save(out / "hill_surface.npy", result.H.astype(np.float32))
     np.save(out / "hill_surface_sigma.npy", result.sigma.astype(np.float32))
@@ -411,8 +414,14 @@ def _cmd_hillside_surface(args, sol, cfg, out: Path) -> int:
         "signal_std": result.signal_std,
         "noise_floor": result.noise_floor,
         "ray_ve": check.ray_ve,
+        "ray_ve_raw": check.ray_ve_raw,
         "ray_rms": check.ray_rms,
         "n_rays_checked": check.n_checked,
+        "ray_offsets": check.offsets or {},
+        "ray_per_position": check.per_position or {},
+        "ray_check_note": ("ray-space fit of the surface as a uniform solid of density 1/a, "
+                           "gauge-invariant: each position's unmeasured opacity level is "
+                           "fitted as an additive offset and removed before scoring"),
     }
     (out / "hill_surface_meta.json").write_text(
         json.dumps(_json_nan_to_null(_json_safe(meta)), indent=2) + "\n")
@@ -487,13 +496,17 @@ def _write_residual_png(check, sol, path: Path) -> None:
         im = ax.imshow(check.residual[pid].T, origin="lower",
                        extent=[c[0], c[-1], c[0], c[-1]],
                        cmap="RdBu_r", vmin=-lim, vmax=lim)
-        ax.set_title(f"{pid}: measured − predicted opacity")
+        st = (check.per_position or {}).get(pid, {})
+        off = (check.offsets or {}).get(pid, float("nan"))
+        ax.set_title(f"{pid}: residual after offset {off:+.2f}  "
+                     f"(r={st.get('corr', float('nan')):.2f}, VE={st.get('ve', float('nan')):.0%})",
+                     fontsize=10)
         ax.set_xlabel("sky tangent x"); ax.set_ylabel("sky tangent y")
     if im is not None:
         fig.colorbar(im, ax=axes[0].tolist(),
                      label="Δλ  (red: more rock than a uniform hill; blue: less)")
-    fig.suptitle(f"Surface ray check, a={check.a:g}: VE={check.ray_ve:.0%} per ray, "
-                 f"RMS={check.ray_rms:.3f}, N={check.n_checked}")
+    fig.suptitle(f"Surface ray check (uniform solid, a={check.a:g}, gauge-invariant): "
+                 f"VE={check.ray_ve:.0%} per ray, RMS={check.ray_rms:.3f}, N={check.n_checked}")
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 

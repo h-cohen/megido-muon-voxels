@@ -97,12 +97,34 @@ def ray_exit_distance(origin, dirs, H, gx, gy, *, t_max=None, step=None,
 
 @dataclass(frozen=True)
 class RayCheck:
+    """Ray-space fit of the surface, GAUGE-INVARIANT per position.
+
+    Phase 2 pins each position's opacity level independently and never
+    measures it, so a constant offset between measured and predicted opacity
+    at one position carries no information. Each position's offset is fitted
+    (the mean residual, i.e. least squares), reported in `offsets`, and removed
+    before scoring -- the same role `c_p` plays in the voxel solve.
+
+    residual   per-position (n_bins, n_bins) map of measured - predicted
+               AFTER removing that position's offset; NaN where unmeasured
+               or unpredicted.
+    predicted  per-position map of t*/a (absolute, before any offset).
+    ray_ve     pooled VE after per-position offsets, against the variance of
+               the measurements about their own per-position means.
+    ray_rms    RMS of the offset-removed residuals.
+    ray_ve_raw gauge-naive VE (no offsets) -- secondary, not meaningful alone.
+    offsets    {pid: fitted additive offset, measured - predicted}.
+    per_position {pid: {"n", "corr", "ve"}} after that position's offset.
+    """
     residual: dict
     predicted: dict
     ray_ve: float
     ray_rms: float
     n_checked: int
     a: float
+    ray_ve_raw: float = float("nan")
+    offsets: dict | None = None
+    per_position: dict | None = None
 
 
 def surface_ray_check(sol, cfg, result, *, a=None) -> RayCheck:
@@ -116,7 +138,8 @@ def surface_ray_check(sol, cfg, result, *, a=None) -> RayCheck:
     norm = np.sqrt(1.0 + sx ** 2 + sy ** 2)
     dirs = np.stack([sx / norm, sy / norm, 1.0 / norm], axis=1)
 
-    residual, predicted, meas, pred = {}, {}, [], []
+    residual, predicted, offsets, per_position = {}, {}, {}, {}
+    raw_r, raw_m, gi_r, gi_m = [], [], [], []
     for pid, pose in sorted(_positions(cfg).items()):
         lam = np.asarray(sol.normalized_opacity(pid), float)
         live = np.isfinite(lam)
@@ -126,16 +149,33 @@ def surface_ray_check(sol, cfg, result, *, a=None) -> RayCheck:
         p = t / a
         r = lam - p
         ok = np.isfinite(r)
-        residual[pid] = np.where(ok, r, np.nan).reshape(nb, nb)
         predicted[pid] = np.where(np.isfinite(p), p, np.nan).reshape(nb, nb)
-        meas.append(lam[ok]); pred.append(p[ok])
+        if not ok.any():
+            residual[pid] = np.full((nb, nb), np.nan)
+            continue
+        m_p, r_p = lam[ok], r[ok]
+        c_p = float(r_p.mean())                       # LS additive offset
+        rc = r_p - c_p
+        mc = m_p - m_p.mean()
+        offsets[pid] = c_p
+        out = np.full(lam.shape, np.nan)
+        out[ok] = rc
+        residual[pid] = out.reshape(nb, nb)
+        ss = float(np.sum(mc ** 2))
+        corr = (float(np.corrcoef(m_p, p[ok])[0, 1])
+                if ok.sum() >= 3 and np.std(p[ok]) > 0 and np.std(m_p) > 0 else float("nan"))
+        per_position[pid] = {"n": int(ok.sum()), "corr": corr,
+                             "ve": float(1.0 - np.sum(rc ** 2) / ss) if ss > 0 else float("nan")}
+        raw_r.append(r_p); raw_m.append(m_p); gi_r.append(rc); gi_m.append(mc)
 
-    m = np.concatenate(meas) if meas else np.zeros(0)
-    q = np.concatenate(pred) if pred else np.zeros(0)
-    if m.size == 0:
-        return RayCheck(residual, predicted, float("nan"), float("nan"), 0, a)
-    rr = m - q
-    denom = float(np.sum((m - m.mean()) ** 2))
-    ve = float(1.0 - np.sum(rr ** 2) / denom) if denom > 0 else float("nan")
+    if not raw_r:
+        return RayCheck(residual, predicted, float("nan"), float("nan"), 0, a,
+                        float("nan"), offsets, per_position)
+    rr, mm = np.concatenate(gi_r), np.concatenate(gi_m)
+    ss = float(np.sum(mm ** 2))
+    ve = float(1.0 - np.sum(rr ** 2) / ss) if ss > 0 else float("nan")
+    raw, m_all = np.concatenate(raw_r), np.concatenate(raw_m)
+    ss_raw = float(np.sum((m_all - m_all.mean()) ** 2))
+    ve_raw = float(1.0 - np.sum(raw ** 2) / ss_raw) if ss_raw > 0 else float("nan")
     return RayCheck(residual, predicted, ve, float(np.sqrt(np.mean(rr ** 2))),
-                    int(m.size), a)
+                    int(rr.size), a, ve_raw, offsets, per_position)

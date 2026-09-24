@@ -124,3 +124,48 @@ def test_real_data_check_is_finite():
     chk = surface_ray_check(sol, cfg, res)
     assert chk.n_checked > 0
     assert np.isfinite(chk.ray_ve) and np.isfinite(chk.ray_rms)
+
+
+class _Shifted:
+    """Wrap a sol and add a constant to ONE position's opacity: the per-position
+    gauge freedom Phase 2 leaves unmeasured."""
+
+    def __init__(self, sol, pid, c):
+        self.sky, self._sol, self._pid, self._c = sol.sky, sol, pid, c
+
+    def normalized_opacity(self, pid, transparent_quantile=0.05):
+        lam = self._sol.normalized_opacity(pid, transparent_quantile=transparent_quantile)
+        return lam + self._c if pid == self._pid else lam
+
+
+def test_headline_metrics_are_gauge_invariant_per_position():
+    """Only differences are measured: a constant added to one position's opacity
+    must not move the headline VE/RMS, must be recovered as that position's
+    offset, and must hurt only the raw (gauge-naive) VE."""
+    from tests.test_hillside_surface import _build_fake_sol_from_hill, _fake_cfg, _true_hill
+    sol = _build_fake_sol_from_hill(n_bins=48)
+    cfg = _fake_cfg()
+    g = np.arange(-30.0, 30.0 + 0.2, 0.2)
+    GX, GY = np.meshgrid(g, g, indexing="ij")
+    res = SimpleNamespace(H=_true_hill(GX, GY), gx=g, gy=g.copy(), a=1.0)
+    base = surface_ray_check(sol, cfg, res)
+    shifted = surface_ray_check(_Shifted(sol, "pos1", 0.7), cfg, res)
+    assert abs(shifted.ray_ve - base.ray_ve) < 1e-6
+    assert abs(shifted.ray_rms - base.ray_rms) < 1e-6
+    assert abs(shifted.offsets["pos1"] - base.offsets["pos1"] - 0.7) < 1e-6
+    assert abs(shifted.offsets["pos0"] - base.offsets["pos0"]) < 1e-9
+    assert shifted.ray_ve_raw < base.ray_ve_raw - 0.05
+
+
+def test_per_position_stats_are_reported():
+    from tests.test_hillside_surface import _build_fake_sol_from_hill, _fake_cfg, _true_hill
+    sol = _build_fake_sol_from_hill(n_bins=48)
+    cfg = _fake_cfg()
+    g = np.arange(-30.0, 30.0 + 0.2, 0.2)
+    GX, GY = np.meshgrid(g, g, indexing="ij")
+    chk = surface_ray_check(sol, cfg, SimpleNamespace(H=_true_hill(GX, GY), gx=g, gy=g.copy(), a=1.0))
+    assert set(chk.per_position) == {"pos0", "pos1"}
+    for pid, st in chk.per_position.items():
+        assert st["n"] > 100
+        assert st["corr"] > 0.99 and st["ve"] > 0.99
+    assert sum(st["n"] for st in chk.per_position.values()) == chk.n_checked
