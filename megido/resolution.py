@@ -73,6 +73,19 @@ def views_per_voxel(fwd: ForwardModel) -> np.ndarray:
     return seen.sum(axis=0).reshape(fwd.grid.shape).astype(np.int16)
 
 
+def rays_per_voxel(fwd: ForwardModel) -> np.ndarray:
+    """How many measured directions (rows) cross each voxel.
+
+    Finer than `views_per_voxel`: near the grid edge a voxel can be seen by a
+    position yet crossed by only one of its rays. Such a voxel is that ray's
+    private degree of freedom -- under non-negativity the solver parks the
+    ray's noise there as mass (the cafeteria "bright outer shell",
+    docs/cafeteria-run.md). The viewer's coverage gate reads this map.
+    """
+    A = fwd.A.tocsc()
+    return np.diff(A.indptr).reshape(fwd.grid.shape).astype(np.int32)
+
+
 def campaign_resolution(cfg: SiteConfig, *, sigma_t: float,
                         feature_pitch_m: float) -> dict:
     """Closed-form resolution report for a configured campaign.

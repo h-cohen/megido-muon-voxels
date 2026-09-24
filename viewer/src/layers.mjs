@@ -3,6 +3,7 @@ export const KNOWN_LAYERS = {
   sigma: { label: 'Uncertainty (sigma)', kind: 'scalar' },
   snr: { label: 'SNR', kind: 'scalar' },
   views: { label: 'View count', kind: 'scalar' },
+  rays: { label: 'Ray count', kind: 'scalar' },
   systematic: { label: 'Gauge systematic', kind: 'signed' },
   backprojection: { label: 'Backprojection', kind: 'scalar' },
   volume_holdout_pos0: { label: 'Holdout: pos0 removed', kind: 'scalar' },

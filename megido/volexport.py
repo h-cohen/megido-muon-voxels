@@ -60,7 +60,7 @@ def export_volume(run_dir: str | Path, cfg: SiteConfig, *,
                     np.save(out / f"{name}.npy", d[name].astype(np.float32))
                     layers.append(name)
 
-    for name in ("views", "systematic", "backprojection"):
+    for name in ("views", "rays", "systematic", "backprojection"):
         src = run / f"{name}.npy"
         if src.exists():
             if out != run:

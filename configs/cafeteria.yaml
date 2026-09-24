@@ -41,7 +41,18 @@ volume:
 reconstruction:
   algorithm: tv
   n_iter: 150
-  tv_alpha: 0.01
+  # 0.03, not Megiddo's 0.01. Sweep on the real data, measured gauge,
+  # analytic sigma, 2026-09-24 (docs/cafeteria-run.md):
+  #   tv_alpha            0.01   0.03   0.05   0.08   0.2
+  #   chi2                0.31   0.75   1.10   1.60   2.66
+  #   beam modulation     0.99   0.72   0.55   0.34   ~0.2 (beams smeared)
+  #   shell (1-2 rays)    5.2x   2.8x   2.4x   2.2x   1.2x
+  # Every step up costs beam contrast; the shell is handled by the viewer's
+  # coverage gate instead (edge/centre p99 at gate 6: 3.3 / 1.8 / 1.8 / 1.8).
+  # The pipeline's bootstrap sigma is ~1.45x tighter than analytic, so 0.03 is
+  # where chi2 ~ 1 under the pipeline's own errors: the least smoothing that
+  # stops fitting noise. 0.2 removes the shell but blurs the beams away.
+  tv_alpha: 0.03
   tv_z_weight: 0.5
 
 sky_reference:

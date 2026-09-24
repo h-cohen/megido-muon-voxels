@@ -40,7 +40,17 @@ Two causes, established with phantoms through the real geometry:
    within 3σ (acceptance-edge noise). A free fit would take c_p = +0.03 /
    +0.02. Residual systematic: flux difference roof vs cafeteria epoch,
    shown as the +3% flux-scale systematic map (7% of peak).
-2. **Noise overfitted into exclusive voxels (NOT fixed; a design choice).**
+2. **Noise overfitted into exclusive voxels (handled: `tv_alpha` 0.03 +
+   viewer coverage gate at 6 rays).** Stronger TV alone is the wrong tool:
+   beam modulation (column profile across y≈0, peaks x = 0.1/1.7/3.5 m vs
+   troughs) falls 0.99 → 0.72 → 0.55 → 0.34 at `tv_alpha` 0.01/0.03/0.05/0.08,
+   and 0.2 removes the shell but blurs the beams away. The shell is instead
+   hidden by `rays.npy` (rows crossing each voxel, written by `reconstruct`)
+   and the viewer's "hide voxels crossed by fewer than N rays" gate (on by
+   default when the layer exists, N = 6; display-only, hidden = not
+   constrained). Edge/centre p99 density with the gate at 6: 3.3× → 1.8× at
+   0.01 → 0.03. 0.03 is where χ² ≈ 1 under the pipeline's bootstrap σ
+   (~1.45× tighter than analytic). Details of the diagnosis:
    306 k voxels vs 2586 rows: near the grid edge every oblique ray has voxels
    no other ray crosses. Under non-negativity, positive noise becomes mass
    there and negative noise can only erode the shared interior. Flat-ceiling
@@ -51,6 +61,19 @@ Two causes, established with phantoms through the real geometry:
    shell 5.2× / 2.8× / 2.2× / 1.2× at `tv_alpha` 0.01 / 0.03 / 0.08 / 0.2,
    χ² 0.31 → 2.66; out-of-sample r best at 0.2 in both directions
    (0.13 / 0.22), weak everywhere.
+
+3. **Real oblique opacity, placed by the depth null space (not an
+   artifact; not removable by the voxel solve).** Measured λ exceeds a flat
+   ceiling (λ₀·sec θ, λ₀ from |t| < 0.2) by +0.013…+0.019 (pos0) and
+   +0.019…+0.055 (pos1) between 22° and 45°, 6–22σ: walls / neighbouring
+   structure. Near-vertical rays pin the central columns low, so the solver
+   can only put that excess where oblique rays alone go — the outer, upper
+   grid. At ceiling height centre and edge voxels have the SAME ray count
+   (4–5 at z 6.7–7.5 m; rays land ~0.35 m apart there, wider than the voxels),
+   so no ray-count gate separates them; a gate strong enough to remove this
+   part also removes the beams. The beams are sharpest in 2D (column opacity,
+   backprojection at 7 m); in 3D the remedy is a different unknown (a layer
+   at the independently measured ~7 m ceiling), not a better voxel solve.
 
 Previous (relative-gauge) results are kept in `runs/cafeteria/solve_relgauge`
 and `voxels_relgauge`; `voxels/gauge_before_after.png` compares them.

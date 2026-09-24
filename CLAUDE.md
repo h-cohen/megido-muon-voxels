@@ -119,7 +119,12 @@ Built in phases, each with its own spec-referenced plan under
   `OES_texture_float_linear` is missing — pixel-tested against each other),
   gradient shading, surface coloured by posterior σ, and "clip volume above
   surface" (off by default; it hides density the surface model calls air,
-  it measures nothing). The surface can be coloured by σ, by ray residual
+  it measures nothing), and a coverage gate — "hide voxels crossed by fewer
+  than N rays" (`rays.npy`, on at N = 6 when present) — because voxels only
+  one or two oblique rays cross are those rays' private unknowns, and under
+  non-negativity the solver parks their noise there as a bright outer shell
+  (proven by a noisy flat-slab phantom; `docs/cafeteria-run.md`). Megiddo
+  has the same shell; re-run `reconstruct` to get the layer. The surface can be coloured by σ, by ray residual
   (diverging, "not separable from an a/density-scale misfit"), or plain.
   While dragging or moving a slider the viewer renders a fast preview (64
   steps, no shading) and one full render after 150 ms idle; tests must call

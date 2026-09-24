@@ -91,12 +91,13 @@ def test_optional_layers_are_exported_when_present(tmp_path):
                         n_replicas=np.asarray(4), origin=np.asarray(GRID.origin),
                         spacing=np.asarray(GRID.spacing))
     np.save(run / "views.npy", np.full(GRID.shape, 2, dtype=np.int16))
+    np.save(run / "rays.npy", np.full(GRID.shape, 7, dtype=np.int32))
 
     export_volume(run, _cfg(tmp_path))
     meta = json.loads((run / "meta.json").read_text())
     assert (run / "sigma.npy").exists()
     assert (run / "views.npy").exists()
-    assert set(meta["layers"]) >= {"volume", "sigma", "snr", "views"}
+    assert set(meta["layers"]) >= {"volume", "sigma", "snr", "views", "rays"}
 
 
 def test_export_without_optional_layers_still_succeeds(tmp_path):

@@ -22,7 +22,8 @@ from megido.hillside_surface import fit_surface
 from megido.pipeline import process_all
 from megido.reader import EventChunk, read_chunks
 from megido.reconstruct import VoxelSolution, solve_voxels
-from megido.resolution import campaign_resolution, format_resolution, views_per_voxel
+from megido.resolution import (campaign_resolution, format_resolution, rays_per_voxel,
+                               views_per_voxel)
 from megido.silhouette import extract_silhouette
 from megido.skyref import skyref_sigma, solve_skyref
 from megido.validate2 import format_report2, leave_one_out, nll_per_bin_check, opacity_uncertainty
@@ -229,6 +230,7 @@ def _cmd_reconstruct(args) -> int:
     fwd = build_forward_model(data.rows, cfg, cache_dir=args.cache)
     views = views_per_voxel(fwd)
     np.save(out / "views.npy", views)
+    np.save(out / "rays.npy", rays_per_voxel(fwd))
 
     print(f"grid            {full.grid.shape} at {full.grid.spacing:.3f} m, "
           f"origin {tuple(round(v, 2) for v in full.grid.origin)}")
