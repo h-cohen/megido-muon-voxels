@@ -69,6 +69,11 @@ re-propose without new information — the findings are in the specs/plans):
   surface, the voxel solve is a line-integral inversion where every oblique ray
   buys lateral coverage; down-weighting them (by flux or by 1/σ²) trades coverage
   for nothing, because this geometry is coverage-limited, not noise-limited.
+- **Constraining the voxels to zero above the fitted surface:** rejected
+  before building. `H` rides on the assumed `a` (at `a = 8` its median sits at
+  the grid top; `a = 4` would halve the grid; `a = 16` does nothing), so the
+  voxels' vertical structure would be set by an assumption — a prior shaping
+  depth. Delivered instead as a display-only viewer clip.
 - **"Fixing" the opacity gauge zero-point:** no free lunch. The clip-to-zero
   convention touches only ~5% of directions (the transparent quantile), picks
   physically sensible grazing directions, and cannot change the meaningful
@@ -105,7 +110,14 @@ Built in phases, each with its own spec-referenced plan under
   raymarching, zero runtime dependencies) built by `megido/viewerbuild.py`
   into one self-contained `viewer/dist/index.html`. Loads any run directory
   at runtime via a local file picker; never bakes data into the shipped
-  page.
+  page. Rays march only inside the volume box (slab intersection,
+  >= half-voxel steps, opacity-corrected to the legacy per-sample length so
+  the transfer function keeps its look). Display-only options: trilinear
+  sampling (hardware `LINEAR`, manual 8-tap fallback when
+  `OES_texture_float_linear` is missing — pixel-tested against each other),
+  gradient shading, surface coloured by posterior σ, and "clip volume above
+  surface" (off by default; it hides density the surface model calls air,
+  it measures nothing).
 - **Phase 5** (done): S6 — the hillside surface, the campaign's most resolvable
   observable. `megido/silhouette.py` extracts the flux-edge ridgeline;
   `megido/hillside_surface.py` fits a smooth height field `H(x,y)` by a
@@ -118,7 +130,16 @@ Built in phases, each with its own spec-referenced plan under
   weight restores the sparse high-flux near-vertical rays. Validated against
   `topography.csv` ground truth (test-only). Absolute height rides on an ASSUMED
   inverse-density scale `a` — the shape is measured, the scale is not (see
-  Honest limits).
+  Honest limits). `megido/hillside_check.py` is the surface's ray-space
+  goodness-of-fit: it ray-traces every measured direction through the surface
+  as a uniform solid (density `1/a`) and compares predicted with measured
+  opacity, **gauge-invariant per position** (each position's unmeasured
+  opacity level is fitted as an additive offset, reported, and removed — the
+  role `c_p` plays in the voxel solve). Real run, `a = 8`: 32% VE per ray
+  (pos0 r = 0.64, pos1 r = 0.50; pos1 sits 0.78 below the surface's level),
+  against 81% per cell. The residual has coherent centre-vs-rim structure, so
+  the uniform-solid surface misses a systematic trend. The ray VE moves
+  strongly with `a` — never quote it without `a`.
 
 ## Repo conventions — non-negotiable
 
@@ -174,6 +195,12 @@ caught only by checking the fit against `topography.csv` ground truth. So:
 - Phantom gates are honest about what the geometry can do: data-space
   self-consistency and lateral recovery are asserted; depth fidelity is not,
   because it is physically impossible here.
+- **Headless WebGL is software (SwiftShader).** The raymarch costs ~9.5 µs per
+  pixel there, linear in pixel count; viewer browser tests therefore run at a
+  760×520 viewport (`tests/viewer/conftest.py`). Never run two pytest
+  sessions at once: each rebuilds `viewer/dist/index.html` and a half-written
+  page makes the browser time out. Run test commands in the foreground and
+  wait — a backgrounded run whose notification is lost looks like a stall.
 
 ## Development workflow
 
@@ -252,7 +279,7 @@ uv run python -m megido.cli ingest                 # S0-exp + S1 for every expos
 uv run python -m megido.cli solve                  # S2 baseline + opacity
 uv run python -m megido.cli reconstruct --bootstrap --run runs/ingest  # S3/S4 voxels + uncertainty
 uv run python -m megido.cli export                 # volume.npy + meta.json for the viewer
-uv run python -m megido.cli hillside --run runs/ingest  # S6 flux-edge silhouette + GP surface
+uv run python -m megido.cli hillside --run runs/ingest  # S6 silhouette + GP surface + ray check (hill_residual.png)
 uv run python -m megido.cli view                   # Phase 4 viewer: build + open
 # also: validate / compare subcommands
 ```
