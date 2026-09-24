@@ -107,26 +107,10 @@ void main() {
   outColor = vec4(uMarkerColor, 1.0);
 }`;
 
-// Hillside SURFACE mesh (Phase 5b Task 4): reuses MARKER_VERTEX_SRC's
-// attribute layout (location 0 vec3 aPos, uMarkerViewProj) but draws with
-// gl.TRIANGLES and a translucent RGBA fill instead of the marker program's
-// opaque line color, so blending is needed here and NOT for markers/
-// silhouette. A separate tiny fragment shader keeps that alpha logic out of
-// MARKER_FRAGMENT_SRC and, per the task contract, nowhere near the raymarch
-// FRAGMENT_SRC above.
-const FILL_FRAGMENT_SRC = `#version 300 es
-precision highp float;
-uniform vec4 uFillColor;
-out vec4 outColor;
-void main() {
-  outColor = uFillColor;
-}`;
-
-// Hillside surface, per-vertex colour path (sigma-coloured mode): a second
-// mesh program alongside fillProgram/FILL_FRAGMENT_SRC above, needed because
-// this one takes a per-vertex aColor attribute (location 1) instead of a
-// single uFillColor uniform. MARKER_*/FILL_FRAGMENT_SRC stay untouched -
-// markers and the flat-fill path still use them.
+// Hillside SURFACE mesh: translucent triangles with a per-vertex colour
+// (aColor, location 1) - sigma-coloured, or a flat colour when that mode is
+// off. Own program so the alpha/blend logic stays out of the opaque marker
+// program and nowhere near the raymarch FRAGMENT_SRC above.
 const MESH_VERTEX_SRC = `#version 300 es
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aColor;
@@ -515,7 +499,7 @@ export function initViewer(root) {
   }
 
   // Hillside SURFACE mesh (Task 4): filled translucent triangles from the
-  // `hillside` CLI's regularized height-field fit. Own fillProgram/VAO (see
+  // `hillside` CLI's regularized height-field fit. Own meshProgram/VAO (see
   // setup above) drawn with gl.TRIANGLES over indices built once by
   // rebuildHillSurfaceBuffer, not per frame. Blending is enabled only for
   // this draw call and disabled again immediately after, so it never leaks
