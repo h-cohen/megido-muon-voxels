@@ -44,11 +44,33 @@ uniform float uClipPlaneD;
 uniform bool uSigmaGateEnabled;
 uniform float uSigmaGateValue;
 uniform int uSteps;
+uniform bool uManualTrilinear;
+uniform bool uShading;
+uniform vec3 uVolSize;   // float(nx, ny, nz)
 
 vec3 unproject(vec2 ndc, float z) {
   vec4 clip = vec4(ndc, z, 1.0);
   vec4 world = uInvViewProj * clip;
   return world.xyz / world.w;
+}
+
+float sampleDensity(vec3 tex) {
+  if (!uManualTrilinear) return texture(uVolume, tex).r;
+  vec3 p = tex * uVolSize - 0.5;
+  vec3 f = fract(p);
+  ivec3 mx = ivec3(uVolSize) - 1;
+  ivec3 a = clamp(ivec3(floor(p)), ivec3(0), mx);
+  ivec3 b = clamp(ivec3(floor(p)) + 1, ivec3(0), mx);
+  float c000 = texelFetch(uVolume, ivec3(a.x, a.y, a.z), 0).r;
+  float c100 = texelFetch(uVolume, ivec3(b.x, a.y, a.z), 0).r;
+  float c010 = texelFetch(uVolume, ivec3(a.x, b.y, a.z), 0).r;
+  float c110 = texelFetch(uVolume, ivec3(b.x, b.y, a.z), 0).r;
+  float c001 = texelFetch(uVolume, ivec3(a.x, a.y, b.z), 0).r;
+  float c101 = texelFetch(uVolume, ivec3(b.x, a.y, b.z), 0).r;
+  float c011 = texelFetch(uVolume, ivec3(a.x, b.y, b.z), 0).r;
+  float c111 = texelFetch(uVolume, ivec3(b.x, b.y, b.z), 0).r;
+  return mix(mix(mix(c000, c100, f.x), mix(c010, c110, f.x), f.y),
+             mix(mix(c001, c101, f.x), mix(c011, c111, f.x), f.y), f.z);
 }
 
 void main() {
@@ -75,9 +97,22 @@ void main() {
         clipped = clipped || sigma > uSigmaGateValue;
       }
       if (!clipped) {
-        float density = texture(uVolume, tex).r;
+        float density = sampleDensity(tex);
         float t = clamp((density - uWindow.x) / max(uWindow.y - uWindow.x, 1e-6), 0.0, 1.0);
         vec4 c = texture(uTransferLUT, vec2(t, 0.5));
+        if (uShading && c.a > 0.0) {
+          vec3 h = 1.0 / uVolSize;   // one voxel per axis; voxels are cubic, so the
+                                     // tex-space difference is proportional to the world gradient
+          vec3 g = vec3(
+            sampleDensity(tex + vec3(h.x, 0.0, 0.0)) - sampleDensity(tex - vec3(h.x, 0.0, 0.0)),
+            sampleDensity(tex + vec3(0.0, h.y, 0.0)) - sampleDensity(tex - vec3(0.0, h.y, 0.0)),
+            sampleDensity(tex + vec3(0.0, 0.0, h.z)) - sampleDensity(tex - vec3(0.0, 0.0, h.z)));
+          float gm = length(g);
+          if (gm > 1e-6) {
+            float lambert = abs(dot(-g / gm, -dir));
+            c.rgb *= 0.35 + 0.65 * lambert;
+          }
+        }
         c.rgb *= c.a;
         accum += (1.0 - accum.a) * c;
       }
@@ -186,6 +221,7 @@ export function initViewer(root) {
   const gl = canvas.getContext('webgl2', { preserveDrawingBuffer: true });
   if (!gl) throw new Error('WebGL2 is required');
   gl.getExtension('EXT_color_buffer_float');
+  const floatLinear = !!gl.getExtension('OES_texture_float_linear');
 
   const program = linkProgram(gl, VERTEX_SRC, FRAGMENT_SRC);
   const vao = gl.createVertexArray();
@@ -253,7 +289,7 @@ export function initViewer(root) {
     'uInvViewProj', 'uCameraPos', 'uVolume', 'uSigmaTex', 'uTransferLUT',
     'uWindow', 'uClipMin', 'uClipMax', 'uClipPlaneEnabled', 'uClipPlaneNormal',
     'uClipPlaneD', 'uSigmaGateEnabled', 'uSigmaGateValue', 'uSteps',
-    'uWorldMin', 'uWorldExtent',
+    'uWorldMin', 'uWorldExtent', 'uManualTrilinear', 'uShading', 'uVolSize',
   ]) {
     uniforms[name] = gl.getUniformLocation(program, name);
   }
@@ -283,6 +319,9 @@ export function initViewer(root) {
     sigmaGateValue: 1e9,
     volumeTex: dummyVolume,
     sigmaTex: dummyVolume,
+    floatLinear,
+    smoothSampling: true,
+    shading: true,
     lutTex: makeLutTexture(gl, buildTransferLUT(colormapStops('viridis'))),
     detectors: [],
     detectorLabels: [],
@@ -330,6 +369,24 @@ export function initViewer(root) {
     return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
   }
 
+  // Upgrades the live 3D textures' filter mode from the NEAREST that
+  // makeVolumeTexture always creates them with. Hardware LINEAR is only used
+  // when OES_texture_float_linear is present (R32F textures otherwise cannot
+  // be linearly filtered on WebGL2); the shader's manual 8-tap trilinear
+  // (uManualTrilinear) covers smooth sampling everywhere else. Must be
+  // called after every makeVolumeTexture assignment, since a fresh texture
+  // always starts NEAREST.
+  function applyVolumeFilter() {
+    const filter = (state.smoothSampling && state.floatLinear) ? gl.LINEAR : gl.NEAREST;
+    for (const tex of [state.volumeTex, state.sigmaTex]) {
+      if (!tex) continue;
+      gl.bindTexture(gl.TEXTURE_3D, tex);
+      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, filter);
+      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, filter);
+    }
+  }
+  state.applyVolumeFilter = applyVolumeFilter;
+
   function render() {
     const { width, height } = canvas.getBoundingClientRect();
     canvas.width = Math.max(1, Math.round(width * (window.devicePixelRatio || 1)));
@@ -361,6 +418,10 @@ export function initViewer(root) {
     gl.uniform1i(uniforms.uSigmaGateEnabled, state.sigmaGateEnabled ? 1 : 0);
     gl.uniform1f(uniforms.uSigmaGateValue, state.sigmaGateValue);
     gl.uniform1i(uniforms.uSteps, 200);
+    gl.uniform1i(uniforms.uManualTrilinear, (state.smoothSampling && !state.floatLinear) ? 1 : 0);
+    gl.uniform1i(uniforms.uShading, state.shading ? 1 : 0);
+    const volShape = state.meta ? state.meta.shape : [1, 1, 1];
+    gl.uniform3fv(uniforms.uVolSize, [volShape[0], volShape[1], volShape[2]]);
 
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_3D, state.volumeTex);
@@ -876,6 +937,7 @@ export function initViewer(root) {
     } else {
       state.sigmaMax = 1;
     }
+    applyVolumeFilter();
 
     // Window each layer to ITS OWN robust range (see histogram.mjs
     // robustWindow), not meta.value_range: value_range[1] is a single
@@ -905,6 +967,7 @@ export function initViewer(root) {
       state.activeLayer = key;
       gl.deleteTexture(state.volumeTex);
       state.volumeTex = makeVolumeTexture(gl, meta.shape, state.layerData.get(key));
+      applyVolumeFilter();
       applyWindowForLayer(key);
       drawHistogram();
       render();
@@ -1039,6 +1102,23 @@ export function initViewer(root) {
   if (toggleDetectorsEl) {
     toggleDetectorsEl.addEventListener('change', (ev) => {
       state.showDetectors = ev.target.checked;
+      render();
+    });
+  }
+
+  const toggleSmoothEl = root.querySelector('#toggle-smooth');
+  if (toggleSmoothEl) {
+    toggleSmoothEl.addEventListener('change', (ev) => {
+      state.smoothSampling = ev.target.checked;
+      applyVolumeFilter();
+      render();
+    });
+  }
+
+  const toggleShadingEl = root.querySelector('#toggle-shading');
+  if (toggleShadingEl) {
+    toggleShadingEl.addEventListener('change', (ev) => {
+      state.shading = ev.target.checked;
       render();
     });
   }
