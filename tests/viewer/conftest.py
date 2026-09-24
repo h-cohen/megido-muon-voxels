@@ -41,7 +41,16 @@ def run_fixture(tmp_path):
             gx = list(np.arange(0.0, 3.5, 0.5))
             gy = list(np.arange(0.0, 3.0, 0.5))
             nx, ny = len(gx), len(gy)
-            H = np.full((nx, ny), 2.0, dtype=np.float32)
+            if hill == "slope":
+                # H varies along x only: 1.2 at gx=0 up to 2.7 at gx=3, flat
+                # across y - the z in [1, 3] volume gets a slanted clip edge
+                # instead of the flat=True fixture's uniform z=2 plane.
+                H = np.array(
+                    [[1.2 + 0.5 * gx[i] for _ in range(ny)] for i in range(nx)],
+                    dtype=np.float32,
+                )
+            else:
+                H = np.full((nx, ny), 2.0, dtype=np.float32)
             # sigma varies with i (row) only, spanning 0.1..1.0, so the fixture
             # exercises a non-degenerate robustRange without depending on j.
             sigma = np.array(

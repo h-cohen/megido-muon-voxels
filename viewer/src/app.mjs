@@ -53,6 +53,7 @@ uniform sampler2D uSurfTex;
 uniform vec2 uSurfMin;     // (gx[0], gy[0])
 uniform vec2 uSurfStep;    // (gx[1]-gx[0], gy[1]-gy[0])  (the fit grid is uniform)
 uniform ivec2 uSurfSize;   // (nx, ny)
+uniform float uMinStepVoxels;  // minimum step length, in voxels (test-driven; default 0.5)
 
 bool aboveSurface(vec3 world) {
   vec2 q = (world.xy - uSurfMin) / uSurfStep;
@@ -105,7 +106,13 @@ void main() {
   // fraction of a voxel -- the old loop spread uSteps over the whole
   // near..far frustum (~100 m), sampling the 0.25 m campaign grid only every
   // other voxel while most steps fell in empty space.
-  vec3 invDir = 1.0 / dir;
+  // Guard the slab division: GLSL ES 3.00 leaves 1.0/0.0 undefined, and while
+  // this stack's IEEE ±inf happens to resolve parallel rays correctly, a
+  // sign-preserving epsilon keeps invDir finite everywhere without changing
+  // the result (measure-zero exact-axis-aligned rays only).
+  vec3 sgn = vec3(greaterThanEqual(dir, vec3(0.0))) * 2.0 - 1.0;
+  vec3 safeDir = mix(dir, sgn * 1e-8, lessThan(abs(dir), vec3(1e-8)));
+  vec3 invDir = 1.0 / safeDir;
   vec3 t0s = (uWorldMin - nearP) * invDir;
   vec3 t1s = (uWorldMin + uWorldExtent - nearP) * invDir;
   vec3 tsm = min(t0s, t1s), tbg = max(t0s, t1s);
@@ -114,7 +121,7 @@ void main() {
   if (tExit <= tEnter) { outColor = vec4(0.0); return; }
 
   float voxel = uWorldExtent.x / uVolSize.x;       // cubic voxels (single spacing)
-  float stepLen = max(0.5 * voxel, (tExit - tEnter) / float(uSteps));
+  float stepLen = max(uMinStepVoxels * voxel, (tExit - tEnter) / float(uSteps));
   // Opacity correction: the transfer function's alpha is defined per
   // uRefStep of path (the legacy sampling length), so the calibrated look is
   // independent of how finely we now sample.
@@ -126,38 +133,36 @@ void main() {
     if (tt > tExit || accum.a > 0.98) break;
     vec3 pos = nearP + dir * tt;
     vec3 tex = clamp((pos - uWorldMin) / uWorldExtent, 0.0, 1.0);
-    {
-      bool clipped = any(lessThan(tex, uClipMin)) || any(greaterThan(tex, uClipMax));
-      if (uClipPlaneEnabled) {
-        float d = dot(tex - vec3(0.5), uClipPlaneNormal) - uClipPlaneD;
-        clipped = clipped || d < 0.0;
-      }
-      if (uSigmaGateEnabled) {
-        float sigma = texture(uSigmaTex, tex).r;
-        clipped = clipped || sigma > uSigmaGateValue;
-      }
-      if (uSurfClip && !clipped) clipped = aboveSurface(pos);
-      if (!clipped) {
-        float density = sampleDensity(tex);
-        float t = clamp((density - uWindow.x) / max(uWindow.y - uWindow.x, 1e-6), 0.0, 1.0);
-        vec4 c = texture(uTransferLUT, vec2(t, 0.5));
-        if (uShading && c.a > 0.004) {   // gradient only where the sample shows
-          vec3 h = 1.0 / uVolSize;   // one voxel per axis; voxels are cubic, so the
-                                     // tex-space difference is proportional to the world gradient
-          vec3 g = vec3(
-            sampleDensity(tex + vec3(h.x, 0.0, 0.0)) - sampleDensity(tex - vec3(h.x, 0.0, 0.0)),
-            sampleDensity(tex + vec3(0.0, h.y, 0.0)) - sampleDensity(tex - vec3(0.0, h.y, 0.0)),
-            sampleDensity(tex + vec3(0.0, 0.0, h.z)) - sampleDensity(tex - vec3(0.0, 0.0, h.z)));
-          float gm = length(g);
-          if (gm > 1e-6) {
-            float lambert = abs(dot(-g / gm, -dir));
-            c.rgb *= 0.35 + 0.65 * lambert;
-          }
+    bool clipped = any(lessThan(tex, uClipMin)) || any(greaterThan(tex, uClipMax));
+    if (uClipPlaneEnabled) {
+      float d = dot(tex - vec3(0.5), uClipPlaneNormal) - uClipPlaneD;
+      clipped = clipped || d < 0.0;
+    }
+    if (uSigmaGateEnabled) {
+      float sigma = texture(uSigmaTex, tex).r;
+      clipped = clipped || sigma > uSigmaGateValue;
+    }
+    if (uSurfClip && !clipped) clipped = aboveSurface(pos);
+    if (!clipped) {
+      float density = sampleDensity(tex);
+      float t = clamp((density - uWindow.x) / max(uWindow.y - uWindow.x, 1e-6), 0.0, 1.0);
+      vec4 c = texture(uTransferLUT, vec2(t, 0.5));
+      if (uShading && c.a > 0.004) {   // gradient only where the sample shows
+        vec3 h = 1.0 / uVolSize;   // one voxel per axis; voxels are cubic, so the
+                                   // tex-space difference is proportional to the world gradient
+        vec3 g = vec3(
+          sampleDensity(tex + vec3(h.x, 0.0, 0.0)) - sampleDensity(tex - vec3(h.x, 0.0, 0.0)),
+          sampleDensity(tex + vec3(0.0, h.y, 0.0)) - sampleDensity(tex - vec3(0.0, h.y, 0.0)),
+          sampleDensity(tex + vec3(0.0, 0.0, h.z)) - sampleDensity(tex - vec3(0.0, 0.0, h.z)));
+        float gm = length(g);
+        if (gm > 1e-6) {
+          float lambert = abs(dot(-g / gm, -dir));
+          c.rgb *= 0.35 + 0.65 * lambert;
         }
-        c.a = 1.0 - pow(1.0 - clamp(c.a, 0.0, 0.999), alphaExp);
-        c.rgb *= c.a;
-        accum += (1.0 - accum.a) * c;
       }
+      c.a = 1.0 - pow(1.0 - clamp(c.a, 0.0, 0.999), alphaExp);
+      c.rgb *= c.a;
+      accum += (1.0 - accum.a) * c;
     }
   }
 
@@ -346,7 +351,7 @@ export function initViewer(root) {
     'uWindow', 'uClipMin', 'uClipMax', 'uClipPlaneEnabled', 'uClipPlaneNormal',
     'uClipPlaneD', 'uSigmaGateEnabled', 'uSigmaGateValue', 'uSteps',
     'uWorldMin', 'uWorldExtent', 'uManualTrilinear', 'uShading', 'uVolSize', 'uRefStep',
-    'uSurfClip', 'uSurfTex', 'uSurfMin', 'uSurfStep', 'uSurfSize',
+    'uSurfClip', 'uSurfTex', 'uSurfMin', 'uSurfStep', 'uSurfSize', 'uMinStepVoxels',
   ]) {
     uniforms[name] = gl.getUniformLocation(program, name);
   }
@@ -379,6 +384,7 @@ export function initViewer(root) {
     floatLinear,
     smoothSampling: true,
     shading: true,
+    minStepVoxels: 0.5, // test hook: minimum march step, in voxels (uMinStepVoxels)
     lutTex: makeLutTexture(gl, buildTransferLUT(colormapStops('viridis'))),
     detectors: [],
     detectorLabels: [],
@@ -483,7 +489,13 @@ export function initViewer(root) {
     gl.uniform1i(uniforms.uSteps, RAY_STEPS);
     // Legacy per-sample path: uSteps spread over the whole near..far span. The
     // LUT/window were tuned against it, so alpha stays defined per this length.
+    // The old step was actually (FAR-NEAR)/(uSteps*cos(theta)) per pixel, theta
+    // the off-axis angle from unprojecting a frustum instead of a box, so
+    // corner pixels had a longer, less-dense step than the centre; this single
+    // uniform reference matches the old CENTRE look exactly (edges are now
+    // slightly denser than the legacy render, not less).
     gl.uniform1f(uniforms.uRefStep, (CAMERA_FAR - CAMERA_NEAR) / RAY_STEPS);
+    gl.uniform1f(uniforms.uMinStepVoxels, state.minStepVoxels != null ? state.minStepVoxels : 0.5);
     gl.uniform1i(uniforms.uManualTrilinear, (state.smoothSampling && !state.floatLinear) ? 1 : 0);
     gl.uniform1i(uniforms.uShading, state.shading ? 1 : 0);
     const volShape = state.meta ? state.meta.shape : [1, 1, 1];
@@ -686,9 +698,11 @@ export function initViewer(root) {
       state.surfStep = [surf.gx[1] - surf.gx[0], surf.gy[1] - surf.gy[0]];
       state.surfSize = [nx, ny];
     } else {
-      state.surfTex = null;
+      if (state.surfTex) { gl.deleteTexture(state.surfTex); state.surfTex = null; }
       state.surfClip = false;
       state.surfSize = [0, 0];
+      const toggleSurfClipEl = root.querySelector('#toggle-surf-clip');
+      if (toggleSurfClipEl) { toggleSurfClipEl.checked = false; toggleSurfClipEl.disabled = true; }
     }
     const { positions, indices } = surfaceMesh(H, surf.gx, surf.gy);
     const vertexCount = positions.length / 3;
@@ -946,7 +960,10 @@ export function initViewer(root) {
       }
       if (hillSurfaceSmoothEl) hillSurfaceSmoothEl.disabled = false;
       state.showHillSurface = true;
-      if (toggleSurfClipEl) toggleSurfClipEl.disabled = false;
+      // rebuildHillSurfaceBuffer leaves surfSize at [0, 0] (and surfTex null)
+      // for a degenerate grid (fewer than 2 nodes on an axis) - the clip
+      // toggle must stay disabled in that case, not just default-off.
+      if (toggleSurfClipEl) toggleSurfClipEl.disabled = state.surfSize[0] === 0 || state.surfSize[1] === 0;
       if (toggleHillSigmaEl) {
         toggleHillSigmaEl.disabled = !sigma;
         toggleHillSigmaEl.checked = !!sigma;
