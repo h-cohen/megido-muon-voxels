@@ -242,4 +242,39 @@ def test_real_campaign_output_renders_with_every_control_operable(page, dist_pat
     page.locator("#theme-toggle").click()
     page.wait_for_timeout(50)
 
+    # 2026-09-24 upgrades on the real run: the caption reports the per-ray
+    # (gauge-invariant) VE WITH its assumed scale; sigma colour, smooth
+    # sampling, shading and the display-only surface clip each change the
+    # render; the clip is off by default.
+    caption = page.locator("#hill-surface-caveat").inner_text()
+    assert "per cell" in caption and "per ray" in caption and "a=" in caption, caption
+    assert page.locator("#hill-sigma-legend").is_visible()
+    assert "σ" in page.locator("#hill-sigma-range").inner_text()
+
+    def toggling_changes_render(selector, action):
+        before = gl_canvas_data()
+        getattr(page.locator(selector), action)()
+        page.wait_for_timeout(50)
+        return gl_canvas_data() != before
+
+    assert toggling_changes_render("#toggle-hill-sigma", "uncheck")
+    assert toggling_changes_render("#toggle-hill-sigma", "check")
+    assert toggling_changes_render("#toggle-shading", "uncheck")
+    assert toggling_changes_render("#toggle-smooth", "uncheck")
+    page.locator("#toggle-smooth").check()
+    page.locator("#toggle-shading").check()
+    # Undo the earlier slice/clip/gate: the z=0.5 slice (world ~6.5 m) lies
+    # wholly below the real surface (7.4..13.9 m), where the clip rightly
+    # changes nothing.
+    page.locator("#slice-axis").select_option("none")
+    page.locator("#clip-plane-enabled").uncheck()
+    page.locator("#clip-x-max").fill("1")
+    page.locator("#clip-x-max").dispatch_event("input")
+    page.locator("#sigma-gate-enabled").uncheck()
+    page.wait_for_timeout(50)
+    surf_clip = page.locator("#toggle-surf-clip")
+    assert surf_clip.is_enabled() and not surf_clip.is_checked()
+    assert toggling_changes_render("#toggle-surf-clip", "check")
+    surf_clip.uncheck()
+
     assert console_errors == [], f"JS console errors during interaction: {console_errors}"

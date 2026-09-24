@@ -499,7 +499,7 @@ def _write_residual_png(check, sol, path: Path) -> None:
                        cmap="RdBu_r", vmin=-lim, vmax=lim)
         st = (check.per_position or {}).get(pid, {})
         off = (check.offsets or {}).get(pid, float("nan"))
-        ax.set_title(f"{pid}: residual after offset {off:+.2f}  "
+        ax.set_title(f"{pid}: residual after offset {off:+.2f}\n"
                      f"(r={st.get('corr', float('nan')):.2f}, VE={st.get('ve', float('nan')):.0%})",
                      fontsize=10)
         ax.set_xlabel("sky tangent x"); ax.set_ylabel("sky tangent y")
