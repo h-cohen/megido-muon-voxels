@@ -1484,6 +1484,7 @@ export function initViewer(root) {
     } else {
       state.window[1] = Math.max(value, state.window[0]);
     }
+    beginInteraction(); // continuous drag: fast preview, full render on idle
     drawHistogram(); render();
   });
 
@@ -1501,6 +1502,7 @@ export function initViewer(root) {
     const rect = xferCanvas.getBoundingClientRect();
     const t = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
     draggingStop.t = t;
+    beginInteraction(); // continuous drag: fast preview, full render on idle
     rebuildLut();
     drawXferEditor();
   });

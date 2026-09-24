@@ -17,6 +17,7 @@ def test_dragging_a_transfer_stop_changes_the_render(page, dist_path, run_fixtur
     page.mouse.down()
     page.mouse.move(mid_x + box["width"] * 0.3, mid_y)
     page.mouse.up()
+    page.evaluate("() => window.__viewerState.idleNow()")  # settle preview before comparing
     after = page.evaluate("() => document.querySelector('#gl-canvas').toDataURL()")
     assert before != after
 
@@ -46,6 +47,7 @@ def test_dragging_the_histogram_band_edge_changes_the_window(page, dist_path, ru
     page.mouse.down()
     page.mouse.move(box["x"] + box["width"] * 0.35, box["y"] + box["height"] / 2)
     page.mouse.up()
+    page.evaluate("() => window.__viewerState.idleNow()")  # settle preview before comparing
     after_render = page.evaluate("() => document.querySelector('#gl-canvas').toDataURL()")
     assert before_render != after_render
 

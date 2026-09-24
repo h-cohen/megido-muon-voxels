@@ -192,6 +192,9 @@ def test_real_campaign_output_renders_with_every_control_operable(page, dist_pat
     hill_surface_smooth.fill("8")
     hill_surface_smooth.dispatch_event("input")
     page.wait_for_timeout(50)
+    # settle the adaptive-quality preview first, or this compares a preview
+    # frame to a full one and passes even if smoothing did nothing
+    page.evaluate("() => window.__viewerState.idleNow()")
     smoothed_hill_surface = gl_canvas_data()
     assert smoothed_hill_surface != raw_hill_surface, (
         "moving #hill-surface-smooth to a nonzero value must change the rendered mesh"
