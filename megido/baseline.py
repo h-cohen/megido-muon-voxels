@@ -180,7 +180,7 @@ def position_sky_counts(grid: AnalysisGrid, cfg: SiteConfig, *,
     since `solve_baseline` callers (tests, synthetic scenes) may use a
     different sky/geom and must get the SAME live mask, not a default one.
     """
-    geom = geom or DetectorGeometry.megiddo()
+    geom = geom or DetectorGeometry.for_site(cfg)
     sky = sky or make_sky_grid()
     tx, ty = grid.tan_mesh()
     acceptance_full = geometric_acceptance(tx, ty, geom)

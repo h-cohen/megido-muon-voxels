@@ -23,6 +23,7 @@ from megido.reader import EventChunk, read_chunks
 from megido.reconstruct import VoxelSolution, solve_voxels
 from megido.resolution import campaign_resolution, format_resolution, views_per_voxel
 from megido.silhouette import extract_silhouette
+from megido.skyref import skyref_sigma, solve_skyref
 from megido.validate2 import format_report2, leave_one_out, nll_per_bin_check, opacity_uncertainty
 from megido.volexport import _json_safe, compare_volumes, export_volume
 from megido.voxuncert import systematic_map, voxel_bootstrap
@@ -59,8 +60,29 @@ def _cmd_validate(args) -> int:
     return 0 if all(c.passed for c in checks) else 1
 
 
+def _grid_ids(cfg) -> list[str]:
+    """Counts ids a Phase 2 solve reads: the exposures, plus the open-sky
+    reference when the campaign has one (it is not an exposure/position)."""
+    ids = [e.id for e in cfg.exposures]
+    if cfg.sky_reference is not None:
+        ids.append(cfg.sky_reference.id)
+    return ids
+
+
+def _phase2_solver(cfg):
+    return solve_skyref if cfg.sky_reference is not None else solve_baseline
+
+
 def _cmd_ingest(args) -> int:
     cfg = load_site_config(args.config)
+    if any(e.root_file for e in cfg.exposures):
+        from megido.rootingest import ingest_root
+
+        for r in ingest_root(cfg, Path(args.out)):
+            kept = r.total_kept / r.total_in_file if r.total_in_file else 0.0
+            print(f"{r.source_id:6s} root   counts={r.total_kept:>10,} of "
+                  f"{r.total_in_file:,} in file ({kept:.1%} inside the binning)")
+        return 0
     for r in process_all(cfg, Path(args.out), force=args.force, chunksize=args.chunksize):
         tag = "cached" if r.cached else "built"
         rate = r.n_valid / r.n_events if r.n_events else 0.0
@@ -76,13 +98,15 @@ def _cmd_solve(args) -> int:
         print(f"no such run directory: {run_dir}")
         return 1
 
-    exposure_ids = [e.id for e in cfg.exposures]
+    exposure_ids = _grid_ids(cfg)
     missing = [e for e in exposure_ids if not (run_dir / f"counts_{e}.npz").exists()]
     if missing:
         print(f"missing counts artifacts for: {', '.join(missing)}")
         return 1
 
     grid = load_analysis_grid(run_dir, exposure_ids, factor=args.rebin)
+    if cfg.sky_reference is not None:
+        return _cmd_solve_skyref(args, cfg, grid)
     sol = solve_baseline(grid, cfg, n_iter=args.iters)
 
     out = Path(args.out)
@@ -110,6 +134,25 @@ def _cmd_solve(args) -> int:
     return 0 if all(c.passed for c in checks) else 1
 
 
+def _cmd_solve_skyref(args, cfg, grid) -> int:
+    """Phase 2 by open-sky division (megido.skyref) instead of the joint solve."""
+    sol = solve_skyref(grid, cfg)
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    sol.save(out / "baseline.npz")
+    print(f"phase 2         open-sky ratio against {cfg.sky_reference.id!r} "
+          f"(response and flux cancel; no joint fit)")
+    print("scale           " + "  ".join(f"{p}={v:.4g}" for p, v in sorted(sol.norms.items()))
+          + "  (norm_quantile convention, degenerate with the opacity zero point)")
+    for pid in sorted(sol.opacity):
+        lam = sol.opacity[pid]
+        norm = sol.normalized_opacity(pid)
+        print(f"opacity {pid}: {int(np.isfinite(lam).sum())} sky bins constrained; "
+              f"referenced to most transparent: median {np.nanmedian(norm):.4f}  "
+              f"p95 {np.nanpercentile(norm, 95):.4f}  max {np.nanmax(norm):.4f}")
+    return 0
+
+
 _SKY_SIGMA_T = 0.05     # Phase 2 sky grid bin width; see megido.sky.make_sky_grid
 
 
@@ -135,14 +178,17 @@ def _cmd_reconstruct(args) -> int:
 
     sigma = None
     counts_grid = None
+    solver = _phase2_solver(cfg)
     if args.run:
-        exposure_ids = [e.id for e in cfg.exposures]
-        counts_grid = load_analysis_grid(Path(args.run), exposure_ids, factor=args.rebin)
+        counts_grid = load_analysis_grid(Path(args.run), _grid_ids(cfg), factor=args.rebin)
         if args.bootstrap:
             print(f"bootstrapping sky opacity sigma ({args.bootstrap} replicas)...",
                   flush=True)
             sigma = opacity_uncertainty(counts_grid, cfg, n_replicas=args.bootstrap,
-                                        n_iter=args.iters)
+                                        solver=solver, n_iter=args.iters)
+        elif cfg.sky_reference is not None:
+            print("sky opacity sigma: analytic Poisson sqrt(1/n_pos + 1/n_sky)")
+            sigma = skyref_sigma(counts_grid, cfg)
 
     fits = solve_voxels(sol, cfg, sigma=sigma, cache_dir=args.cache,
                         holdouts=not args.no_holdouts)
@@ -169,7 +215,8 @@ def _cmd_reconstruct(args) -> int:
     if args.bootstrap and counts_grid is not None:
         boot = voxel_bootstrap(counts_grid, cfg, n_replicas=args.bootstrap,
                                cache_dir=args.cache,
-                               solve_kwargs={"n_iter": args.iters})
+                               solve_kwargs={"n_iter": args.iters},
+                               solver=solver)
         boot.save(out / "uncertainty.npz")
         snr = boot.snr()
         n_grid = views.size

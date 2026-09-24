@@ -13,6 +13,7 @@ dependencies = [
     "pandas>=2.1",
     "pyarrow>=14",
     "PyYAML>=6",
+    "uproot>=5.7.6",
 ]
 
 [project.optional-dependencies]

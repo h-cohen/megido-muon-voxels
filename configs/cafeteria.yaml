@@ -1,0 +1,61 @@
+# TAU cafeteria campaign — run through the megido pipeline, detached from Megiddo.
+#
+# Data: pre-binned DAQ ROOT histograms (`txty`, 800x800 over tan +-2), two
+# detector positions and one clear-sky roof run of the same detector. Phase 2
+# therefore divides by the sky run (megido.skyref) instead of the tilt-based
+# joint solve Megiddo needs.
+#
+#   uv run python -m megido.cli ingest      --config configs/cafeteria.yaml --out runs/cafeteria/ingest
+#   uv run python -m megido.cli solve       --config configs/cafeteria.yaml --run runs/cafeteria/ingest --out runs/cafeteria/solve
+#   uv run python -m megido.cli reconstruct --config configs/cafeteria.yaml --solve runs/cafeteria/solve --run runs/cafeteria/ingest --out runs/cafeteria/voxels --cache runs/cafeteria/.cache --bootstrap 8
+#   uv run python -m megido.cli export      --config configs/cafeteria.yaml --run runs/cafeteria/voxels
+#   uv run python -m megido.cli hillside    --config configs/cafeteria.yaml --solve runs/cafeteria/solve --run runs/cafeteria/ingest --out runs/cafeteria/voxels
+site: cafeteria
+data_dir: /home/hadar/Cloud/Work/Postdoc/01_data/processed/tau_cafeteria_root
+frame:
+  origin: pos0
+  x_axis_bearing_deg: 0
+
+# Measured from this campaign's own sky run, 2026-09-24 (NOT the Megiddo unit's
+# constants, which fail here: Megiddo's acceptance edge is tan 1.22, this
+# detector's is 0.91).
+#   active width: `Hit Position cm Layer0..3`, span above 1% of plateau = 35.375 cm
+#     on all four layers (23 bars, all live).
+#   layer separation: sky `txty` acceptance edge |tan| = 0.9075 (tx), 0.9125 (ty)
+#     at 0.2% of peak -> dz = 35.375 / 0.91 = 38.9 cm.
+detector:
+  active_width_cm: 35.375
+  layer_dz_cm: 38.9
+  source: "measured from HistsOutSkyRoofRuns37-77.root hit positions + txty acceptance edge"
+
+binning:        # same 0.005-tan bins as the ROOT file, cropped to +-1.25
+  t_max: 1.25
+  n_bins: 500
+
+volume:
+  z_min_m: 1.0
+  z_max_m: 9.0          # ceiling ~7 m (cafeteria project: beam parallax + layered CV)
+  spacing_m: 0.2
+  n_aperture_sub: 4
+
+reconstruction:
+  algorithm: tv
+  n_iter: 150
+  tv_alpha: 0.01
+  tv_z_weight: 0.5
+
+sky_reference:
+  id: SKY
+  root_file: HistsOutSkyRoofRuns37-77.root
+
+exposures:
+  - id: pos0
+    root_file: HistsOutDataCafePos0.root
+    pose: {x: 0.0, y: 0.0, z: 0.0, tilt_deg: 0, az_deg: 0}
+
+  - id: pos1
+    root_file: HistsOutDataCafePos1.root
+    # cafeteria_3d_modeling production pose (self-calibrated, never surveyed —
+    # absolute scale rides on it; see its NEW_PROJECT_BRIEF §1.5)
+    pose: {x: 1.7753, y: 0.7203, z: 0.0, tilt_deg: 0, az_deg: 0.0475}
+    note: "pose self-calibrated in cafeteria_3d_modeling, unverified by survey"

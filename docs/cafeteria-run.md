@@ -1,0 +1,54 @@
+# TAU cafeteria campaign through the megido pipeline
+
+Detached from the Megiddo analysis: its own config (`configs/cafeteria.yaml`),
+its own run folder (`runs/cafeteria/`), branch `worktree-cafeteria-run`. The
+Megiddo config, artifacts and code paths are unchanged (no `detector:` /
+`sky_reference:` block → exactly the old behaviour, tested).
+
+## What had to change, and why
+
+| Megiddo | Cafeteria | Change |
+|---|---|---|
+| raw `.data`, Phase 1 builds `counts_*.npz` | DAQ ROOT `txty` TH2 (800×800, tan ±2) | `megido/rootingest.py` crops to the site binning and writes the same `counts_*.npz` seam (bins must coincide; no resampling) |
+| no open-sky run → tilt-based joint solve | clear-sky roof run of the same detector | `megido/skyref.py`: `λ = −ln(max(n_pos/(s·n_sky), 0.05))` in the detector frame, scattered to the sky grid by pose; gauge-pinned exactly like the joint solve |
+| Detector 3 constants (width 38.4 cm, dz 31.5 cm, tan edge 1.22) | fails here: sky acceptance edge is tan 0.91 | optional `detector:` override, **measured from the sky run**: width 35.375 cm (hit positions, all 4 layers), dz 38.9 cm (acceptance edge) — `DetectorGeometry.for_site` |
+| bootstrap re-runs the joint solve | re-runs the sky ratio, sky counts resampled too | `solver=` hook on `opacity_uncertainty` / `voxel_bootstrap` |
+
+Without `--bootstrap`, `reconstruct --run` uses the analytic Poisson sigma
+`sqrt(1/n_pos + 1/n_sky)`.
+
+## Commands
+
+See the header of `configs/cafeteria.yaml`. The hillside stage was run with
+`--surface-a 48` (see below).
+
+## Results (2026-09-24)
+
+- Ingest: pos0 6.33 M, pos1 2.41 M, sky 28.5 M tracks, 100% inside ±1.25.
+- Opacity: 1293 sky bins constrained per position.
+- Voxels: grid 90×85×40 at 0.20 m, 2586 rows, χ² 0.36; 8-replica bootstrap:
+  58% of the voxels seen by both positions are above SNR 3; gauge systematic
+  11% of peak.
+- Lateral structure: line features along y at roughly 1.7 m pitch in x (the
+  ceiling beams the cafeteria project found) plus a transverse band near
+  y ≈ 4 m. They appear both in the inverted column opacity and in the
+  model-free backprojection at z = 7 m (`cafeteria_overview.png`).
+- Depth: **not resolved** (dz ≈ 0.9 m at z = 5 m on the 1.92 m baseline); mass
+  piles toward the grid top — regulariser, not data. Same honest limit as
+  Megiddo.
+- Hillside surface: the uniform-solid "hill" model does **not** describe this
+  overburden (a ceiling with beams, not a hill). At a = 48 (chosen so the
+  surface sits near the ~7 m ceiling; a = 8, Megiddo's rock default, puts it
+  ~1 m up and each single-position fit misses the other detector entirely):
+  per-ray VE −9%, out-of-sample r 0.08 / 0.32, inside the shuffled nulls.
+  Keep it as a display overlay only.
+
+## Caveats
+
+- pos1 pose (1.775, 0.720) m is the cafeteria project's self-calibration,
+  never surveyed; absolute lateral scale rides on it.
+- The 0.20 m voxel spacing is coarse for 1.7 m-pitch beams (the cafeteria
+  project needed 0.08 m for clean beam lines); raising resolution is a config
+  change (`volume.spacing_m`) at a cost in solve time.
+- The viewer title still reads "Megiddo" (hardcoded); the data shown is the
+  loaded run.

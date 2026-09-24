@@ -79,6 +79,30 @@ class DetectorGeometry:
             bar=bar,
         )
 
+    @classmethod
+    def for_site(cls, cfg) -> "DetectorGeometry":
+        """The Megiddo unit unless the site config carries a measured override.
+
+        The override keeps the Megiddo channel map (it only matters for raw
+        `.data` ingest, which a pre-binned campaign never runs) and replaces the
+        two lengths the analysis uses: active width (aperture, acceptance) and
+        the separation between the two layers of one coordinate.
+        """
+        base = cls.megiddo()
+        ov = getattr(cfg, "detector", None)
+        if ov is None:
+            return base
+        n = base.bar.n_bars
+        bar_base = ov.active_width_cm / ((n - 1) / 2.0 + 1.0)
+        height = base.bar.height_cm
+        bar = BarGeometry(n_bars=n, base_cm=bar_base, height_cm=height,
+                          side_cm=hypot(bar_base / 2.0, height),
+                          length_cm=base.bar.length_cm)
+        dy = base.layer_z_cm[1] - base.layer_z_cm[0]
+        layer_z = (0.0, dy, ov.layer_dz_cm, ov.layer_dz_cm + dy)
+        return cls(asic_channels=base.asic_channels, asic_to_layer=base.asic_to_layer,
+                   layer_z_cm=layer_z, layer_coord=base.layer_coord, bar=bar)
+
     def __post_init__(self) -> None:
         for asic, chans in self.asic_channels.items():
             if len(set(chans)) != self.bar.n_bars:

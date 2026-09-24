@@ -51,7 +51,7 @@ def build_forward_model(rows: RowIndex, cfg: SiteConfig, *,
                         grid: VoxelGrid | None = None,
                         cache_dir: str | Path | None = "runs/.cache"
                         ) -> ForwardModel:
-    geom = geom or DetectorGeometry.megiddo()
+    geom = geom or DetectorGeometry.for_site(cfg)
     origins = position_origins(cfg)
     if grid is None:
         grid = auto_grid(cfg.volume, origins, t_reach=rows.t_reach(),
