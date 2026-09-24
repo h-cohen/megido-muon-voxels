@@ -81,3 +81,13 @@ def run_fixture(tmp_path):
         (run / "meta.json").write_text(json.dumps(meta))
         return run
     return _make
+
+
+@pytest.fixture(scope="session")
+def browser_context_args(browser_context_args):
+    """Headless Chromium renders WebGL on SwiftShader (CPU): the raymarch costs
+    ~9.5 us per pixel there, so the default 1280x720 viewport made each real-run
+    frame ~7 s and the smoke test time out. Tests exercise logic, not
+    resolution; a smaller viewport keeps every frame a few-fold cheaper. The
+    shipped viewer is unaffected."""
+    return {**browser_context_args, "viewport": {"width": 760, "height": 520}}

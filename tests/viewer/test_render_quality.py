@@ -24,17 +24,21 @@ def test_smooth_and_shading_toggles_each_change_the_render(page, dist_path, run_
     assert not errors, errors
 
 
-_PIXELS = """() => {
+_SNAP = """(key) => {
   const src = document.querySelector('#gl-canvas');
   const c = document.createElement('canvas'); c.width = src.width; c.height = src.height;
   const ctx = c.getContext('2d'); ctx.drawImage(src, 0, 0);
-  return Array.from(ctx.getImageData(0, 0, c.width, c.height).data);
+  window.__snaps = window.__snaps || {};
+  window.__snaps[key] = ctx.getImageData(0, 0, c.width, c.height).data;
 }"""
 
-
-def _mean_abs_diff(a, b):
-    assert len(a) == len(b)
-    return sum(abs(x - y) for x, y in zip(a, b)) / len(a)
+_DIFF = """([a, b]) => {
+  const x = window.__snaps[a], y = window.__snaps[b];
+  if (x.length !== y.length) throw new Error('size mismatch');
+  let s = 0;
+  for (let k = 0; k < x.length; k++) s += Math.abs(x[k] - y[k]);
+  return s / x.length;
+}"""
 
 
 def test_manual_trilinear_fallback_agrees_with_hardware_linear(page, dist_path, run_fixture):
@@ -49,17 +53,17 @@ def test_manual_trilinear_fallback_agrees_with_hardware_linear(page, dist_path, 
         import pytest
         pytest.skip("no OES_texture_float_linear: hardware reference unavailable")
     page.locator("#toggle-shading").uncheck(); page.wait_for_timeout(150)
-    hw = page.evaluate(_PIXELS)
+    page.evaluate(_SNAP, "hw")
     page.evaluate("""() => { const s = window.__viewerState;
         s.floatLinear = false; s.applyVolumeFilter(); s.render(); }""")
     page.wait_for_timeout(150)
-    manual = page.evaluate(_PIXELS)
+    page.evaluate(_SNAP, "manual")
     page.evaluate("""() => { const s = window.__viewerState;
         s.smoothSampling = false; s.applyVolumeFilter(); s.render(); }""")
     page.wait_for_timeout(150)
-    nearest = page.evaluate(_PIXELS)
-    d_manual = _mean_abs_diff(hw, manual)
-    d_nearest = _mean_abs_diff(hw, nearest)
+    page.evaluate(_SNAP, "nearest")
+    d_manual = page.evaluate(_DIFF, ["hw", "manual"])
+    d_nearest = page.evaluate(_DIFF, ["hw", "nearest"])
     print(f"\nmean |Δ| per channel: manual vs hw={d_manual:.3f}, nearest vs hw={d_nearest:.3f}")
     assert d_nearest > 1.0, d_nearest                 # the comparison has teeth
     assert d_manual < 0.25 * d_nearest, (d_manual, d_nearest)
