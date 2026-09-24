@@ -198,7 +198,10 @@ def test_real_campaign_output_renders_with_every_control_operable(page, dist_pat
     )
     hill_surface_smooth.fill("0")
     hill_surface_smooth.dispatch_event("input")
-    page.wait_for_timeout(50)
+    # The slider drag begins an adaptive-quality preview (fewer steps, no
+    # shading, see Task 3); settle it with the idleNow() test hook before
+    # comparing pixels against the full-quality baseline above.
+    page.evaluate("() => window.__viewerState.idleNow()")
     assert gl_canvas_data() == raw_hill_surface, (
         "returning #hill-surface-smooth to 0 must restore the raw fitted surface"
     )

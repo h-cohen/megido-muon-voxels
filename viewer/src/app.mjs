@@ -342,6 +342,7 @@ export function initViewer(root) {
   gl.bindVertexArray(null);
   const CAMERA_NEAR = 0.05, CAMERA_FAR = 100;
   const RAY_STEPS = 200; // max samples per ray INSIDE the volume box
+  const ADAPTIVE_STEPS = 64; // fast-preview step count while state.interacting
   // Warm amber, distinct from the teal/magenta silhouette fan.
   const HILL_SURFACE_COLOR = [0.95, 0.6, 0.15, 0.35];
 
@@ -384,6 +385,8 @@ export function initViewer(root) {
     floatLinear,
     smoothSampling: true,
     shading: true,
+    adaptiveQuality: true, // fast preview (fewer steps, no shading) while interacting
+    interacting: false,
     minStepVoxels: 0.5, // test hook: minimum march step, in voxels (uMinStepVoxels)
     lutTex: makeLutTexture(gl, buildTransferLUT(colormapStops('viridis'))),
     detectors: [],
@@ -461,6 +464,31 @@ export function initViewer(root) {
   }
   state.applyVolumeFilter = applyVolumeFilter;
 
+  // Adaptive quality: camera drags, zooms and slider drags call
+  // beginInteraction() to mark state.interacting=true for a fast (low-step,
+  // unshaded) preview render, then idle for INTERACTION_IDLE_MS with no
+  // further beginInteraction() call before render() runs once more at full
+  // quality. idleNow() is a test hook that fires that idle render
+  // immediately, without waiting on the real timer, so headless tests need
+  // not sleep to observe it.
+  const INTERACTION_IDLE_MS = 150;
+  let interactionTimer = null;
+  function idleNow() {
+    if (interactionTimer != null) {
+      clearTimeout(interactionTimer);
+      interactionTimer = null;
+    }
+    state.interacting = false;
+    render();
+  }
+  function beginInteraction() {
+    state.interacting = true;
+    if (interactionTimer != null) clearTimeout(interactionTimer);
+    interactionTimer = setTimeout(idleNow, INTERACTION_IDLE_MS);
+  }
+  state.beginInteraction = beginInteraction;
+  state.idleNow = idleNow;
+
   function render() {
     const { width, height } = canvas.getBoundingClientRect();
     canvas.width = Math.max(1, Math.round(width * (window.devicePixelRatio || 1)));
@@ -491,7 +519,13 @@ export function initViewer(root) {
     gl.uniform1f(uniforms.uClipPlaneD, state.clipPlaneD);
     gl.uniform1i(uniforms.uSigmaGateEnabled, state.sigmaGateEnabled ? 1 : 0);
     gl.uniform1f(uniforms.uSigmaGateValue, state.sigmaGateValue);
-    gl.uniform1i(uniforms.uSteps, RAY_STEPS);
+    // Fast preview while interacting (drag/zoom/slider): fewer march steps
+    // and no shading for this frame only -- state.shading itself is left
+    // untouched, so the checkbox/readout never lies about the setting, and
+    // the very next idle full-quality render restores it.
+    const previewing = !!(state.adaptiveQuality && state.interacting);
+    const steps = previewing ? ADAPTIVE_STEPS : RAY_STEPS;
+    gl.uniform1i(uniforms.uSteps, steps);
     // Legacy per-sample path: uSteps spread over the whole near..far span. The
     // LUT/window were tuned against it, so alpha stays defined per this length.
     // The old step was actually (FAR-NEAR)/(uSteps*cos(theta)) per pixel, theta
@@ -499,10 +533,10 @@ export function initViewer(root) {
     // corner pixels had a longer, less-dense step than the centre; this single
     // uniform reference matches the old CENTRE look exactly (edges are now
     // slightly denser than the legacy render, not less).
-    gl.uniform1f(uniforms.uRefStep, (CAMERA_FAR - CAMERA_NEAR) / RAY_STEPS);
+    gl.uniform1f(uniforms.uRefStep, (CAMERA_FAR - CAMERA_NEAR) / steps);
     gl.uniform1f(uniforms.uMinStepVoxels, state.minStepVoxels != null ? state.minStepVoxels : 0.5);
     gl.uniform1i(uniforms.uManualTrilinear, (state.smoothSampling && !state.floatLinear) ? 1 : 0);
-    gl.uniform1i(uniforms.uShading, state.shading ? 1 : 0);
+    gl.uniform1i(uniforms.uShading, (previewing ? false : state.shading) ? 1 : 0);
     const volShape = state.meta ? state.meta.shape : [1, 1, 1];
     gl.uniform3fv(uniforms.uVolSize, [volShape[0], volShape[1], volShape[2]]);
     gl.uniform1i(uniforms.uSurfClip, (state.surfClip && !!state.surfTex) ? 1 : 0);
@@ -1254,11 +1288,13 @@ export function initViewer(root) {
     lastX = ev.clientX; lastY = ev.clientY;
     state.camera.yaw += dx * 0.01;
     state.camera.pitch = Math.max(-1.5, Math.min(1.5, state.camera.pitch + dy * 0.01));
+    beginInteraction();
     render();
   });
   canvas.addEventListener('wheel', (ev) => {
     ev.preventDefault();
     state.camera.distance = Math.max(0.5, state.camera.distance * (1 + ev.deltaY * 0.001));
+    beginInteraction();
     render();
   }, { passive: false });
 
@@ -1297,6 +1333,14 @@ export function initViewer(root) {
   if (toggleShadingEl) {
     toggleShadingEl.addEventListener('change', (ev) => {
       state.shading = ev.target.checked;
+      render();
+    });
+  }
+
+  const toggleAdaptiveEl = root.querySelector('#toggle-adaptive');
+  if (toggleAdaptiveEl) {
+    toggleAdaptiveEl.addEventListener('change', (ev) => {
+      state.adaptiveQuality = ev.target.checked;
       render();
     });
   }
@@ -1358,6 +1402,7 @@ export function initViewer(root) {
         hillSurfaceSmoothReadoutEl.textContent = String(state.hillSurfaceSmooth);
       }
       rebuildHillSurfaceBuffer();
+      beginInteraction();
       render();
     });
   }
@@ -1468,6 +1513,7 @@ export function initViewer(root) {
     minInput.addEventListener('input', (ev) => {
       state.clipMin[axes[axis]] = parseFloat(ev.target.value);
       minVal.textContent = Number(ev.target.value).toFixed(2);
+      beginInteraction();
       render();
     });
     const maxInput = root.querySelector(`#clip-${axis}-max`);
@@ -1476,12 +1522,16 @@ export function initViewer(root) {
     maxInput.addEventListener('input', (ev) => {
       state.clipMax[axes[axis]] = parseFloat(ev.target.value);
       maxVal.textContent = Number(ev.target.value).toFixed(2);
+      beginInteraction();
       render();
     });
   }
 
   root.querySelector('#slice-axis').addEventListener('change', updateSlice);
-  root.querySelector('#slice-pos').addEventListener('input', updateSlice);
+  root.querySelector('#slice-pos').addEventListener('input', () => {
+    beginInteraction();
+    updateSlice();
+  });
   function updateSlice() {
     const axis = root.querySelector('#slice-axis').value;
     const pos = parseFloat(root.querySelector('#slice-pos').value);
@@ -1508,6 +1558,7 @@ export function initViewer(root) {
   clipPlaneDInput.addEventListener('input', (ev) => {
     state.clipPlaneD = parseFloat(ev.target.value);
     clipPlaneDVal.textContent = state.clipPlaneD.toFixed(2);
+    beginInteraction();
     render();
   });
 
@@ -1519,6 +1570,7 @@ export function initViewer(root) {
     const frac = parseFloat(ev.target.value);
     const max = state.sigmaMax || 1;
     state.sigmaGateValue = frac * max;
+    beginInteraction();
     render();
   });
 
