@@ -439,7 +439,7 @@ def _cmd_hillside_surface(args, sol, cfg, out: Path) -> int:
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
-        print("matplotlib not installed; skipped hill_surface.png")
+        print("matplotlib not installed; skipped hill_surface.png and hill_residual.png")
         print(f"written {out / 'hill_surface.npy'}, "
               f"{out / 'hill_surface_sigma.npy'}, {out / 'hill_surface_meta.json'}")
         return 0
@@ -505,7 +505,8 @@ def _write_residual_png(check, sol, path: Path) -> None:
         ax.set_xlabel("sky tangent x"); ax.set_ylabel("sky tangent y")
     if im is not None:
         fig.colorbar(im, ax=axes[0].tolist(),
-                     label="Δλ  (red: more rock than a uniform hill; blue: less)")
+                     label="Δλ after per-position offset  (red: more opacity than the uniform-solid "
+                           "prediction; blue: less; not separable from an a/density-scale misfit)")
     fig.suptitle(f"Surface ray check (uniform solid, a={check.a:g}, gauge-invariant): "
                  f"VE={check.ray_ve:.0%} per ray, RMS after offset={check.ray_rms:.3f}, N={check.n_checked}")
     fig.savefig(path, dpi=150, bbox_inches="tight")

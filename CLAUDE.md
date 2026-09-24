@@ -112,7 +112,9 @@ Built in phases, each with its own spec-referenced plan under
   at runtime via a local file picker; never bakes data into the shipped
   page. Rays march only inside the volume box (slab intersection,
   >= half-voxel steps, opacity-corrected to the legacy per-sample length so
-  the transfer function keeps its look). Display-only options: trilinear
+  the transfer function keeps its look — exactly at the image centre; the old
+  per-pixel step was longer toward the edges, so edges are now slightly
+  denser). Display-only options: trilinear
   sampling (hardware `LINEAR`, manual 8-tap fallback when
   `OES_texture_float_linear` is missing — pixel-tested against each other),
   gradient shading, surface coloured by posterior σ, and "clip volume above
@@ -135,11 +137,14 @@ Built in phases, each with its own spec-referenced plan under
   as a uniform solid (density `1/a`) and compares predicted with measured
   opacity, **gauge-invariant per position** (each position's unmeasured
   opacity level is fitted as an additive offset, reported, and removed — the
-  role `c_p` plays in the voxel solve). Real run, `a = 8`: 32% VE per ray
-  (pos0 r = 0.64, pos1 r = 0.50; pos1 sits 0.78 below the surface's level),
-  against 81% per cell. The residual has coherent centre-vs-rim structure, so
-  the uniform-solid surface misses a systematic trend. The ray VE moves
-  strongly with `a` — never quote it without `a`.
+  role `c_p` plays in the voxel solve). Real run (heteroscedastic, `a = 8`,
+  `q_hi = 0.85`, `cell_m = 1.0`): 32% VE per ray (pos0 r = 0.64, pos1
+  r = 0.50; fitted offsets −0.18 / −0.78 = unmeasured level plus any constant
+  model bias), against 81% per cell. The residual has coherent centre-vs-rim
+  structure, but that is **not attributable to geology**: the offset removes
+  only a constant, and a wrong `a` / density scale leaves a residual
+  proportional to path length, which is itself a centre/rim pattern. The ray
+  VE moves strongly with `a` — never quote it without `a` and the fit settings.
 
 ## Repo conventions — non-negotiable
 

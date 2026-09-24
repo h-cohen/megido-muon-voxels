@@ -340,9 +340,9 @@ export function initViewer(root) {
   gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
   gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, hillSurfaceIndexBuffer);
   gl.bindVertexArray(null);
-  // Warm amber, distinct from the teal/magenta silhouette fan.
   const CAMERA_NEAR = 0.05, CAMERA_FAR = 100;
   const RAY_STEPS = 200; // max samples per ray INSIDE the volume box
+  // Warm amber, distinct from the teal/magenta silhouette fan.
   const HILL_SURFACE_COLOR = [0.95, 0.6, 0.15, 0.35];
 
   const uniforms = {};
@@ -447,11 +447,16 @@ export function initViewer(root) {
   // always starts NEAREST.
   function applyVolumeFilter() {
     const filter = (state.smoothSampling && state.floatLinear) ? gl.LINEAR : gl.NEAREST;
-    for (const tex of [state.volumeTex, state.sigmaTex]) {
+    // Only the density is smoothed. The sigma texture stays NEAREST: the sigma
+    // gate is a per-voxel decision, and filtering it would make the gate edge
+    // differ between GPUs with and without float-linear (the manual path
+    // always gates per voxel) and disagree with nearest-voxel hover.
+    const sets = [[state.volumeTex, filter], [state.sigmaTex, gl.NEAREST]];
+    for (const [tex, f] of sets) {
       if (!tex) continue;
       gl.bindTexture(gl.TEXTURE_3D, tex);
-      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, filter);
-      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, filter);
+      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, f);
+      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, f);
     }
   }
   state.applyVolumeFilter = applyVolumeFilter;

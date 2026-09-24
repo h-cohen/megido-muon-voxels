@@ -96,7 +96,7 @@ every metric.
 - `ray_ve_raw` — the gauge-naive `1 − Σr²/Σ(λ_meas − mean)²`; secondary only.
 - `offsets` — `{pid: c_p}`; `per_position` — `{pid: {n, corr, ve}}` after `c_p`.
 - `residual` maps are shown **after** removing `c_p`.
-- `ray_rms` — `sqrt(mean r²)`.
+- `ray_rms` — `sqrt(mean (r − c_p)²)`, i.e. after removing each position's offset.
 - `n_checked` — rays with finite measurement and prediction.
 - `a`.
 
