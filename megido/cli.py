@@ -386,11 +386,11 @@ def _cmd_hillside_surface(args, sol, cfg, out: Path) -> int:
     from megido.hillside_check import surface_ray_check
     check = surface_ray_check(sol, cfg, result)
     print(f"ray check       VE={check.ray_ve:.1%} (per ray, gauge-invariant, a={check.a:g})  "
-          f"RMS={check.ray_rms:.3f}  over {check.n_checked} rays "
+          f"RMS(after offset)={check.ray_rms:.3f}  over {check.n_checked} rays "
           f"(surface as uniform solid, density 1/a)")
     for pid, st in sorted((check.per_position or {}).items()):
         print(f"                {pid}: n={st['n']}  shape corr r={st['corr']:.2f}  "
-              f"VE={st['ve']:.1%}  offset={check.offsets[pid]:+.3f} (unmeasured level)")
+              f"VE={st['ve']:.1%}  offset={check.offsets[pid]:+.3f} (unmeasured level + any constant bias)")
 
     np.save(out / "hill_surface.npy", result.H.astype(np.float32))
     np.save(out / "hill_surface_sigma.npy", result.sigma.astype(np.float32))
@@ -420,8 +420,9 @@ def _cmd_hillside_surface(args, sol, cfg, out: Path) -> int:
         "ray_offsets": check.offsets or {},
         "ray_per_position": check.per_position or {},
         "ray_check_note": ("ray-space fit of the surface as a uniform solid of density 1/a, "
-                           "gauge-invariant: each position's unmeasured opacity level is "
-                           "fitted as an additive offset and removed before scoring"),
+                           "gauge-invariant: each position's unmeasured opacity level (plus any constant "
+                           "per-position model bias) is fitted as an additive offset and "
+                           "removed before scoring; the value moves with a and fit settings"),
     }
     (out / "hill_surface_meta.json").write_text(
         json.dumps(_json_nan_to_null(_json_safe(meta)), indent=2) + "\n")
@@ -506,7 +507,7 @@ def _write_residual_png(check, sol, path: Path) -> None:
         fig.colorbar(im, ax=axes[0].tolist(),
                      label="Δλ  (red: more rock than a uniform hill; blue: less)")
     fig.suptitle(f"Surface ray check (uniform solid, a={check.a:g}, gauge-invariant): "
-                 f"VE={check.ray_ve:.0%} per ray, RMS={check.ray_rms:.3f}, N={check.n_checked}")
+                 f"VE={check.ray_ve:.0%} per ray, RMS after offset={check.ray_rms:.3f}, N={check.n_checked}")
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 

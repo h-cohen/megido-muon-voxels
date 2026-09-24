@@ -6,9 +6,11 @@ sky direction from each detector to where it leaves the rock, and compare the
 predicted opacity t*/a with what was measured. A goodness-of-fit in the space
 the data actually lives in; the per-cell VE of the surface fit is not that.
 
-Because H scales ~linearly with a about each detector, t* scales by a and the
-prediction is ~scale-free: this checks the surface's SHAPE (measured), not its
-assumed scale. Unpredictable rays (surface unknown / off-grid / never crossed /
+If H scaled exactly with a about each detector, t* would scale by a and the
+prediction would be scale-free (it nearly is on the synthetic hill). On real
+data it is NOT: at fixed cell size the fitted surface's coverage and shape shift
+with a, and the ray VE moves strongly with it. Always report the ray VE together
+with a and the fit settings. Unpredictable rays (surface unknown / off-grid / never crossed /
 detector not below the surface) are NaN, never 0, and excluded from every
 metric.
 
@@ -18,7 +20,7 @@ makes when it places the surface, so the check is consistent with the fit.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -123,8 +125,8 @@ class RayCheck:
     n_checked: int
     a: float
     ray_ve_raw: float = float("nan")
-    offsets: dict | None = None
-    per_position: dict | None = None
+    offsets: dict = field(default_factory=dict)
+    per_position: dict = field(default_factory=dict)
 
 
 def surface_ray_check(sol, cfg, result, *, a=None) -> RayCheck:

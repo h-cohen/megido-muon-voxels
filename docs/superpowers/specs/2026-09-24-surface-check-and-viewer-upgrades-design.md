@@ -60,8 +60,23 @@ distance `t*` is the in-rock path, so the predicted opacity is `λ_pred = t*/a`.
 Residual `r = λ_meas − λ_pred` with `λ_meas = normalized_opacity(pid)`.
 
 Because `H` scales ≈ linearly with `a` about each detector (tested in the
-upper-envelope work), `t*` scales by `a` and `λ_pred` is **approximately
-scale-free** — the check measures the surface's *shape*, the part that is data.
+upper-envelope work), `t*` scales by `a` and `λ_pred` is scale-free **in the
+ideal case** — on the synthetic hill the prediction correlates 0.98 between
+`a = 1` and `a = 2`. **On real data it is not**: the fitted surface does not scale
+cleanly with `a` (per-cell ray density falls as `1/a²` at fixed `cell_m`, so
+coverage and shape shift), and the ray VE moves strongly with `a` (fast fit:
+0.02 / −0.35 / −0.73 at `a = 4 / 8 / 16`). **Ray VE is never quoted without its
+`a` and fit settings.**
+
+**Amendment (2026-09-24, gauge).** Phase 2 pins each position's opacity level
+independently and never measures it, so scoring the absolute `t*/a` against the
+gauge-pinned `λ_meas` punishes an unmeasurable constant (on real data the raw VE
+was −60%, mostly pos1 sitting ~0.78 below the prediction). The check is therefore
+**gauge-invariant per position**: each position's additive offset
+`c_p = mean(λ_meas − λ_pred)` is fitted, reported, and removed before scoring —
+the role `c_p` plays in the voxel solve. The offset also absorbs any constant
+per-position model bias (e.g. from the upper envelope). No multiplicative scale
+is absorbed; slope misfit stays in the residual.
 
 ### 3.2 Ray tracing
 `H` is sampled bilinearly on its node grid `(gx, gy)`; a sample is **NaN** if the
@@ -76,7 +91,11 @@ every metric.
 ### 3.3 Outputs
 `surface_ray_check(sol, cfg, result, *, a) -> RayCheck` (frozen dataclass):
 - `residual: dict[pid, (n_bins, n_bins)]` — NaN where unmeasured or unpredicted.
-- `ray_ve` — `1 − Σr²/Σ(λ_meas − mean)²` over checked rays.
+- `ray_ve` — gauge-invariant: `1 − Σ_p Σ(r − c_p)² / Σ_p Σ(λ_meas − mean_p λ_meas)²`
+  over checked rays (each position gets one constant in the model and in the null).
+- `ray_ve_raw` — the gauge-naive `1 − Σr²/Σ(λ_meas − mean)²`; secondary only.
+- `offsets` — `{pid: c_p}`; `per_position` — `{pid: {n, corr, ve}}` after `c_p`.
+- `residual` maps are shown **after** removing `c_p`.
 - `ray_rms` — `sqrt(mean r²)`.
 - `n_checked` — rays with finite measurement and prediction.
 - `a`.
@@ -87,7 +106,9 @@ was fit).
 
 ### 3.4 CLI
 `hillside` runs the check after the surface fit, prints
-`ray check      VE=..% (per ray)  RMS=..  over N rays`, adds `ray_ve`, `ray_rms`,
+`ray check  VE=..% (per ray, gauge-invariant, a=..)  RMS(after offset)=..  over N rays`
+plus one line per position (`n`, shape `r`, VE, offset), and adds `ray_ve`,
+`ray_ve_raw`, `ray_offsets`, `ray_per_position`, `ray_check_note`, `ray_rms`,
 `n_rays_checked` to `hill_surface_meta.json`, and writes `hill_residual.png`
 (one panel per position, diverging colormap centred on 0 with symmetric limits,
 axes in sky tangent; skipped with a note if matplotlib is absent).
