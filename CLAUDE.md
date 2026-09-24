@@ -119,7 +119,15 @@ Built in phases, each with its own spec-referenced plan under
   `OES_texture_float_linear` is missing — pixel-tested against each other),
   gradient shading, surface coloured by posterior σ, and "clip volume above
   surface" (off by default; it hides density the surface model calls air,
-  it measures nothing).
+  it measures nothing). The surface can be coloured by σ, by ray residual
+  (diverging, "not separable from an a/density-scale misfit"), or plain.
+  While dragging or moving a slider the viewer renders a fast preview (64
+  steps, no shading) and one full render after 150 ms idle; tests must call
+  `state.idleNow()` before comparing frames, or a "render changed" check
+  compares a preview to a full frame and passes by construction. Hover
+  picking mirrors the shader's march and clip order exactly (`rayBox` in
+  `grid.mjs`); `VoxelGrid.origin` is the grid CORNER, so the containing voxel
+  is `floor((p − origin)/spacing)`.
 - **Phase 5** (done): S6 — the hillside surface, the campaign's most resolvable
   observable. `megido/silhouette.py` extracts the flux-edge ridgeline;
   `megido/hillside_surface.py` fits a smooth height field `H(x,y)` by a
@@ -145,6 +153,15 @@ Built in phases, each with its own spec-referenced plan under
   only a constant, and a wrong `a` / density scale leaves a residual
   proportional to path length, which is itself a centre/rim pattern. The ray
   VE moves strongly with `a` — never quote it without `a` and the fit settings.
+  **Out-of-sample** (`cross_position_check`, printed by `hillside`): fit the
+  surface from ONE position, score the other, against a shuffled-opacity null
+  (same position's opacities permuted among its directions, 3 seeds). Real run:
+  fit pos1 → predict pos0 r = 0.37 vs shuffled −0.29…0.09 (suggestive); fit
+  pos0 → predict pos1 r = 0.09 (no skill, even though above a negative null).
+  Three seeds make the null indicative, not a significance test. The flat-slab
+  null is too weak to mean anything (a surface fitted from scrambled opacities
+  beats it). Any future surface refinement must be gated on this out-of-sample
+  number, never on in-sample fit.
 
 ## Repo conventions — non-negotiable
 
