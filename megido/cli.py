@@ -378,7 +378,8 @@ def _format_cross_position_line(xpos: dict) -> str:
         if "error" in sh or q not in sh:
             return ""
         v = sh[q]
-        return f" (shuffled null r={v['corr_mean']:.2f}..{v['corr_max']:.2f})"
+        lo = v.get("corr_min", v["corr_mean"])
+        return f" (shuffled null r {lo:.2f}..{v['corr_max']:.2f}, {v['n_seeds']} seeds)"
 
     pieces = []
     for p, scores in sorted((xpos.get("fit_on") or {}).items()):
@@ -480,7 +481,9 @@ def _cmd_hillside_surface(args, sol, cfg, out: Path) -> int:
         "ray_cross_position": xpos,
         "ray_cross_position_note": ("out-of-sample lateral-shape correlation at assumed a; "
                                     "not a measurement of depth or scale; compare against "
-                                    "null_shuffled"),
+                                    "null_shuffled, which is a small-seed spread (indicative, "
+                                    "not a significance test); r near 0 is no skill even when "
+                                    "it exceeds a negative null"),
         "residual_grid_file": "hill_residual_grid.npy",
         "residual_grid_lim": residual_grid_lim,
     }

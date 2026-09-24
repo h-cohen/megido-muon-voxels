@@ -32,7 +32,7 @@ def test_format_cross_position_line_survives_every_error_shape():
     line = _format_cross_position_line(xpos)
     assert "fit pos0 -> ...: failed (too few populated cells)" in line
     assert "fit pos1 -> pos0: r=0.50 VE=10%" in line
-    assert "shuffled null r=0.10..0.20" in line
+    assert "shuffled null r 0.10..0.20, 2 seeds" in line
     assert "error: boom" in line
 
 

@@ -342,7 +342,9 @@ def cross_position_check(sol, cfg, *, fit_kwargs: dict, joint=None,
                 per_q[q]["ve"].append(st["ve"])
         null_shuffled[p] = {
             q: {"corr_mean": float(np.nanmean(v["corr"])),
+                "corr_min": float(np.nanmin(v["corr"])),
                 "corr_max": float(np.nanmax(v["corr"])),
+                "corr_std": float(np.nanstd(v["corr"])),
                 "ve_mean": float(np.nanmean(v["ve"])),
                 "n_seeds": len(v["corr"])}
             for q, v in per_q.items()
