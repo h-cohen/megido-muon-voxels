@@ -227,3 +227,6 @@ viewer/dist/
 # Local handoff/reference docs (not part of the tracked project)
 NEW_PROJECT_BRIEF.md
 detector_summary.md
+rolling_status.md
+rolling_status.html
+cafeteria_260925.png
