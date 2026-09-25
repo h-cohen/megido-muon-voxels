@@ -74,6 +74,14 @@ re-propose without new information — the findings are in the specs/plans):
   the grid top; `a = 4` would halve the grid; `a = 16` does nothing), so the
   voxels' vertical structure would be set by an assumption — a prior shaping
   depth. Delivered instead as a display-only viewer clip.
+- **A soft depth prior (penalty outside a height band) in the voxel solve:**
+  tested on the cafeteria (band 6.3–7.9 m from the data's own focus curve).
+  Real beam contrast *fell* 3.28 → 0.91 as the prior strengthened (the side
+  opacity gets squeezed into the band too), and a deliberately wrong band
+  captured 24–74% of the mass — it sets depth instead of nudging it. What
+  does help, at equal χ², is `reconstruction.coverage_damping` (pull each
+  voxel toward 0 ∝ 1/coverage): it removes the noise shell, not real
+  structure (`docs/cafeteria-run.md`).
 - **"Fixing" the opacity gauge zero-point:** no free lunch. The clip-to-zero
   convention touches only ~5% of directions (the transparent quantile), picks
   physically sensible grazing directions, and cannot change the meaningful
@@ -120,7 +128,7 @@ Built in phases, each with its own spec-referenced plan under
   gradient shading, surface coloured by posterior σ, and "clip volume above
   surface" (off by default; it hides density the surface model calls air,
   it measures nothing), and a coverage gate — "hide voxels crossed by fewer
-  than N rays" (`rays.npy`, on at N = 6 when present) — because voxels only
+  than N rays" (`rays.npy`, on at N = 2 when present — at the cafeteria ceiling height every voxel has only 4–5 rays, so N = 6 hid the beams themselves) — because voxels only
   one or two oblique rays cross are those rays' private unknowns, and under
   non-negativity the solver parks their noise there as a bright outer shell
   (proven by a noisy flat-slab phantom; `docs/cafeteria-run.md`). Megiddo

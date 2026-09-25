@@ -94,6 +94,10 @@ class Reconstruction:
     chi2_target: float = 1.0        # discrepancy-principle stop for plain SIRT
     tv_alpha: float = 0.01          # TV threshold as a fraction of x's p95
     tv_z_weight: float = 0.5        # anisotropic TV: relative weight of z gradients
+    # Pull each voxel toward 0 by a factor 1/(1 + mu * median(coverage)/coverage)
+    # per iteration: "little data, little mass". 0 = off. See
+    # megido.inversion._coverage_damping for why (the noise shell).
+    coverage_damping: float = 0.0
     seed: int = 42
 
 

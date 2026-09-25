@@ -6,7 +6,7 @@ there as mass (the "bright outer shell", docs/cafeteria-run.md). The gate
 is display-only and marks them "not constrained". It must apply in the
 shader AND in hover picking, in the same order as the other gates.
 
-The fixture's rays layer is 1 (gated at the default N=6) for the half of
+The fixture's rays layer is 1 (gated at the default N=2) for the half of
 the volume with i < nx/2 and 10 for the other half, so a gate that does
 nothing, or gates the wrong half, fails.
 """
@@ -55,13 +55,13 @@ def test_gate_is_on_by_default_and_hover_never_lands_on_a_gated_voxel(page, dist
     _load(page, dist_path, run)
 
     assert page.locator("#coverage-gate-enabled").is_checked()
-    assert page.locator("#coverage-gate-value").input_value() == "6"
+    assert page.locator("#coverage-gate-value").input_value() == "2"
     on = [p for p in _picks(page) if p]
-    assert on and all(rays[p["i"], p["j"], p["k"]] >= 6 for p in on)
+    assert on and all(rays[p["i"], p["j"], p["k"]] >= 2 for p in on)
 
     page.locator("#coverage-gate-enabled").uncheck()
     off = [p for p in _picks(page) if p]
-    assert any(rays[p["i"], p["j"], p["k"]] < 6 for p in off)
+    assert any(rays[p["i"], p["j"], p["k"]] < 2 for p in off)
     assert not errors
 
 
@@ -92,7 +92,7 @@ def test_auto_window_is_set_by_the_voxels_the_gate_keeps(page, dist_path, run_fi
     shown: with the gate on, the window comes from ungated voxels only."""
     run, rays = _run_with_rays(run_fixture)
     vol = np.load(run / "volume.npy")
-    vol[rays < 6] = 50.0                  # a bright shell, all of it gated
+    vol[rays < 2] = 50.0                  # a bright shell, all of it gated
     np.save(run / "volume.npy", vol)
     _load(page, dist_path, run)
     hi_on = page.evaluate("() => window.__viewerState.window[1]")

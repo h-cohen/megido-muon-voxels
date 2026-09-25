@@ -399,7 +399,7 @@ export function initViewer(root) {
     // measured directions. On by default, but only live when the run ships a
     // `rays` layer (hasRays) -- the dummy texture reads 0 and would hide all.
     coverageGateEnabled: true,
-    minRays: 6,
+    minRays: 2,
     hasRays: false,
     raysTex: dummyVolume,
     // SNR gate (display-only): hide voxels whose bootstrap SNR < minSnr. On

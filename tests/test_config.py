@@ -156,3 +156,17 @@ def test_viewer_crop_survives_yaml_round_trip(tmp_path):
     cfg = load_site_config(p)
     assert cfg.volume.viewer_crop_xy_m == ((-5.0, 7.0), (-5.0, 5.0))
     assert cfg.volume.xy_m is None       # display crop never touches the solve box
+
+
+def test_coverage_damping_is_read_from_the_config(tmp_path):
+    from megido.config import load_site_config
+
+    p = tmp_path / "d.yaml"
+    p.write_text(
+        "site: t\ndata_dir: /tmp\n"
+        "reconstruction: {coverage_damping: 0.05}\n"
+        "exposures:\n"
+        "  - id: P0\n    runs: DET1-DET2\n"
+        "    pose: {x: 0, y: 0, z: 0, tilt_deg: 0, az_deg: 0}\n"
+    )
+    assert load_site_config(p).reconstruction.coverage_damping == 0.05

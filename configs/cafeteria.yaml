@@ -66,6 +66,15 @@ reconstruction:
   # project's model-free beam parallax says 7.0-7.1 m -- contrast 1.91 vs
   # 2.46, chi2 0.75 vs 0.67 (analytic sigma). Contrast is ~0 at 1.9-5.5 m.
   tv_z_weight: 0.0
+  # 0.05: voxels crossed by one or two rays hold those rays' noise as a bright
+  # outer shell (non-negativity keeps + noise, clips -). Damping by 1/coverage,
+  # at equal chi2 (real 0.67 -> 0.68): side/beam brightness 3.85 -> 1.60, beam
+  # contrast 2.46 -> 3.28; phantom false shell 0.22 -> 0.12 of the beams, mass
+  # below 4 m 6% -> 22% (truth 20%). 0.2+ over-damps: mass piles above the
+  # detectors. A soft depth prior toward the 6.3-7.9 m band was tested on top
+  # and REJECTED: real beam contrast fell 3.28 -> 0.91 and a deliberately wrong
+  # band captured 24-74% of the mass.
+  coverage_damping: 0.05
 
 sky_reference:
   id: SKY

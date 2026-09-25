@@ -93,6 +93,27 @@ peaks at 6.3–7.9 m. What changed:
   directions and leave diagonal streaks the ray gate keeps; at SNR ≥ 3 the
   streaks fall to 0.21 of beam brightness while the beams keep their value.
 
+## Coverage damping and the rejected depth prior (2026-09-25)
+
+The shell is noise, not walls: a phantom with only beams + ceiling + real-σ
+noise reproduces the real shell (side p99 3.80× beam; with walls 4.11×; real
+3.85×). Remedies compared at comparable χ²:
+
+| solver (real data unless noted) | χ² | beam contrast | side p99 / beam | phantom false shell / beam | phantom mass < 4 m (truth 20%) |
+|---|---|---|---|---|---|
+| current (TV 0.03, zw 0) | 0.67 | 2.46 | 3.85 | 0.220 | 6% |
+| stronger TV 0.06 / 0.1 | 1.14 / 1.74 | 1.84 / 1.09 | 3.78 / 4.04 | 0.236 / 0.257 | — |
+| step weighting γ 0.5 | 1.80 | 2.43 | 1.88 | 0.157 | — |
+| **coverage damping μ 0.05 (adopted)** | 0.68 | 3.28 | 1.60 | 0.118 | 22% |
+| damping μ 0.2 | 0.91 | 3.74 | 1.16 | 0.096 | 31% (over-damped: mass piles above detectors) |
+| + depth prior β 1…30 (rejected) | 0.84…1.54 | 2.00…0.91 | 1.65…1.38 | 0.97…0.94 | wrong band captures 24–74% |
+
+Why the sides stay brighter than the beams even so: they ARE more opaque.
+Directions 22–45° carry 15–55% more opacity than a flat ceiling (6–22σ); the
+previous project's own layer has side p99 8.3× its beam mean. The beams are
+the sharpest regular structure, not the most opaque. To read them, clip z to
+~6–8 m in the viewer.
+
 ## Compared with cafeteria_3d_modeling (2026-09-24)
 
 Its clean-looking product (`runs/production`) is a thin sheet pinned at 7 m
