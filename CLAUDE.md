@@ -143,7 +143,7 @@ Built in phases, each with its own spec-referenced plan under
   `meta.suggested_iso[0]`) as an opaque, face-shaded block: an exact
   voxel-to-voxel DDA (`voxelMarch` in `grid.mjs`, twin of `cubeMarch` in the
   shader) with all gates evaluated at voxel centres; hover returns the first
-  such cube (occlusion- and pixel-agreement tested). The surface can be coloured by σ, by ray residual
+  such cube (occlusion- and pixel-agreement tested). An opacity slider (display-only, default 1 = unchanged) scales the fog's sample alpha and makes cubes translucent (cube march composites through blocks instead of stopping at the first; hover still returns the first). The surface can be coloured by σ, by ray residual
   (diverging, "not separable from an a/density-scale misfit"), or plain.
   While dragging or moving a slider the viewer renders a fast preview (64
   steps, no shading) and one full render after 150 ms idle; tests must call

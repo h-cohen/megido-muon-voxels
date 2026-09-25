@@ -1,18 +1,20 @@
 # megido-muon-voxels
 
-Phase 1 of a muon-tomography analysis pipeline for the Megiddo detector: it
-turns raw CAEN DT5550W cluster dumps into calibrated, geometry-validated
-angular tracks and content-addressed exposure artifacts (`counts_<exp>.npz`,
-`tracks_<exp>.parquet`) ready for the reconstruction solver. It falsifies the
-engineer-supplied detector constants (bar pitch, active width, layer
-separation) against real data before anything downstream is allowed to trust
-them.
+Muon tomography from a detector placed at several positions and tilts inside a
+cavern. From the muon rate in each angular bin, the pipeline reconstructs:
 
-See the design and plan for the full context:
+- a **3D voxel opacity field** of the rock above (lateral structure; depth is
+  not resolved by this geometry);
+- the **hillside surface** `H(x,y)`, a Gaussian-process fit to the hill's flux
+  edge with posterior σ, checked in ray space and out-of-sample;
+- one self-contained **HTML viewer** for both, with honest uncertainty.
 
-- Design spec: `docs/superpowers/specs/2026-09-16-megido-muon-voxels-design.md`
-- Implementation plan: `docs/superpowers/plans/2026-09-17-phase1-raw-to-angles.md`
-- Phase 1 exit-gate report: `docs/phase1-validation-report.md`
+There is no open-sky calibration run at Megiddo. Detector response and rock
+absorption are separated using the tilts alone. A second campaign (TAU
+cafeteria, ROOT histograms plus an open-sky run) uses the same pipeline:
+[`docs/cafeteria-run.md`](docs/cafeteria-run.md). For the physics, limits and
+conventions, see [`CLAUDE.md`](CLAUDE.md) and
+`docs/superpowers/specs/2026-09-16-megido-muon-voxels-design.md`.
 
 ## Install
 
@@ -21,31 +23,44 @@ uv venv --python 3.12
 uv pip install -e ".[dev]"
 ```
 
-## Usage
+## Execution
 
-Run the S0-det validation gate against a single exposure's data (fast, reads
-one chunk):
-
-```bash
-uv run python -m megido.cli validate --config configs/megido.yaml --exposure P0 --max-chunks 1
-```
-
-Run the full ingest pipeline (S0-exp + S1) over every configured exposure,
-writing content-addressed artifacts to an output directory (slow — reads
-every file twice; cached on repeat runs):
+Stages run in order. Each stage reads the previous stage's output directory.
+Every command takes `--config` (default `configs/megido.yaml`; the cafeteria
+campaign uses `configs/cafeteria.yaml`).
 
 ```bash
-uv run python -m megido.cli ingest --config configs/megido.yaml --out runs/ingest
+M="uv run python -m megido.cli"
+
+$M validate                    # S0-det: falsify the supplied detector constants
+$M ingest                      # S0-exp + S1: raw .data -> runs/ingest (angular histograms)
+$M solve                       # S2: detector response + per-position opacity -> runs/solve
+$M reconstruct --run runs/ingest --bootstrap 8   # S3/S4: voxel inversion + sigma -> runs/voxels
+$M export                      # volume.npy + meta.json for the viewer
+$M hillside --run runs/ingest  # S6: silhouette, GP surface, ray + cross-position checks
+$M view                        # build viewer/dist/index.html and open it; Load run -> runs/voxels
+$M compare --a runs/A --b runs/B   # what changed between two reconstructions
 ```
 
-Run the test suite:
+| Command | Options (default) |
+|---|---|
+| `validate` | `--exposure` (`P0`), `--max-chunks` (`1`) |
+| `ingest` | `--out` (`runs/ingest`), `--force` (ignore the cache), `--chunksize` (`50000`; keep it bounded, the full ingest is ~6 GB) |
+| `solve` | `--run` (`runs/ingest`), `--out` (`runs/solve`), `--rebin` angular rebin (`10`), `--iters` (`5000`) |
+| `reconstruct` | `--solve` (`runs/solve`), `--run` ingest dir (required for `--bootstrap`), `--out` (`runs/voxels`), `--cache` (`runs/.cache`), `--rebin` (`10`), `--iters` per replica (`5000`), `--bootstrap N` Poisson replicas for per-voxel σ (`0` = off), `--no-holdouts`, `--no-systematic`, `--backproject-z Z` extra model-free backprojection at height Z m |
+| `export` | `--run` (`runs/voxels`), `--out` (same as `--run`) |
+| `hillside` | `--solve` (`runs/solve`), `--run` ingest dir, enables Poisson weights (`runs/ingest`), `--out` (`runs/voxels`), `--rebin` (`10`, match the solve), `--surface-a` assumed inverse-density scale (`8.0`; sets absolute height, not shape), `--surface-cell` m (`1.0`), `--surface-qhi` upper-envelope quantile (`0.85`), `--surface-min-count` (`8`), `--surface-max-points` GP rays (`1000`), `--surface-restarts` (`3`) |
+| `view` | `--no-open` (build only) |
+| `compare` | `--a`, `--b` (two run dirs, required) |
+
+Viewer controls are all display-only: fog or voxel-cube render, opacity,
+colormap and window, clip box/plane/slice, σ / coverage / SNR gates, the
+hillside surface (coloured by σ or ray residual), clipping the volume above
+the surface, detectors, and saved views.
+
+## Tests
 
 ```bash
-uv run pytest
+uv run pytest -q        # Python + headless-browser viewer tests (run one session at a time)
+node --test viewer/test/*.test.mjs   # viewer JS unit tests
 ```
-
-## Adding a new detector exposure
-
-Adding a new exposure is a data change, not a code change: drop the raw
-`.data` files in the configured `data_dir`, append one exposure block (id,
-run range, pose) to `configs/megido.yaml`, and re-run `ingest`.

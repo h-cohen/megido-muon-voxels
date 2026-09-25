@@ -66,6 +66,7 @@ uniform sampler3D uCubeTex;    // cube-mode grid: the volume itself, or its b^3 
 uniform vec3 uCubeSize;        // cube-grid shape
 uniform float uCubeVoxel;      // cube-grid spacing (m) = volume spacing * block size
 uniform bool uCubeBaked;       // true: sigma/coverage/SNR gates already applied in the merge
+uniform float uOpacity;        // display-only opacity multiplier, 0..1 (1 = unchanged)
 
 bool aboveSurface(vec3 world) {
   vec2 q = (world.xy - uSurfMin) / uSurfStep;
@@ -149,6 +150,7 @@ vec4 cubeMarch(vec3 o, vec3 dir, vec3 safeDir) {
   vec3 tDelta = abs(vec3(vs) / safeDir);
   vec3 tMax = (uWorldMin + (vec3(idx) + vec3(greaterThan(safeDir, vec3(0.0)))) * vs - o) / safeDir;
   float tCur = tEnter;
+  vec4 accum = vec4(0.0);
   for (int g = 0; g < 2048; g++) {
     vec3 centre = uWorldMin + (vec3(idx) + 0.5) * vs;
     vec3 tex = clamp((centre - uWorldMin) / uWorldExtent, 0.0, 1.0);
@@ -164,7 +166,11 @@ vec4 cubeMarch(vec3 o, vec3 dir, vec3 safeDir) {
           e[axis] = 1.0;
           if (min(min(e.x, e.y), e.z) < 0.03) shade *= 0.55;   // rim: 3% of the face width
         }
-        return vec4(rgb * shade, 1.0);
+        // uOpacity = 1: the first cube is opaque (accum.a = 1, loop ends) --
+        // exactly the old first-hit return. Below 1, cubes behind show through.
+        float a = uOpacity;
+        accum += (1.0 - accum.a) * vec4(rgb * shade * a, a);
+        if (accum.a > 0.98 || a <= 0.0) return accum;   // premultiplied, like the fog
       }
     }
     int a = 0;
@@ -177,7 +183,7 @@ vec4 cubeMarch(vec3 o, vec3 dir, vec3 safeDir) {
     tMax[a] += tDelta[a];
     axis = a;
   }
-  return vec4(0.0);
+  return accum;
 }
 
 void main() {
@@ -253,7 +259,7 @@ void main() {
           c.rgb *= 0.35 + 0.65 * lambert;
         }
       }
-      c.a = 1.0 - pow(1.0 - clamp(c.a, 0.0, 0.999), alphaExp);
+      c.a = 1.0 - pow(1.0 - clamp(c.a * uOpacity, 0.0, 0.999), alphaExp);
       c.rgb *= c.a;
       accum += (1.0 - accum.a) * c;
     }
@@ -448,7 +454,7 @@ export function initViewer(root) {
     'uSurfClip', 'uSurfTex', 'uSurfMin', 'uSurfStep', 'uSurfSize', 'uMinStepVoxels',
     'uRaysTex', 'uCoverageGateEnabled', 'uMinRays',
     'uSnrTex', 'uSnrGateEnabled', 'uMinSnr', 'uRenderMode', 'uCubeThreshold',
-    'uCubeTex', 'uCubeSize', 'uCubeVoxel', 'uCubeBaked',
+    'uCubeTex', 'uCubeSize', 'uCubeVoxel', 'uCubeBaked', 'uOpacity',
   ]) {
     uniforms[name] = gl.getUniformLocation(program, name);
   }
@@ -494,6 +500,7 @@ export function initViewer(root) {
     // meta.suggested_iso[0] on load.
     renderMode: 'fog',
     cubeThreshold: 0,
+    opacity: 1, // display-only multiplier on voxel opacity (fog alpha / cube translucency)
     // Cube size: b x b x b voxels merged into one display cube (1 = the solved
     // voxels). Built lazily by ensureCubeGrid(), keyed on everything it reads.
     cubeBlock: 1,
@@ -647,6 +654,7 @@ export function initViewer(root) {
     gl.uniform1f(uniforms.uMinSnr, state.minSnr);
     gl.uniform1i(uniforms.uRenderMode, state.renderMode === 'cubes' ? 1 : 0);
     gl.uniform1f(uniforms.uCubeThreshold, state.cubeThreshold);
+    gl.uniform1f(uniforms.uOpacity, state.opacity);
     const cg = state.renderMode === 'cubes' ? ensureCubeGrid() : null;
     const cShape = cg ? cg.shape : (state.meta ? state.meta.shape : [1, 1, 1]);
     const cVoxel = cg ? cg.spacing : 1;
@@ -1842,6 +1850,15 @@ export function initViewer(root) {
 
   root.querySelector('#render-mode').addEventListener('change', (ev) => {
     state.renderMode = ev.target.value === 'cubes' ? 'cubes' : 'fog';
+    render();
+  });
+  const opacityReadout = root.querySelector('#opacity-readout');
+  root.querySelector('#opacity').addEventListener('input', (ev) => {
+    const v = parseFloat(ev.target.value);
+    if (!Number.isFinite(v)) return;
+    state.opacity = Math.min(1, Math.max(0, v));
+    if (opacityReadout) opacityReadout.textContent = `${Math.round(state.opacity * 100)}%`;
+    beginInteraction();
     render();
   });
   root.querySelector('#cube-threshold').addEventListener('input', (ev) => {
