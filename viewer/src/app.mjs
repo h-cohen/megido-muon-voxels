@@ -1,6 +1,6 @@
 import { parseNpy } from './npy.mjs';
 import { identity, multiply, perspective, lookAt, invert } from './mat4.mjs';
-import { worldToVoxel, sampleNearest, reorderForTexture, rayBox } from './grid.mjs';
+import { worldToVoxel, sampleNearest, reorderForTexture, rayBox, voxelMarch } from './grid.mjs';
 import { insideClipBox, insideClipPlane } from './clip.mjs';
 import { buildTransferLUT } from './transfer.mjs';
 import { orbitToEye, CAMERA_PRESETS } from './camera.mjs';
@@ -60,6 +60,8 @@ uniform vec2 uSurfMin;     // (gx[0], gy[0])
 uniform vec2 uSurfStep;    // (gx[1]-gx[0], gy[1]-gy[0])  (the fit grid is uniform)
 uniform ivec2 uSurfSize;   // (nx, ny)
 uniform float uMinStepVoxels;  // minimum step length, in voxels (test-driven; default 0.5)
+uniform int uRenderMode;       // 0 density fog, 1 voxel cubes
+uniform float uCubeThreshold;  // cube mode: voxels >= this become opaque cubes
 
 bool aboveSurface(vec3 world) {
   vec2 q = (world.xy - uSurfMin) / uSurfStep;
@@ -101,6 +103,68 @@ float sampleDensity(vec3 tex) {
              mix(mix(c001, c101, f.x), mix(c011, c111, f.x), f.y), f.z);
 }
 
+// Cube mode: every gate evaluated once per voxel, at its centre, in the same
+// order as the fog march (clip box, clip plane, sigma, coverage, SNR,
+// surface). castHoverRay's cube branch mirrors this exactly.
+bool voxelGated(vec3 tex, vec3 world) {
+  bool clipped = any(lessThan(tex, uClipMin)) || any(greaterThan(tex, uClipMax));
+  if (uClipPlaneEnabled) {
+    float d = dot(tex - vec3(0.5), uClipPlaneNormal) - uClipPlaneD;
+    clipped = clipped || d < 0.0;
+  }
+  if (uSigmaGateEnabled) clipped = clipped || texture(uSigmaTex, tex).r > uSigmaGateValue;
+  if (uCoverageGateEnabled && !clipped) clipped = texture(uRaysTex, tex).r < uMinRays;
+  if (uSnrGateEnabled && !clipped) clipped = !(texture(uSnrTex, tex).r >= uMinSnr);
+  if (uSurfClip && !clipped) clipped = aboveSurface(world);
+  return clipped;
+}
+
+// Voxel-to-voxel DDA (Amanatides & Woo), the GPU twin of voxelMarch in
+// grid.mjs: first voxel >= uCubeThreshold that passes every gate becomes an
+// opaque cube, shaded by the face the ray entered through, with a darker rim
+// so neighbouring cubes read as separate blocks.
+vec4 cubeMarch(vec3 o, vec3 dir, vec3 safeDir, float tEnter, float tExit, vec3 tsm) {
+  float vs = uWorldExtent.x / uVolSize.x;
+  ivec3 n = ivec3(uVolSize);
+  int axis = -1;
+  if (tEnter > 0.0) axis = (tsm.x >= tsm.y && tsm.x >= tsm.z) ? 0 : (tsm.y >= tsm.z ? 1 : 2);
+  vec3 p = o + dir * tEnter;
+  ivec3 idx = clamp(ivec3(floor((p - uWorldMin) / vs)), ivec3(0), n - 1);
+  ivec3 stp = ivec3(sign(safeDir));
+  vec3 tDelta = abs(vec3(vs) / safeDir);
+  vec3 tMax = (uWorldMin + (vec3(idx) + vec3(greaterThan(safeDir, vec3(0.0)))) * vs - o) / safeDir;
+  float tCur = tEnter;
+  for (int g = 0; g < 2048; g++) {
+    vec3 tex = (vec3(idx) + 0.5) / uVolSize;
+    vec3 centre = uWorldMin + (vec3(idx) + 0.5) * vs;
+    if (!voxelGated(tex, centre)) {
+      float v = texelFetch(uVolume, idx, 0).r;
+      if (v >= uCubeThreshold) {
+        float t = clamp((v - uWindow.x) / max(uWindow.y - uWindow.x, 1e-6), 0.0, 1.0);
+        vec3 rgb = texture(uTransferLUT, vec2(t, 0.5)).rgb;
+        float shade = axis == 0 ? 0.78 : (axis == 1 ? 0.62 : 1.0);
+        if (axis >= 0) {
+          vec3 l = fract((o + dir * tCur - uWorldMin) / vs);
+          vec3 e = min(l, 1.0 - l);
+          e[axis] = 1.0;
+          if (min(min(e.x, e.y), e.z) < 0.06) shade *= 0.55;
+        }
+        return vec4(rgb * shade, 1.0);
+      }
+    }
+    int a = 0;
+    if (tMax.y < tMax[a]) a = 1;
+    if (tMax.z < tMax[a]) a = 2;
+    if (tMax[a] > tExit) break;
+    idx[a] += stp[a];
+    if (idx[a] < 0 || idx[a] >= n[a]) break;
+    tCur = tMax[a];
+    tMax[a] += tDelta[a];
+    axis = a;
+  }
+  return vec4(0.0);
+}
+
 void main() {
   vec2 ndc = vUv * 2.0 - 1.0;
   vec3 nearP = unproject(ndc, -1.0);
@@ -125,6 +189,7 @@ void main() {
   float tEnter = max(max(max(tsm.x, tsm.y), tsm.z), 0.0);
   float tExit = min(min(tbg.x, tbg.y), tbg.z);
   if (tExit <= tEnter) { outColor = vec4(0.0); return; }
+  if (uRenderMode == 1) { outColor = cubeMarch(nearP, dir, safeDir, tEnter, tExit, tsm); return; }
 
   float voxel = uWorldExtent.x / uVolSize.x;       // cubic voxels (single spacing)
   float stepLen = max(uMinStepVoxels * voxel, (tExit - tEnter) / float(uSteps));
@@ -367,7 +432,7 @@ export function initViewer(root) {
     'uWorldMin', 'uWorldExtent', 'uManualTrilinear', 'uShading', 'uVolSize', 'uRefStep',
     'uSurfClip', 'uSurfTex', 'uSurfMin', 'uSurfStep', 'uSurfSize', 'uMinStepVoxels',
     'uRaysTex', 'uCoverageGateEnabled', 'uMinRays',
-    'uSnrTex', 'uSnrGateEnabled', 'uMinSnr',
+    'uSnrTex', 'uSnrGateEnabled', 'uMinSnr', 'uRenderMode', 'uCubeThreshold',
   ]) {
     uniforms[name] = gl.getUniformLocation(program, name);
   }
@@ -408,6 +473,11 @@ export function initViewer(root) {
     minSnr: 3,
     hasSnr: false,
     snrTex: dummyVolume,
+    // 'fog' (density raymarch, default) or 'cubes' (opaque voxel blocks >=
+    // cubeThreshold; display-only). cubeThreshold defaults to the run's
+    // meta.suggested_iso[0] on load.
+    renderMode: 'fog',
+    cubeThreshold: 0,
     volumeTex: dummyVolume,
     sigmaTex: dummyVolume,
     floatLinear,
@@ -553,6 +623,8 @@ export function initViewer(root) {
     gl.uniform1f(uniforms.uMinRays, state.minRays);
     gl.uniform1i(uniforms.uSnrGateEnabled, (state.snrGateEnabled && state.hasSnr) ? 1 : 0);
     gl.uniform1f(uniforms.uMinSnr, state.minSnr);
+    gl.uniform1i(uniforms.uRenderMode, state.renderMode === 'cubes' ? 1 : 0);
+    gl.uniform1f(uniforms.uCubeThreshold, state.cubeThreshold);
     // Fast preview while interacting (drag/zoom/slider): fewer march steps
     // and no shading for this frame only -- state.shading itself is left
     // untouched, so the checkbox/readout never lies about the setting, and
@@ -1177,6 +1249,13 @@ export function initViewer(root) {
     frameAll();
 
     applyViewerCrop(meta);
+    {
+      const iso = Array.isArray(meta.suggested_iso) ? meta.suggested_iso[0] : null;
+      const vr = Array.isArray(meta.value_range) ? meta.value_range : [0, 1];
+      state.cubeThreshold = Number.isFinite(iso) ? iso : 0.5 * (vr[0] + vr[1]);
+      const el = root.querySelector('#cube-threshold');
+      if (el) el.value = String(state.cubeThreshold);
+    }
 
     state.activeLayer = 'volume';
     state.volumeTex = makeVolumeTexture(gl, meta.shape, state.layerData.get('volume'));
@@ -1684,6 +1763,18 @@ export function initViewer(root) {
     render();
   });
 
+  root.querySelector('#render-mode').addEventListener('change', (ev) => {
+    state.renderMode = ev.target.value === 'cubes' ? 'cubes' : 'fog';
+    render();
+  });
+  root.querySelector('#cube-threshold').addEventListener('input', (ev) => {
+    const v = parseFloat(ev.target.value);
+    if (!Number.isFinite(v)) return;
+    state.cubeThreshold = v;
+    beginInteraction();
+    render();
+  });
+
   root.querySelector('#snr-gate-enabled').addEventListener('change', (ev) => {
     state.snrGateEnabled = ev.target.checked;
     if (state.applyWindowForLayer) state.applyWindowForLayer(state.activeLayer);
@@ -1740,6 +1831,7 @@ export function initViewer(root) {
 
     const { min, extent } = worldBounds();
     const boxMax = [min[0] + extent[0], min[1] + extent[1], min[2] + extent[2]];
+    if (state.renderMode === 'cubes') return castCubeRay(nearP, dirN, data);
     const hit = rayBox(nearP, dirN, min, boxMax);
     if (!hit) return null;
     const [tEnter, tExit] = hit;
@@ -1792,6 +1884,37 @@ export function initViewer(root) {
     }
     return null;
   }
+  // Cube-mode hover: the same voxel-to-voxel march as FRAGMENT_SRC's
+  // cubeMarch (voxelMarch, grid.mjs), with every gate evaluated at the voxel
+  // centre in the shader's order, returning the first voxel >= threshold.
+  function castCubeRay(nearP, dirN, data) {
+    const meta = state.meta;
+    const [nx, ny, nz] = meta.shape;
+    const s = meta.spacing_m, o = meta.origin_m;
+    const sigmaData = state.layerData.get('sigma');
+    const raysData = state.layerData.get('rays');
+    const snrData = state.layerData.get('snr');
+    const at = (arr, i, j, k) => arr[i * ny * nz + j * nz + k];
+    let value = NaN;
+    const hit = voxelMarch(nearP, dirN, meta, (i, j, k) => {
+      const tex = [(i + 0.5) / nx, (j + 0.5) / ny, (k + 0.5) / nz];
+      const world = [o[0] + (i + 0.5) * s, o[1] + (j + 0.5) * s, o[2] + (k + 0.5) * s];
+      if (!insideClipBox(tex, state.clipMin, state.clipMax)) return false;
+      if (state.clipPlaneEnabled && !insideClipPlane(tex, state.clipPlaneNormal, state.clipPlaneD)) return false;
+      if (state.sigmaGateEnabled && sigmaData && at(sigmaData, i, j, k) > state.sigmaGateValue) return false;
+      if (state.coverageGateEnabled && state.hasRays && raysData && at(raysData, i, j, k) < state.minRays) return false;
+      if (state.snrGateEnabled && state.hasSnr && snrData && !(at(snrData, i, j, k) >= state.minSnr)) return false;
+      if (state.surfClip && state.hillSurface && state.hillDisplayH) {
+        const hs = surfaceHeightAt(state.hillDisplayH, state.hillSurface.gx, state.hillSurface.gy, world[0], world[1]);
+        if (Number.isFinite(hs) && world[2] > hs) return false;
+      }
+      const v = at(data, i, j, k);
+      if (v >= state.cubeThreshold) { value = v; return true; }
+      return false;
+    });
+    return hit ? { i: hit[0], j: hit[1], k: hit[2], value } : null;
+  }
+
   // Test hook: state.pick(x, y) -> {i,j,k,value} | null, exercised directly
   // by Playwright tests without simulating pointermove events.
   state.pick = (x, y) => castHoverRay(x, y);

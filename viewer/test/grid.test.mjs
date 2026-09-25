@@ -118,3 +118,43 @@ test('rayBox: a ray with a zero direction component still works (guard)', () => 
   assert.ok(Math.abs(tEnter - 2) < 1e-6);
   assert.ok(Math.abs(tExit - 3) < 1e-6);
 });
+
+// voxelMarch: exact voxel-to-voxel traversal (Amanatides-Woo DDA) used by the
+// "Voxel cubes" render mode and its hover mirror. Visits every voxel the ray
+// passes through, in order, with the axis of the face it entered through.
+import { voxelMarch } from '../src/grid.mjs';
+
+const CUBE_META = { shape: [4, 3, 5], origin_m: [0, 0, 1], spacing_m: 0.5 };
+
+test('voxelMarch: a vertical ray from above visits one column top-down, entering through z faces', () => {
+  const seen = [];
+  voxelMarch([0.75, 0.25, 10], [0, 0, -1], CUBE_META, (i, j, k, axis) => { seen.push([i, j, k, axis]); return false; });
+  assert.deepEqual(seen.map((v) => v.slice(0, 3)), [[1, 0, 4], [1, 0, 3], [1, 0, 2], [1, 0, 1], [1, 0, 0]]);
+  assert.ok(seen.every((v) => v[3] === 2));
+});
+
+test('voxelMarch: stops at the first voxel the visitor accepts', () => {
+  const seen = [];
+  const hit = voxelMarch([0.75, 0.25, 10], [0, 0, -1], CUBE_META, (i, j, k) => { seen.push(k); return k === 2; });
+  assert.deepEqual(hit.slice(0, 3), [1, 0, 2]);
+  assert.deepEqual(seen, [4, 3, 2]);
+});
+
+test('voxelMarch: a diagonal ray in x-z steps through adjacent voxels only', () => {
+  const seen = [];
+  const d = [1 / Math.SQRT2, 0, 1 / Math.SQRT2];
+  voxelMarch([-0.1, 0.25, 0.9], d, CUBE_META, (i, j, k, axis) => { seen.push([i, j, k, axis]); return false; });
+  assert.ok(seen.length >= 4);
+  for (let n = 1; n < seen.length; n++) {
+    const dx = seen[n][0] - seen[n - 1][0], dz = seen[n][2] - seen[n - 1][2];
+    assert.equal(Math.abs(dx) + Math.abs(dz), 1, `step ${n} jumps a voxel`);
+    assert.equal(seen[n][3], dx !== 0 ? 0 : 2, `step ${n} reports the wrong entry face`);
+  }
+});
+
+test('voxelMarch: a ray that misses the box visits nothing', () => {
+  let n = 0;
+  const hit = voxelMarch([10, 10, 10], [0, 0, 1], CUBE_META, () => { n++; return true; });
+  assert.equal(hit, null);
+  assert.equal(n, 0);
+});
