@@ -75,6 +75,24 @@ Two causes, established with phantoms through the real geometry:
    backprojection at 7 m); in 3D the remedy is a different unknown (a layer
    at the independently measured ~7 m ceiling), not a better voxel solve.
 
+## Beams in 3D (2026-09-24)
+
+The 3D voxels DO localize the beams in height: two positions line up sharp
+features only at their true height. Spike (phantom beams at 6.6–7.0 m +
+ceiling slab + side walls, real geometry, real-σ noise): per-height beam
+contrast (profile across y≈0, peaks at the beam x vs troughs) is ≈0 from
+1.9 to 5.5 m and peaks at 6.7 m for every solver variant tried. Real data
+peaks at 6.3–7.9 m. What changed:
+
+- `tv_z_weight` 0 (was 0.5): z-smoothing fights the parallax. Phantom
+  contrast 2.64 → 3.16 (truth 4.67); real focus 7.5 → 7.1 m (cafeteria
+  project's model-free beam parallax: 7.0–7.1 m), contrast 1.91 → 2.46.
+  Rejected in the same spike: an L1 sparsity prior (contrast 2.84 at 0.05,
+  collapses at 0.15, χ² 4.9) and 0.4 m voxels (worse contrast, larger shell).
+- Viewer SNR gate at 3: the corners of the square acceptance are the noisiest
+  directions and leave diagonal streaks the ray gate keeps; at SNR ≥ 3 the
+  streaks fall to 0.21 of beam brightness while the beams keep their value.
+
 Previous (relative-gauge) results are kept in `runs/cafeteria/solve_relgauge`
 and `voxels_relgauge`; `voxels/gauge_before_after.png` compares them.
 

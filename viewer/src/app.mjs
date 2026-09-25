@@ -46,6 +46,9 @@ uniform float uSigmaGateValue;
 uniform sampler3D uRaysTex;
 uniform bool uCoverageGateEnabled;
 uniform float uMinRays;
+uniform sampler3D uSnrTex;
+uniform bool uSnrGateEnabled;
+uniform float uMinSnr;
 uniform int uSteps;
 uniform bool uManualTrilinear;
 uniform bool uShading;
@@ -147,6 +150,10 @@ void main() {
     }
     if (uCoverageGateEnabled && !clipped) {
       clipped = texture(uRaysTex, tex).r < uMinRays;
+    }
+    if (uSnrGateEnabled && !clipped) {
+      // !(>=) so a NaN SNR (bootstrap said nothing) is hidden, matching hover.
+      clipped = !(texture(uSnrTex, tex).r >= uMinSnr);
     }
     if (uSurfClip && !clipped) clipped = aboveSurface(pos);
     if (!clipped) {
@@ -360,6 +367,7 @@ export function initViewer(root) {
     'uWorldMin', 'uWorldExtent', 'uManualTrilinear', 'uShading', 'uVolSize', 'uRefStep',
     'uSurfClip', 'uSurfTex', 'uSurfMin', 'uSurfStep', 'uSurfSize', 'uMinStepVoxels',
     'uRaysTex', 'uCoverageGateEnabled', 'uMinRays',
+    'uSnrTex', 'uSnrGateEnabled', 'uMinSnr',
   ]) {
     uniforms[name] = gl.getUniformLocation(program, name);
   }
@@ -394,6 +402,12 @@ export function initViewer(root) {
     minRays: 6,
     hasRays: false,
     raysTex: dummyVolume,
+    // SNR gate (display-only): hide voxels whose bootstrap SNR < minSnr. On
+    // by default, live only when the run ships an `snr` layer.
+    snrGateEnabled: true,
+    minSnr: 3,
+    hasSnr: false,
+    snrTex: dummyVolume,
     volumeTex: dummyVolume,
     sigmaTex: dummyVolume,
     floatLinear,
@@ -470,7 +484,7 @@ export function initViewer(root) {
     // always gates per voxel) and disagree with nearest-voxel hover.
     // The rays texture is a per-voxel count gate, NEAREST for the same reason.
     const sets = [[state.volumeTex, filter], [state.sigmaTex, gl.NEAREST],
-                  [state.raysTex, gl.NEAREST]];
+                  [state.raysTex, gl.NEAREST], [state.snrTex, gl.NEAREST]];
     for (const [tex, f] of sets) {
       if (!tex) continue;
       gl.bindTexture(gl.TEXTURE_3D, tex);
@@ -537,6 +551,8 @@ export function initViewer(root) {
     gl.uniform1f(uniforms.uSigmaGateValue, state.sigmaGateValue);
     gl.uniform1i(uniforms.uCoverageGateEnabled, (state.coverageGateEnabled && state.hasRays) ? 1 : 0);
     gl.uniform1f(uniforms.uMinRays, state.minRays);
+    gl.uniform1i(uniforms.uSnrGateEnabled, (state.snrGateEnabled && state.hasSnr) ? 1 : 0);
+    gl.uniform1f(uniforms.uMinSnr, state.minSnr);
     // Fast preview while interacting (drag/zoom/slider): fewer march steps
     // and no shading for this frame only -- state.shading itself is left
     // untouched, so the checkbox/readout never lies about the setting, and
@@ -577,6 +593,9 @@ export function initViewer(root) {
     gl.activeTexture(gl.TEXTURE4);
     gl.bindTexture(gl.TEXTURE_3D, state.raysTex);
     gl.uniform1i(uniforms.uRaysTex, 4);
+    gl.activeTexture(gl.TEXTURE5);
+    gl.bindTexture(gl.TEXTURE_3D, state.snrTex);
+    gl.uniform1i(uniforms.uSnrTex, 5);
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     if (state.showDetectors && state.meta && state.markerVertexCount > 0) {
@@ -1178,6 +1197,14 @@ export function initViewer(root) {
       const el = root.querySelector(id);
       if (el) el.disabled = !state.hasRays;
     }
+    state.hasSnr = state.layerData.has('snr');
+    state.snrTex = state.hasSnr
+      ? makeVolumeTexture(gl, meta.shape, state.layerData.get('snr'))
+      : dummyVolume;
+    for (const id of ['#snr-gate-enabled', '#snr-gate-value']) {
+      const el = root.querySelector(id);
+      if (el) el.disabled = !state.hasSnr;
+    }
     applyVolumeFilter();
 
     // Window each layer to ITS OWN robust range (see histogram.mjs
@@ -1208,10 +1235,14 @@ export function initViewer(root) {
     // gate KEEPS: the hidden shell's inflated values would otherwise set the
     // colour scale and push the constrained interior into the dark end.
     function gatedForWindow(data) {
-      const rays = state.layerData.get('rays');
-      if (!(state.coverageGateEnabled && state.hasRays && rays)) return data;
+      const rays = state.coverageGateEnabled && state.hasRays ? state.layerData.get('rays') : null;
+      const snr = state.snrGateEnabled && state.hasSnr ? state.layerData.get('snr') : null;
+      if (!rays && !snr) return data;
       const out = new Float32Array(data.length);
-      for (let i = 0; i < data.length; i++) out[i] = rays[i] >= state.minRays ? data[i] : NaN;
+      for (let i = 0; i < data.length; i++) {
+        const kept = (!rays || rays[i] >= state.minRays) && (!snr || snr[i] >= state.minSnr);
+        out[i] = kept ? data[i] : NaN;
+      }
       return out;
     }
 
@@ -1630,6 +1661,20 @@ export function initViewer(root) {
     render();
   });
 
+  root.querySelector('#snr-gate-enabled').addEventListener('change', (ev) => {
+    state.snrGateEnabled = ev.target.checked;
+    if (state.applyWindowForLayer) state.applyWindowForLayer(state.activeLayer);
+    render();
+  });
+  root.querySelector('#snr-gate-value').addEventListener('input', (ev) => {
+    const n = parseFloat(ev.target.value);
+    if (!Number.isFinite(n)) return;
+    state.minSnr = n;
+    if (state.applyWindowForLayer) state.applyWindowForLayer(state.activeLayer);
+    beginInteraction();
+    render();
+  });
+
   // Shares cameraMatrices() with render() (mirrored by the GPU-side
   // unproject() in FRAGMENT_SRC), so hover picking always agrees with what
   // was actually drawn. If the projection convention changes, update
@@ -1640,7 +1685,7 @@ export function initViewer(root) {
   // uMinStepVoxels, cubic voxel size, tEnter+(i+0.5)*stepLen) -- always the
   // FULL-quality step count, never the adaptive-preview one, since hover
   // picking is a discrete user action, not a per-frame render. Applies clip
-  // box, clip plane, sigma gate, coverage gate and surface clip in the same order as the
+  // box, clip plane, sigma gate, coverage gate, SNR gate and surface clip in the same order as the
   // shader; the sigma gate reads the CPU-side sigma layer array with
   // sampleNearest (there is no readback from uSigmaTex) and only applies
   // when the gate is enabled AND a sigma layer is loaded.
@@ -1684,6 +1729,8 @@ export function initViewer(root) {
     const sigmaGateActive = state.sigmaGateEnabled && !!sigmaData;
     const raysData = state.layerData.get('rays');
     const coverageGateActive = state.coverageGateEnabled && state.hasRays && !!raysData;
+    const snrData = state.layerData.get('snr');
+    const snrGateActive = state.snrGateEnabled && state.hasSnr && !!snrData;
 
     for (let i = 0; i < RAY_STEPS; i++) {
       const tt = tEnter + (i + 0.5) * stepLen;
@@ -1705,6 +1752,9 @@ export function initViewer(root) {
       }
       if (!clipped && coverageGateActive) {
         clipped = sampleNearest(raysData, state.meta.shape, vi, vj, vk) < state.minRays;
+      }
+      if (!clipped && snrGateActive) {
+        clipped = !(sampleNearest(snrData, state.meta.shape, vi, vj, vk) >= state.minSnr);
       }
       if (!clipped && state.surfClip && state.hillSurface && state.hillDisplayH) {
         const hs = surfaceHeightAt(state.hillDisplayH, state.hillSurface.gx, state.hillSurface.gy, world[0], world[1]);

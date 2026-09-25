@@ -227,6 +227,8 @@
         <input id="sigma-gate-value" type="range" min="0" max="1" step="0.01" value="1">
         <label title="Voxels crossed by only a ray or two are that ray's private unknowns: the solver parks its noise there as mass. Display-only; hidden voxels are not constrained, not empty."><input id="coverage-gate-enabled" type="checkbox" style="width:auto" checked disabled> hide voxels crossed by fewer than</label>
         <div class="row"><input id="coverage-gate-value" type="number" min="1" max="100" step="1" value="6" style="width:4.5em" disabled> <span>rays (not constrained)</span></div>
+        <label title="Bootstrap signal-to-noise per voxel. The noisiest directions (the corners of the detector's square acceptance) leave streaks the bootstrap calls insignificant. Display-only."><input id="snr-gate-enabled" type="checkbox" style="width:auto" checked disabled> hide voxels with SNR below</label>
+        <div class="row"><input id="snr-gate-value" type="number" min="0" max="100" step="0.5" value="3" style="width:4.5em" disabled> <span>(not significant)</span></div>
       </div>
     </section>
 

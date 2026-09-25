@@ -53,7 +53,14 @@ reconstruction:
   # where chi2 ~ 1 under the pipeline's own errors: the least smoothing that
   # stops fitting noise. 0.2 removes the shell but blurs the beams away.
   tv_alpha: 0.03
-  tv_z_weight: 0.5
+  # 0, not 0.5: smoothing along z fights the only depth information (the
+  # parallax of sharp features between the two positions). Phantom (beams at
+  # 6.6-7.0 m, real geometry + real-sigma noise): both settings focus the
+  # beams at 6.7 m, contrast 2.64 (0.5) vs 3.16 (0) of truth 4.67. Real data:
+  # beam contrast peaks at 7.5 m (0.5) vs 7.1 m (0) -- the cafeteria
+  # project's model-free beam parallax says 7.0-7.1 m -- contrast 1.91 vs
+  # 2.46, chi2 0.75 vs 0.67 (analytic sigma). Contrast is ~0 at 1.9-5.5 m.
+  tv_z_weight: 0.0
 
 sky_reference:
   id: SKY

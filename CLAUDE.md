@@ -124,7 +124,10 @@ Built in phases, each with its own spec-referenced plan under
   one or two oblique rays cross are those rays' private unknowns, and under
   non-negativity the solver parks their noise there as a bright outer shell
   (proven by a noisy flat-slab phantom; `docs/cafeteria-run.md`). Megiddo
-  has the same shell; re-run `reconstruct` to get the layer. The surface can be coloured by σ, by ray residual
+  has the same shell; re-run `reconstruct` to get the layer. An SNR gate
+  ("hide voxels with SNR below N", on at 3 when `snr.npy` exists) removes
+  the streaks the noisiest directions (acceptance corners) leave; both
+  gates also set the auto colour window from the voxels they keep. The surface can be coloured by σ, by ray residual
   (diverging, "not separable from an a/density-scale misfit"), or plain.
   While dragging or moving a slider the viewer renders a fast preview (64
   steps, no shading) and one full render after 150 ms idle; tests must call
