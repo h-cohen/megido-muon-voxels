@@ -58,7 +58,10 @@ around them, and do not accept a change that claims to beat them without new dat
 - **Absolute opacity level is gauge-degenerate.** `counts ∝ norm·exp(−λ)`, so
   `λ → λ+c` is exactly cancelled by `norm → norm·eᶜ`. Only differences (voxels)
   and shape (surface) are meaningful. Fixable only by an external reference
-  (a surveyed overburden or known-density anchor), never from the data.
+  (a surveyed overburden or known-density anchor), never from the data. An
+  open-sky run with known live times IS such a reference: the cafeteria
+  campaign measures its zero point that way (`megido/skyref.py`,
+  `BaselineSolution.absolute`, `c_p` fixed at 0). Megiddo has none.
 - **Absolute hillside height is that same degeneracy** in the surface: `H ∝ 1/ρ`
   via the assumed `a`. Shape is measured; scale is assumed and labelled so.
 
@@ -312,6 +315,10 @@ controller's, which is the most expensive one.
 - Specs: `docs/superpowers/specs/`. Plans: `docs/superpowers/plans/`. Phase
   reports: `docs/phase*-report.md`.
 - Code: `megido/`. Tests: `tests/` (one module per source module).
+- Second campaign (TAU cafeteria, ROOT histograms + open-sky run):
+  data `/home/hadar/Cloud/Work/Postdoc/01_data/processed/tau_cafeteria_root`,
+  config `configs/cafeteria.yaml`, runs `runs/cafeteria/`, write-up and
+  commands `docs/cafeteria-run.md`.
 
 ## Running it
 

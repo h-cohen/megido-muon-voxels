@@ -4,7 +4,7 @@ export const KNOWN_LAYERS = {
   snr: { label: 'SNR', kind: 'scalar' },
   views: { label: 'View count', kind: 'scalar' },
   rays: { label: 'Ray count', kind: 'scalar' },
-  systematic: { label: 'Gauge systematic', kind: 'signed' },
+  systematic: { label: 'Systematic (gauge or flux scale)', kind: 'signed' },
   backprojection: { label: 'Backprojection', kind: 'scalar' },
   volume_holdout_pos0: { label: 'Holdout: pos0 removed', kind: 'scalar' },
   volume_holdout_pos1: { label: 'Holdout: pos1 removed', kind: 'scalar' },

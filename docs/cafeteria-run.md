@@ -1,162 +1,119 @@
 # TAU cafeteria campaign through the megido pipeline
 
-Detached from the Megiddo analysis: its own config (`configs/cafeteria.yaml`),
-its own run folder (`runs/cafeteria/`), branch `worktree-cafeteria-run`. The
-Megiddo config, artifacts and code paths are unchanged (no `detector:` /
-`sky_reference:` block → exactly the old behaviour, tested).
+A second campaign run through the same pipeline, detached from the Megiddo
+analysis: its own config (`configs/cafeteria.yaml`) and run folder
+(`runs/cafeteria/`). Every new capability is opt-in from the site config; a
+config without the new blocks (Megiddo) behaves exactly as before.
 
-## What had to change, and why
+## Running it
 
-| Megiddo | Cafeteria | Change |
+```bash
+C=configs/cafeteria.yaml; R=runs/cafeteria
+uv run python -m megido.cli ingest      --config $C --out $R/ingest        # ROOT txty + live times
+uv run python -m megido.cli solve       --config $C --run $R/ingest --out $R/solve
+uv run python -m megido.cli reconstruct --config $C --solve $R/solve --run $R/ingest \
+    --out $R/voxels --cache $R/.cache --bootstrap 8 --backproject-z 7.0
+uv run python -m megido.cli export      --config $C --run $R/voxels
+uv run python -m megido.cli hillside    --config $C --surface-a 48 --solve $R/solve \
+    --run $R/ingest --out $R/voxels                                           # display overlay only
+uv run python -m megido.cli view        # Load run -> runs/cafeteria/voxels
+```
+
+In the viewer: **Render → Voxel cubes** for block voxels (threshold and
+cube size under it); clip z to ≈ 0.66–0.86 (6–8 m) and use the Top preset to
+read the ceiling beams.
+
+## How this campaign differs from Megiddo, and what that required
+
+| Megiddo | Cafeteria | Change (all opt-in) |
 |---|---|---|
-| raw `.data`, Phase 1 builds `counts_*.npz` | DAQ ROOT `txty` TH2 (800×800, tan ±2) | `megido/rootingest.py` crops to the site binning and writes the same `counts_*.npz` seam (bins must coincide; no resampling) |
-| no open-sky run → tilt-based joint solve | clear-sky roof run of the same detector | `megido/skyref.py`: `λ = −ln(max(n_pos/(s·n_sky), 0.05))` in the detector frame, scattered to the sky grid by pose; gauge-pinned exactly like the joint solve |
-| Detector 3 constants (width 38.4 cm, dz 31.5 cm, tan edge 1.22) | fails here: sky acceptance edge is tan 0.91 | optional `detector:` override, **measured from the sky run**: width 35.375 cm (hit positions, all 4 layers), dz 38.9 cm (acceptance edge) — `DetectorGeometry.for_site` |
+| raw `.data`; Phase 1 builds `counts_*.npz` | DAQ ROOT `txty` TH2 (800×800, tan ±2) | `megido/rootingest.py`: crop to the site binning into the same `counts_*.npz` seam (bins must coincide; never resampled); live time per run = Σ `dT` |
+| no open-sky run → tilt-based joint solve | clear-sky roof run of the same detector | `megido/skyref.py`: λ = −ln(max(n_pos / (t_pos/t_sky · n_sky), 0.05)) in the detector frame, scattered to the sky grid by pose |
+| opacity zero point degenerate → fitted offset `c_p` | zero point **measured** by the live-time ratio | `BaselineSolution.absolute`; `c_p` fixed at 0 (`solve(..., fit_offsets=False)`); the gauge systematic becomes a ±3% flux-scale systematic |
+| Detector 3 constants (width 38.4 cm, tan edge 1.22) | fail here: acceptance edge tan 0.91 | `detector:` override **measured from the sky run**: width 35.375 cm (hit positions, all 4 layers), dz 38.9 cm (acceptance edge) — `DetectorGeometry.for_site` |
 | bootstrap re-runs the joint solve | re-runs the sky ratio, sky counts resampled too | `solver=` hook on `opacity_uncertainty` / `voxel_bootstrap` |
 
-Without `--bootstrap`, `reconstruct --run` uses the analytic Poisson sigma
-`sqrt(1/n_pos + 1/n_sky)`.
+Reconstruction settings (`configs/cafeteria.yaml`, each justified inline
+there): `tv_alpha` 0.03, `tv_z_weight` 0, `coverage_damping` 0.05, 0.20 m
+voxels, display crop x −5…7, y −5…5 m.
 
-## Commands
+## Current result
 
-See the header of `configs/cafeteria.yaml`. The hillside stage was run with
-`--surface-a 48` (see below).
+- Ingest: pos0 6.33 M, pos1 2.41 M, sky 28.5 M tracks; live times 875 175 /
+  334 074 / 3 579 978 s. 1293 sky bins constrained per position.
+- Voxels: 90×85×40 at 0.20 m, 2586 rows, χ² 0.99 under the 8-replica
+  bootstrap σ; 37% of the voxels both positions see are above SNR 3;
+  flux-scale (+3%) systematic 0.024 1/m max.
+- The ceiling beams (line features along y at ≈ 1.7 m pitch in x, plus a
+  cross beam near y ≈ 3 m) are localized **in height**: per-height beam
+  contrast is ≈ 0 from 1.9 to 5.5 m and peaks at 7.1 m, matching the
+  cafeteria project's independent, model-free beam parallax (7.0–7.1 m).
+  Depth in general is still **not** resolved (dz ≈ 0.9 m at 5 m); sharp
+  features localize, broad ones do not.
+- The sides stay brighter than the beams because they are more opaque:
+  directions at 22–45° carry 15–55% more opacity than a flat ceiling
+  (6–22σ; walls / neighbouring structure). The beams are the sharpest
+  regular structure, not the most opaque.
+- Hillside surface: the uniform-solid "hill" model does not describe a
+  ceiling (per-ray VE 2.5%; out-of-sample r 0.02 / 0.39 against shuffled
+  nulls 0.06–0.14 / 0.15–0.21 at a = 48). Display overlay only.
 
-## The bright outer shell (diagnosed 2026-09-24)
+## Why the reconstruction is set up this way — the bright outer shell
 
-Symptom: the outermost voxels outshine the interior and mask the beams.
-Two causes, established with phantoms through the real geometry:
+The first reconstruction's outer shell outshone the interior and hid the
+beams. Established with phantoms through the real geometry and real-σ noise:
 
-1. **Fitted opacity gauge (FIXED).** With a relative gauge the per-position
-   offset `c_p` absorbs the constant part of a flat ceiling (phantom: c_p =
-   0.0996 of a true 0.100) and only the oblique `(sec θ − 1)` excess reaches
-   the voxels, in the outer shell. Pinning c_p at its true value restores the
-   slab flat (centre 0.100, rim 0.099). The cafeteria gauge is now
-   **measured**: live time per run = Σ `dT` (rate ratios cross-checked
-   against the `dT` slope and the `rate` profile to 0.3%), λ absolute, c_p
-   fixed at 0 (`BaselineSolution.absolute`, `solve(..., fit_offsets=False)`;
-   gate: `tests/test_absolute_gauge.py`). Real data: inner column opacity
-   0.065 → 0.084 (vertical λ ≈ 0.08, σ 0.007); negative-λ bins are all
-   within 3σ (acceptance-edge noise). A free fit would take c_p = +0.03 /
-   +0.02. Residual systematic: flux difference roof vs cafeteria epoch,
-   shown as the +3% flux-scale systematic map (7% of peak).
-2. **Noise overfitted into exclusive voxels (handled: `tv_alpha` 0.03 +
-   viewer coverage gate at 6 rays).** Stronger TV alone is the wrong tool:
-   beam modulation (column profile across y≈0, peaks x = 0.1/1.7/3.5 m vs
-   troughs) falls 0.99 → 0.72 → 0.55 → 0.34 at `tv_alpha` 0.01/0.03/0.05/0.08,
-   and 0.2 removes the shell but blurs the beams away. The shell is instead
-   hidden by `rays.npy` (rows crossing each voxel, written by `reconstruct`)
-   and the viewer's "hide voxels crossed by fewer than N rays" gate (on by
-   default when the layer exists, N = 6; display-only, hidden = not
-   constrained). Edge/centre p99 density with the gate at 6: 3.3× → 1.8× at
-   0.01 → 0.03. 0.03 is where χ² ≈ 1 under the pipeline's bootstrap σ
-   (~1.45× tighter than analytic). Details of the diagnosis:
-   306 k voxels vs 2586 rows: near the grid edge every oblique ray has voxels
-   no other ray crosses. Under non-negativity, positive noise becomes mass
-   there and negative noise can only erode the shared interior. Flat-ceiling
-   phantom + real-σ noise, measured gauge: shell/covered density 17.5× at
-   `tv_alpha` 0.01 (χ² 0.26), 3.3× at 0.2; noiseless 1.1×. Early stopping
-   removes the shell only by stopping before the ceiling is reconstructed
-   (χ² < 1 after 2 iterations; column 45% of truth). Real-data TV sweep:
-   shell 5.2× / 2.8× / 2.2× / 1.2× at `tv_alpha` 0.01 / 0.03 / 0.08 / 0.2,
-   χ² 0.31 → 2.66; out-of-sample r best at 0.2 in both directions
-   (0.13 / 0.22), weak everywhere.
+1. **Fitted opacity gauge (fixed by measuring it).** A free `c_p` absorbs the
+   constant part of a flat ceiling (phantom: 0.0996 of a true 0.100) and only
+   the oblique (sec θ − 1) excess reaches the voxels — in the shell. Measured
+   gauge restores the slab flat (centre 0.100, rim 0.099;
+   `tests/test_absolute_gauge.py`). Live-time rate ratios agree with the `dT`
+   slope and the `rate` profile to 0.3%.
+2. **Noise parked in poorly covered voxels (fixed by coverage damping).**
+   Voxels one or two rays cross are those rays' private unknowns; SIRT hands
+   them their whole residual and non-negativity keeps the positive noise.
+   A phantom with only beams + ceiling + noise reproduces the real shell
+   (side p99 3.80× beam; real 3.85×). Compared at comparable χ²:
 
-3. **Real oblique opacity, placed by the depth null space (not an
-   artifact; not removable by the voxel solve).** Measured λ exceeds a flat
-   ceiling (λ₀·sec θ, λ₀ from |t| < 0.2) by +0.013…+0.019 (pos0) and
-   +0.019…+0.055 (pos1) between 22° and 45°, 6–22σ: walls / neighbouring
-   structure. Near-vertical rays pin the central columns low, so the solver
-   can only put that excess where oblique rays alone go — the outer, upper
-   grid. At ceiling height centre and edge voxels have the SAME ray count
-   (4–5 at z 6.7–7.5 m; rays land ~0.35 m apart there, wider than the voxels),
-   so no ray-count gate separates them; a gate strong enough to remove this
-   part also removes the beams. The beams are sharpest in 2D (column opacity,
-   backprojection at 7 m); in 3D the remedy is a different unknown (a layer
-   at the independently measured ~7 m ceiling), not a better voxel solve.
+   | solver (real data unless noted) | χ² | beam contrast | side p99 / beam | phantom false shell / beam | phantom mass < 4 m (truth 20%) |
+   |---|---|---|---|---|---|
+   | TV 0.03, zw 0, no damping | 0.67 | 2.46 | 3.85 | 0.220 | 6% |
+   | stronger TV 0.06 / 0.1 | 1.14 / 1.74 | 1.84 / 1.09 | 3.78 / 4.04 | 0.236 / 0.257 | — |
+   | step weighting γ 0.5 | 1.80 | 2.43 | 1.88 | 0.157 | — |
+   | **coverage damping μ 0.05 (adopted)** | 0.68 | 3.28 | 1.60 | 0.118 | 22% |
+   | damping μ 0.2 | 0.91 | 3.74 | 1.16 | 0.096 | 31% (mass piles above the detectors) |
+   | + depth prior β 1…30 (rejected) | 0.84…1.54 | 2.00…0.91 | 1.65…1.38 | 0.97…0.94 | a wrong band captures 24–74% |
 
-## Beams in 3D (2026-09-24)
+3. **`tv_z_weight` 0:** z-smoothing fights the parallax. Phantom beam
+   contrast 2.64 → 3.16 (truth 4.67); real focus 7.5 → 7.1 m.
 
-The 3D voxels DO localize the beams in height: two positions line up sharp
-features only at their true height. Spike (phantom beams at 6.6–7.0 m +
-ceiling slab + side walls, real geometry, real-σ noise): per-height beam
-contrast (profile across y≈0, peaks at the beam x vs troughs) is ≈0 from
-1.9 to 5.5 m and peaks at 6.7 m for every solver variant tried. Real data
-peaks at 6.3–7.9 m. What changed:
+## Tried and rejected (with evidence)
 
-- `tv_z_weight` 0 (was 0.5): z-smoothing fights the parallax. Phantom
-  contrast 2.64 → 3.16 (truth 4.67); real focus 7.5 → 7.1 m (cafeteria
-  project's model-free beam parallax: 7.0–7.1 m), contrast 1.91 → 2.46.
-  Rejected in the same spike: an L1 sparsity prior (contrast 2.84 at 0.05,
-  collapses at 0.15, χ² 4.9) and 0.4 m voxels (worse contrast, larger shell).
-- Viewer SNR gate at 3: the corners of the square acceptance are the noisiest
-  directions and leave diagonal streaks the ray gate keeps; at SNR ≥ 3 the
-  streaks fall to 0.21 of beam brightness while the beams keep their value.
+- **Stronger TV** to hide the shell: blurs the beams (contrast 0.99 → 0.34
+  from `tv_alpha` 0.01 to 0.08; 0.2 removes them).
+- **Soft depth prior** toward the 6.3–7.9 m band: real beam contrast
+  3.28 → 0.91 and a deliberately wrong band captured 24–74% of the mass.
+- **Cropping the solve box** (as the cafeteria project did): oblique rays
+  exit through its sides and their opacity lands on the box walls at 2–5 m.
+  Cropping the *display* (`volume.viewer_crop_xy_m`) has no such cost.
+- **L1 sparsity prior**, **0.4 m voxels**, **early stopping**: each worse on
+  contrast or fit. An angle cut |t| ≤ 1.0 is a no-op (acceptance ends at
+  0.91 per axis). 0.1 m voxels: contrast 2.46 → 2.84 at 4× cost, χ² 0.44.
+- **Viewer coverage gate at 6 rays**: at ceiling height every voxel has only
+  4–5 rays, so it hid 82% of the beam voxels; the default is 2.
 
-## Coverage damping and the rejected depth prior (2026-09-25)
+## Compared with cafeteria_3d_modeling
 
-The shell is noise, not walls: a phantom with only beams + ceiling + real-σ
-noise reproduces the real shell (side p99 3.80× beam; with walls 4.11×; real
-3.85×). Remedies compared at comparable χ²:
-
-| solver (real data unless noted) | χ² | beam contrast | side p99 / beam | phantom false shell / beam | phantom mass < 4 m (truth 20%) |
-|---|---|---|---|---|---|
-| current (TV 0.03, zw 0) | 0.67 | 2.46 | 3.85 | 0.220 | 6% |
-| stronger TV 0.06 / 0.1 | 1.14 / 1.74 | 1.84 / 1.09 | 3.78 / 4.04 | 0.236 / 0.257 | — |
-| step weighting γ 0.5 | 1.80 | 2.43 | 1.88 | 0.157 | — |
-| **coverage damping μ 0.05 (adopted)** | 0.68 | 3.28 | 1.60 | 0.118 | 22% |
-| damping μ 0.2 | 0.91 | 3.74 | 1.16 | 0.096 | 31% (over-damped: mass piles above detectors) |
-| + depth prior β 1…30 (rejected) | 0.84…1.54 | 2.00…0.91 | 1.65…1.38 | 0.97…0.94 | wrong band captures 24–74% |
-
-Why the sides stay brighter than the beams even so: they ARE more opaque.
-Directions 22–45° carry 15–55% more opacity than a flat ceiling (6–22σ); the
-previous project's own layer has side p99 8.3× its beam mean. The beams are
-the sharpest regular structure, not the most opaque. To read them, clip z to
-~6–8 m in the viewer.
-
-## Compared with cafeteria_3d_modeling (2026-09-24)
-
-Its clean-looking product (`runs/production`) is a thin sheet pinned at 7 m
-embedded in a 3D grid — not a 3D solve. Its genuine 3D solve
-(`runs/full3d`) is no better than ours: best-slice beam contrast 1.77 at
-8.5 m (wrong height) vs ours 2.48 at 7.1 m; its mass peaks near 5 m
-because its solve box was cropped to x −5…7, y −5…5 m and oblique rays
-exit through the box sides. Tested here: cropping the SOLVE box reproduces
-that (streaks on the box walls at 2–5 m); an angle cut |t| ≤ 1.0 is a no-op
-(the acceptance ends at 0.91 per axis); 0.1 m voxels give 2.84 vs 2.46
-contrast at 4× cost and χ² 0.44. Adopted: a DISPLAY-only crop
-(`volume.viewer_crop_xy_m`, the viewer's initial clip box).
-
-Previous (relative-gauge) results are kept in `runs/cafeteria/solve_relgauge`
-and `voxels_relgauge`; `voxels/gauge_before_after.png` compares them.
-
-## Results (2026-09-24)
-
-- Ingest: pos0 6.33 M, pos1 2.41 M, sky 28.5 M tracks, 100% inside ±1.25.
-- Opacity: 1293 sky bins constrained per position.
-- Voxels: grid 90×85×40 at 0.20 m, 2586 rows, χ² 0.36; 8-replica bootstrap:
-  58% of the voxels seen by both positions are above SNR 3; gauge systematic
-  11% of peak.
-- Lateral structure: line features along y at roughly 1.7 m pitch in x (the
-  ceiling beams the cafeteria project found) plus a transverse band near
-  y ≈ 4 m. They appear both in the inverted column opacity and in the
-  model-free backprojection at z = 7 m (`cafeteria_overview.png`).
-- Depth: **not resolved** (dz ≈ 0.9 m at z = 5 m on the 1.92 m baseline); mass
-  piles toward the grid top — regulariser, not data. Same honest limit as
-  Megiddo.
-- Hillside surface: the uniform-solid "hill" model does **not** describe this
-  overburden (a ceiling with beams, not a hill). At a = 48 (chosen so the
-  surface sits near the ~7 m ceiling; a = 8, Megiddo's rock default, puts it
-  ~1 m up and each single-position fit misses the other detector entirely):
-  per-ray VE −9%, out-of-sample r 0.08 / 0.32, inside the shuffled nulls.
-  Keep it as a display overlay only.
+Its clean-looking viewer product was a thin sheet pinned at 7 m, cropped,
+blurred and drawn as iso-surfaces — not a 3D solve. Its genuine 3D solve
+(`runs/full3d`) peaks its beams at 8.5 m (contrast 1.77) with side p99 6.98×
+its beam mean; ours peaks at 7.1 m (2.48 before damping, 3.28 after).
 
 ## Caveats
 
 - pos1 pose (1.775, 0.720) m is the cafeteria project's self-calibration,
   never surveyed; absolute lateral scale rides on it.
-- The 0.20 m voxel spacing is coarse for 1.7 m-pitch beams (the cafeteria
-  project needed 0.08 m for clean beam lines); raising resolution is a config
-  change (`volume.spacing_m`) at a cost in solve time.
-- The viewer title still reads "Megiddo" (hardcoded); the data shown is the
-  loaded run.
+- Real flux differences between the roof run and the cafeteria epoch enter
+  λ as a constant; shown as the ±3% flux-scale systematic map.
+- The viewer title reads "Megiddo" (hardcoded); the data shown is the loaded
+  run.
