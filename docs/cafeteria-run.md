@@ -93,6 +93,19 @@ peaks at 6.3–7.9 m. What changed:
   directions and leave diagonal streaks the ray gate keeps; at SNR ≥ 3 the
   streaks fall to 0.21 of beam brightness while the beams keep their value.
 
+## Compared with cafeteria_3d_modeling (2026-09-24)
+
+Its clean-looking product (`runs/production`) is a thin sheet pinned at 7 m
+embedded in a 3D grid — not a 3D solve. Its genuine 3D solve
+(`runs/full3d`) is no better than ours: best-slice beam contrast 1.77 at
+8.5 m (wrong height) vs ours 2.48 at 7.1 m; its mass peaks near 5 m
+because its solve box was cropped to x −5…7, y −5…5 m and oblique rays
+exit through the box sides. Tested here: cropping the SOLVE box reproduces
+that (streaks on the box walls at 2–5 m); an angle cut |t| ≤ 1.0 is a no-op
+(the acceptance ends at 0.91 per axis); 0.1 m voxels give 2.84 vs 2.46
+contrast at 4× cost and χ² 0.44. Adopted: a DISPLAY-only crop
+(`volume.viewer_crop_xy_m`, the viewer's initial clip box).
+
 Previous (relative-gauge) results are kept in `runs/cafeteria/solve_relgauge`
 and `voxels_relgauge`; `voxels/gauge_before_after.png` compares them.
 

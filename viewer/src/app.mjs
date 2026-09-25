@@ -1176,6 +1176,8 @@ export function initViewer(root) {
     // campaign volume off-screen or reduced to a speck.
     frameAll();
 
+    applyViewerCrop(meta);
+
     state.activeLayer = 'volume';
     state.volumeTex = makeVolumeTexture(gl, meta.shape, state.layerData.get('volume'));
     if (state.layerData.has('sigma')) {
@@ -1579,6 +1581,27 @@ export function initViewer(root) {
   });
 
   const axes = { x: 0, y: 1, z: 2 };
+  // meta.viewer_crop_xy_m ([[x0,x1],[y0,y1]] metres) sets the initial clip box
+  // in x/y. Display-only: the exporter writes it from the site config, the
+  // solve box is unchanged. Without it the clip box is left as it is.
+  function applyViewerCrop(meta) {
+    const crop = meta.viewer_crop_xy_m;
+    if (!Array.isArray(crop) || crop.length !== 2) return;
+    for (const [idx, axis] of [[0, 'x'], [1, 'y']]) {
+      const o = meta.origin_m[idx];
+      const ext = meta.shape[idx] * meta.spacing_m;
+      const lo = Math.min(1, Math.max(0, (crop[idx][0] - o) / ext));
+      const hi = Math.min(1, Math.max(0, (crop[idx][1] - o) / ext));
+      state.clipMin[idx] = lo;
+      state.clipMax[idx] = hi;
+      for (const [id, v] of [[`#clip-${axis}-min`, lo], [`#clip-${axis}-max`, hi]]) {
+        const el = root.querySelector(id);
+        if (el) el.value = String(v);
+        const val = root.querySelector(`${id}-val`);
+        if (val) val.textContent = v.toFixed(2);
+      }
+    }
+  }
   for (const axis of Object.keys(axes)) {
     const minInput = root.querySelector(`#clip-${axis}-min`);
     const minVal = root.querySelector(`#clip-${axis}-min-val`);

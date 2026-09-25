@@ -98,6 +98,8 @@ def export_volume(run_dir: str | Path, cfg: SiteConfig, *,
             "verdict": res["verdict"],
         },
     }
+    if cfg.volume.viewer_crop_xy_m is not None:
+        meta["viewer_crop_xy_m"] = [list(p) for p in cfg.volume.viewer_crop_xy_m]
     (out / "meta.json").write_text(json.dumps(_json_safe(meta), indent=2) + "\n")
     return out / "volume.npy"
 

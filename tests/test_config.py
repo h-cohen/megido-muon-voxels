@@ -139,3 +139,20 @@ def test_volume_xy_box_survives_yaml_round_trip(tmp_path):
     )
     cfg = load_site_config(p)
     assert cfg.volume.xy_m == ((-3.0, 3.0), (-2.0, 2.0))
+
+
+
+def test_viewer_crop_survives_yaml_round_trip(tmp_path):
+    from megido.config import load_site_config
+
+    p = tmp_path / "crop.yaml"
+    p.write_text(
+        "site: t\ndata_dir: /tmp\n"
+        "volume: {viewer_crop_xy_m: [[-5, 7], [-5, 5]]}\n"
+        "exposures:\n"
+        "  - id: P0\n    runs: DET1-DET2\n"
+        "    pose: {x: 0, y: 0, z: 0, tilt_deg: 0, az_deg: 0}\n"
+    )
+    cfg = load_site_config(p)
+    assert cfg.volume.viewer_crop_xy_m == ((-5.0, 7.0), (-5.0, 5.0))
+    assert cfg.volume.xy_m is None       # display crop never touches the solve box

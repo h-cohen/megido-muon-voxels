@@ -129,3 +129,17 @@ def test_compare_rejects_mismatched_grids():
                           offsets={}, position_ids=(), info={})
     with pytest.raises(ValueError, match="grid"):
         compare_volumes(a, other)
+
+
+def test_viewer_crop_is_written_when_configured_and_absent_otherwise(tmp_path):
+    from dataclasses import replace
+    run = tmp_path / "run"
+    _vol().save(run / "volume_full.npz")
+    cfg = _cfg(tmp_path)
+    export_volume(run, cfg)
+    assert "viewer_crop_xy_m" not in json.loads((run / "meta.json").read_text())
+
+    crop = ((-1.0, 2.0), (-0.5, 1.5))
+    export_volume(run, replace(cfg, volume=replace(cfg.volume, viewer_crop_xy_m=crop)))
+    meta = json.loads((run / "meta.json").read_text())
+    assert meta["viewer_crop_xy_m"] == [[-1.0, 2.0], [-0.5, 1.5]]

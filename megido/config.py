@@ -79,6 +79,10 @@ class Volume:
     z_max_m: float = 12.0
     spacing_m: float = 0.25
     xy_m: tuple | None = None       # ((x0, x1), (y0, y1)); None -> from ray footprints
+    # Initial viewer clip box ((x0, x1), (y0, y1)) in metres. DISPLAY-only: the
+    # solve box stays `xy_m`. Cropping the solve instead makes oblique rays exit
+    # through its sides and dumps their opacity on the box walls.
+    viewer_crop_xy_m: tuple | None = None
     n_aperture_sub: int = 4         # sub-rays per axis across the aperture (n^2 total)
 
 
@@ -185,8 +189,9 @@ def load_site_config(path: str | Path) -> SiteConfig:
             )
         )
     vol_raw = dict(raw.get("volume", {}))
-    if vol_raw.get("xy_m") is not None:
-        vol_raw["xy_m"] = tuple(tuple(float(v) for v in pair) for pair in vol_raw["xy_m"])
+    for key in ("xy_m", "viewer_crop_xy_m"):
+        if vol_raw.get(key) is not None:
+            vol_raw[key] = tuple(tuple(float(v) for v in pair) for pair in vol_raw[key])
     volume = Volume(**vol_raw)
     reconstruction = Reconstruction(**raw.get("reconstruction", {}))
     sky_ref = SkyReference(**raw["sky_reference"]) if raw.get("sky_reference") else None
