@@ -33,16 +33,21 @@ class Check2:
 
 def opacity_uncertainty(grid: AnalysisGrid, cfg: SiteConfig, *,
                         n_replicas: int = 12, seed: int = 0,
+                        solver=solve_baseline,
                         **solve_kwargs) -> dict[str, np.ndarray]:
-    """Poisson bootstrap over the counts, giving a per-sky-bin sigma."""
+    """Poisson bootstrap over the counts, giving a per-sky-bin sigma.
+
+    `solver` is the Phase 2 solve re-run per replica (the joint solve by
+    default; `megido.skyref.solve_skyref` for a campaign with an open-sky
+    run, whose sky counts sit in `grid.counts` and are resampled too)."""
     rng = np.random.default_rng(seed)
     stacks: dict[str, list[np.ndarray]] = {}
 
     for _ in range(n_replicas):
         resampled = {eid: rng.poisson(v).astype(np.int64)
                      for eid, v in grid.counts.items()}
-        sol = solve_baseline(AnalysisGrid(edges=grid.edges, counts=resampled),
-                             cfg, **solve_kwargs)
+        sol = solver(AnalysisGrid(edges=grid.edges, counts=resampled),
+                     cfg, **solve_kwargs)
         for pid, lam in sol.opacity.items():
             stacks.setdefault(pid, []).append(lam)
 

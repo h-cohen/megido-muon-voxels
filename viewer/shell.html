@@ -172,6 +172,12 @@
         <canvas id="xfer-canvas" width="512" height="40" style="width:100%;height:24px;display:block"></canvas>
         <canvas id="histogram-canvas" width="512" height="60" style="width:100%;height:80px;display:block;cursor:ew-resize"></canvas>
         <div id="window-readout" class="mono dim"></div>
+        <div class="row"><label for="render-mode">Render</label>
+          <select id="render-mode"><option value="fog" selected>Density (fog)</option><option value="cubes">Voxel cubes</option></select></div>
+        <div class="row" title="Voxel cubes: voxels at or above this density are drawn as opaque blocks. Display-only."><label for="cube-threshold">cube threshold</label>
+          <input id="cube-threshold" type="number" step="0.001" style="width:6em"> <span>1/m</span></div>
+        <div class="row" title="Voxel cubes: merge b x b x b solved voxels into one display cube (mean of the voxels that pass the uncertainty gates). Display-only; finer than the solved voxels needs a new reconstruction."><label for="cube-size">cube size</label>
+          <select id="cube-size"><option value="1" selected>1x</option><option value="2">2x</option><option value="3">3x</option><option value="4">4x</option></select></div>
         <label><input id="toggle-smooth" type="checkbox" style="width:auto" checked> Smooth sampling</label>
         <label><input id="toggle-shading" type="checkbox" style="width:auto" checked> Shading</label>
       </div>
@@ -225,6 +231,10 @@
       <div class="section-body">
         <label><input id="sigma-gate-enabled" type="checkbox" style="width:auto"> hide sigma above</label>
         <input id="sigma-gate-value" type="range" min="0" max="1" step="0.01" value="1">
+        <label title="Voxels crossed by only a ray or two are that ray's private unknowns: the solver parks its noise there as mass. Display-only; hidden voxels are not constrained, not empty."><input id="coverage-gate-enabled" type="checkbox" style="width:auto" checked disabled> hide voxels crossed by fewer than</label>
+        <div class="row"><input id="coverage-gate-value" type="number" min="1" max="100" step="1" value="2" style="width:4.5em" disabled> <span>rays (not constrained)</span></div>
+        <label title="Bootstrap signal-to-noise per voxel. The noisiest directions (the corners of the detector's square acceptance) leave streaks the bootstrap calls insignificant. Display-only."><input id="snr-gate-enabled" type="checkbox" style="width:auto" checked disabled> hide voxels with SNR below</label>
+        <div class="row"><input id="snr-gate-value" type="number" min="0" max="100" step="0.5" value="3" style="width:4.5em" disabled> <span>(not significant)</span></div>
       </div>
     </section>
 

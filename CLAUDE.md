@@ -58,7 +58,10 @@ around them, and do not accept a change that claims to beat them without new dat
 - **Absolute opacity level is gauge-degenerate.** `counts ∝ norm·exp(−λ)`, so
   `λ → λ+c` is exactly cancelled by `norm → norm·eᶜ`. Only differences (voxels)
   and shape (surface) are meaningful. Fixable only by an external reference
-  (a surveyed overburden or known-density anchor), never from the data.
+  (a surveyed overburden or known-density anchor), never from the data. An
+  open-sky run with known live times IS such a reference: the cafeteria
+  campaign measures its zero point that way (`megido/skyref.py`,
+  `BaselineSolution.absolute`, `c_p` fixed at 0). Megiddo has none.
 - **Absolute hillside height is that same degeneracy** in the surface: `H ∝ 1/ρ`
   via the assumed `a`. Shape is measured; scale is assumed and labelled so.
 
@@ -74,6 +77,14 @@ re-propose without new information — the findings are in the specs/plans):
   the grid top; `a = 4` would halve the grid; `a = 16` does nothing), so the
   voxels' vertical structure would be set by an assumption — a prior shaping
   depth. Delivered instead as a display-only viewer clip.
+- **A soft depth prior (penalty outside a height band) in the voxel solve:**
+  tested on the cafeteria (band 6.3–7.9 m from the data's own focus curve).
+  Real beam contrast *fell* 3.28 → 0.91 as the prior strengthened (the side
+  opacity gets squeezed into the band too), and a deliberately wrong band
+  captured 24–74% of the mass — it sets depth instead of nudging it. What
+  does help, at equal χ², is `reconstruction.coverage_damping` (pull each
+  voxel toward 0 ∝ 1/coverage): it removes the noise shell, not real
+  structure (`docs/cafeteria-run.md`).
 - **"Fixing" the opacity gauge zero-point:** no free lunch. The clip-to-zero
   convention touches only ~5% of directions (the transparent quantile), picks
   physically sensible grazing directions, and cannot change the meaningful
@@ -119,7 +130,20 @@ Built in phases, each with its own spec-referenced plan under
   `OES_texture_float_linear` is missing — pixel-tested against each other),
   gradient shading, surface coloured by posterior σ, and "clip volume above
   surface" (off by default; it hides density the surface model calls air,
-  it measures nothing). The surface can be coloured by σ, by ray residual
+  it measures nothing), and a coverage gate — "hide voxels crossed by fewer
+  than N rays" (`rays.npy`, on at N = 2 when present — at the cafeteria ceiling height every voxel has only 4–5 rays, so N = 6 hid the beams themselves) — because voxels only
+  one or two oblique rays cross are those rays' private unknowns, and under
+  non-negativity the solver parks their noise there as a bright outer shell
+  (proven by a noisy flat-slab phantom; `docs/cafeteria-run.md`). Megiddo
+  has the same shell; re-run `reconstruct` to get the layer. An SNR gate
+  ("hide voxels with SNR below N", on at 3 when `snr.npy` exists) removes
+  the streaks the noisiest directions (acceptance corners) leave; both
+  gates also set the auto colour window from the voxels they keep. A
+  "Voxel cubes" render mode draws every voxel ≥ a threshold (default
+  `meta.suggested_iso[0]`) as an opaque, face-shaded block: an exact
+  voxel-to-voxel DDA (`voxelMarch` in `grid.mjs`, twin of `cubeMarch` in the
+  shader) with all gates evaluated at voxel centres; hover returns the first
+  such cube (occlusion- and pixel-agreement tested). The surface can be coloured by σ, by ray residual
   (diverging, "not separable from an a/density-scale misfit"), or plain.
   While dragging or moving a slider the viewer renders a fast preview (64
   steps, no shading) and one full render after 150 ms idle; tests must call
@@ -291,6 +315,10 @@ controller's, which is the most expensive one.
 - Specs: `docs/superpowers/specs/`. Plans: `docs/superpowers/plans/`. Phase
   reports: `docs/phase*-report.md`.
 - Code: `megido/`. Tests: `tests/` (one module per source module).
+- Second campaign (TAU cafeteria, ROOT histograms + open-sky run):
+  data `/home/hadar/Cloud/Work/Postdoc/01_data/processed/tau_cafeteria_root`,
+  config `configs/cafeteria.yaml`, runs `runs/cafeteria/`, write-up and
+  commands `docs/cafeteria-run.md`.
 
 ## Running it
 

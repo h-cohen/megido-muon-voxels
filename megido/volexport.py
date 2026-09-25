@@ -60,7 +60,7 @@ def export_volume(run_dir: str | Path, cfg: SiteConfig, *,
                     np.save(out / f"{name}.npy", d[name].astype(np.float32))
                     layers.append(name)
 
-    for name in ("views", "systematic", "backprojection"):
+    for name in ("views", "rays", "systematic", "backprojection"):
         src = run / f"{name}.npy"
         if src.exists():
             if out != run:
@@ -98,6 +98,8 @@ def export_volume(run_dir: str | Path, cfg: SiteConfig, *,
             "verdict": res["verdict"],
         },
     }
+    if cfg.volume.viewer_crop_xy_m is not None:
+        meta["viewer_crop_xy_m"] = [list(p) for p in cfg.volume.viewer_crop_xy_m]
     (out / "meta.json").write_text(json.dumps(_json_safe(meta), indent=2) + "\n")
     return out / "volume.npy"
 

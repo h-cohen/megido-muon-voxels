@@ -7,7 +7,8 @@ from megido.fitdata import RowIndex
 from megido.forward import ForwardModel
 from megido.resolution import (alias_period, campaign_resolution,
                                depth_resolution, format_resolution,
-                               position_baselines, views_per_voxel)
+                               position_baselines, rays_per_voxel,
+                               views_per_voxel)
 from megido.voxels import VoxelGrid
 
 CONFIG = """
@@ -79,6 +80,22 @@ def test_views_per_voxel_counts_distinct_positions():
     v = views_per_voxel(ForwardModel(A=A, grid=grid, rows=rows))
     assert v.shape == grid.shape
     assert v.ravel().tolist() == [2, 1]
+
+
+def test_rays_per_voxel_counts_every_measured_direction():
+    """Views counts positions; rays counts rows. A voxel two pos1 rows cross
+    has 1 view from pos1 but 2 rays -- the number the coverage gate uses."""
+    grid = VoxelGrid(origin=(0.0, 0.0, 0.0), spacing=1.0, shape=(2, 1, 1))
+    A = sparse.csr_matrix(np.array([[1.0, 0.0],
+                                    [2.0, 0.0],
+                                    [0.5, 0.0],
+                                    [0.0, 1.0]]))
+    rows = RowIndex(position_ids=("pos0", "pos1"),
+                    pos_of_row=np.array([0, 1, 1, 1]),
+                    sx=np.zeros(4), sy=np.zeros(4), sky_flat=np.arange(4))
+    r = rays_per_voxel(ForwardModel(A=A, grid=grid, rows=rows))
+    assert r.shape == grid.shape
+    assert r.ravel().tolist() == [3, 1]
 
 
 def test_campaign_resolution_reports_the_megiddo_numbers(tmp_path):

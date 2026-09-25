@@ -1,6 +1,6 @@
 import { parseNpy } from './npy.mjs';
 import { identity, multiply, perspective, lookAt, invert } from './mat4.mjs';
-import { worldToVoxel, sampleNearest, reorderForTexture, rayBox } from './grid.mjs';
+import { worldToVoxel, sampleNearest, reorderForTexture, rayBox, voxelMarch, blockAverage } from './grid.mjs';
 import { insideClipBox, insideClipPlane } from './clip.mjs';
 import { buildTransferLUT } from './transfer.mjs';
 import { orbitToEye, CAMERA_PRESETS } from './camera.mjs';
@@ -43,6 +43,12 @@ uniform vec3 uClipPlaneNormal;
 uniform float uClipPlaneD;
 uniform bool uSigmaGateEnabled;
 uniform float uSigmaGateValue;
+uniform sampler3D uRaysTex;
+uniform bool uCoverageGateEnabled;
+uniform float uMinRays;
+uniform sampler3D uSnrTex;
+uniform bool uSnrGateEnabled;
+uniform float uMinSnr;
 uniform int uSteps;
 uniform bool uManualTrilinear;
 uniform bool uShading;
@@ -54,6 +60,12 @@ uniform vec2 uSurfMin;     // (gx[0], gy[0])
 uniform vec2 uSurfStep;    // (gx[1]-gx[0], gy[1]-gy[0])  (the fit grid is uniform)
 uniform ivec2 uSurfSize;   // (nx, ny)
 uniform float uMinStepVoxels;  // minimum step length, in voxels (test-driven; default 0.5)
+uniform int uRenderMode;       // 0 density fog, 1 voxel cubes
+uniform float uCubeThreshold;  // cube mode: voxels >= this become opaque cubes
+uniform sampler3D uCubeTex;    // cube-mode grid: the volume itself, or its b^3 block means
+uniform vec3 uCubeSize;        // cube-grid shape
+uniform float uCubeVoxel;      // cube-grid spacing (m) = volume spacing * block size
+uniform bool uCubeBaked;       // true: sigma/coverage/SNR gates already applied in the merge
 
 bool aboveSurface(vec3 world) {
   vec2 q = (world.xy - uSurfMin) / uSurfStep;
@@ -95,6 +107,79 @@ float sampleDensity(vec3 tex) {
              mix(mix(c001, c101, f.x), mix(c011, c111, f.x), f.y), f.z);
 }
 
+// Cube mode: every gate evaluated once per voxel, at its centre, in the same
+// order as the fog march (clip box, clip plane, sigma, coverage, SNR,
+// surface). castHoverRay's cube branch mirrors this exactly.
+bool voxelGated(vec3 tex, vec3 world) {
+  bool clipped = any(lessThan(tex, uClipMin)) || any(greaterThan(tex, uClipMax));
+  if (uClipPlaneEnabled) {
+    float d = dot(tex - vec3(0.5), uClipPlaneNormal) - uClipPlaneD;
+    clipped = clipped || d < 0.0;
+  }
+  if (!uCubeBaked) {
+    if (uSigmaGateEnabled) clipped = clipped || texture(uSigmaTex, tex).r > uSigmaGateValue;
+    if (uCoverageGateEnabled && !clipped) clipped = texture(uRaysTex, tex).r < uMinRays;
+    if (uSnrGateEnabled && !clipped) clipped = !(texture(uSnrTex, tex).r >= uMinSnr);
+  }
+  if (uSurfClip && !clipped) clipped = aboveSurface(world);
+  return clipped;
+}
+
+// Voxel-to-voxel DDA (Amanatides & Woo), the GPU twin of voxelMarch in
+// grid.mjs: first voxel >= uCubeThreshold that passes every gate becomes an
+// opaque cube, shaded by the face the ray entered through, with a darker rim
+// so neighbouring cubes read as separate blocks.
+vec4 cubeMarch(vec3 o, vec3 dir, vec3 safeDir) {
+  float vs = uCubeVoxel;
+  ivec3 n = ivec3(uCubeSize);
+  // The cube grid's own box (a merged grid can overhang the volume by a
+  // partial block); voxelMarch in grid.mjs intersects the same box.
+  vec3 invDir = 1.0 / safeDir;
+  vec3 t0s = (uWorldMin - o) * invDir;
+  vec3 t1s = (uWorldMin + uCubeSize * vs - o) * invDir;
+  vec3 tsm = min(t0s, t1s), tbg = max(t0s, t1s);
+  float tEnter = max(max(max(tsm.x, tsm.y), tsm.z), 0.0);
+  float tExit = min(min(tbg.x, tbg.y), tbg.z);
+  if (tExit <= tEnter) return vec4(0.0);
+  int axis = -1;
+  if (tEnter > 0.0) axis = (tsm.x >= tsm.y && tsm.x >= tsm.z) ? 0 : (tsm.y >= tsm.z ? 1 : 2);
+  vec3 p = o + dir * tEnter;
+  ivec3 idx = clamp(ivec3(floor((p - uWorldMin) / vs)), ivec3(0), n - 1);
+  ivec3 stp = ivec3(sign(safeDir));
+  vec3 tDelta = abs(vec3(vs) / safeDir);
+  vec3 tMax = (uWorldMin + (vec3(idx) + vec3(greaterThan(safeDir, vec3(0.0)))) * vs - o) / safeDir;
+  float tCur = tEnter;
+  for (int g = 0; g < 2048; g++) {
+    vec3 centre = uWorldMin + (vec3(idx) + 0.5) * vs;
+    vec3 tex = clamp((centre - uWorldMin) / uWorldExtent, 0.0, 1.0);
+    if (!voxelGated(tex, centre)) {
+      float v = texelFetch(uCubeTex, idx, 0).r;
+      if (v >= uCubeThreshold) {
+        float t = clamp((v - uWindow.x) / max(uWindow.y - uWindow.x, 1e-6), 0.0, 1.0);
+        vec3 rgb = texture(uTransferLUT, vec2(t, 0.5)).rgb;
+        float shade = axis == 0 ? 0.78 : (axis == 1 ? 0.62 : 1.0);
+        if (axis >= 0) {
+          vec3 l = fract((o + dir * tCur - uWorldMin) / vs);
+          vec3 e = min(l, 1.0 - l);
+          e[axis] = 1.0;
+          if (min(min(e.x, e.y), e.z) < 0.03) shade *= 0.55;   // rim: 3% of the face width
+        }
+        return vec4(rgb * shade, 1.0);
+      }
+    }
+    int a = 0;
+    if (tMax.y < tMax[a]) a = 1;
+    if (tMax.z < tMax[a]) a = 2;
+    if (tMax[a] > tExit) break;
+    idx[a] += stp[a];
+    if (idx[a] < 0 || idx[a] >= n[a]) break;
+    tCur = tMax[a];
+    tMax[a] += tDelta[a];
+    axis = a;
+  }
+  return vec4(0.0);
+}
+
 void main() {
   vec2 ndc = vUv * 2.0 - 1.0;
   vec3 nearP = unproject(ndc, -1.0);
@@ -112,6 +197,7 @@ void main() {
   // the result (measure-zero exact-axis-aligned rays only).
   vec3 sgn = vec3(greaterThanEqual(dir, vec3(0.0))) * 2.0 - 1.0;
   vec3 safeDir = mix(dir, sgn * 1e-8, lessThan(abs(dir), vec3(1e-8)));
+  if (uRenderMode == 1) { outColor = cubeMarch(nearP, dir, safeDir); return; }
   vec3 invDir = 1.0 / safeDir;
   vec3 t0s = (uWorldMin - nearP) * invDir;
   vec3 t1s = (uWorldMin + uWorldExtent - nearP) * invDir;
@@ -141,6 +227,13 @@ void main() {
     if (uSigmaGateEnabled) {
       float sigma = texture(uSigmaTex, tex).r;
       clipped = clipped || sigma > uSigmaGateValue;
+    }
+    if (uCoverageGateEnabled && !clipped) {
+      clipped = texture(uRaysTex, tex).r < uMinRays;
+    }
+    if (uSnrGateEnabled && !clipped) {
+      // !(>=) so a NaN SNR (bootstrap said nothing) is hidden, matching hover.
+      clipped = !(texture(uSnrTex, tex).r >= uMinSnr);
     }
     if (uSurfClip && !clipped) clipped = aboveSurface(pos);
     if (!clipped) {
@@ -353,6 +446,9 @@ export function initViewer(root) {
     'uClipPlaneD', 'uSigmaGateEnabled', 'uSigmaGateValue', 'uSteps',
     'uWorldMin', 'uWorldExtent', 'uManualTrilinear', 'uShading', 'uVolSize', 'uRefStep',
     'uSurfClip', 'uSurfTex', 'uSurfMin', 'uSurfStep', 'uSurfSize', 'uMinStepVoxels',
+    'uRaysTex', 'uCoverageGateEnabled', 'uMinRays',
+    'uSnrTex', 'uSnrGateEnabled', 'uMinSnr', 'uRenderMode', 'uCubeThreshold',
+    'uCubeTex', 'uCubeSize', 'uCubeVoxel', 'uCubeBaked',
   ]) {
     uniforms[name] = gl.getUniformLocation(program, name);
   }
@@ -380,6 +476,30 @@ export function initViewer(root) {
     clipPlaneD: 0,
     sigmaGateEnabled: false,
     sigmaGateValue: 1e9,
+    // Coverage gate (display-only): hide voxels crossed by fewer than minRays
+    // measured directions. On by default, but only live when the run ships a
+    // `rays` layer (hasRays) -- the dummy texture reads 0 and would hide all.
+    coverageGateEnabled: true,
+    minRays: 2,
+    hasRays: false,
+    raysTex: dummyVolume,
+    // SNR gate (display-only): hide voxels whose bootstrap SNR < minSnr. On
+    // by default, live only when the run ships an `snr` layer.
+    snrGateEnabled: true,
+    minSnr: 3,
+    hasSnr: false,
+    snrTex: dummyVolume,
+    // 'fog' (density raymarch, default) or 'cubes' (opaque voxel blocks >=
+    // cubeThreshold; display-only). cubeThreshold defaults to the run's
+    // meta.suggested_iso[0] on load.
+    renderMode: 'fog',
+    cubeThreshold: 0,
+    // Cube size: b x b x b voxels merged into one display cube (1 = the solved
+    // voxels). Built lazily by ensureCubeGrid(), keyed on everything it reads.
+    cubeBlock: 1,
+    cubeGrid: null,
+    cubeGridKey: '',
+    loadSeq: 0,
     volumeTex: dummyVolume,
     sigmaTex: dummyVolume,
     floatLinear,
@@ -454,7 +574,9 @@ export function initViewer(root) {
     // gate is a per-voxel decision, and filtering it would make the gate edge
     // differ between GPUs with and without float-linear (the manual path
     // always gates per voxel) and disagree with nearest-voxel hover.
-    const sets = [[state.volumeTex, filter], [state.sigmaTex, gl.NEAREST]];
+    // The rays texture is a per-voxel count gate, NEAREST for the same reason.
+    const sets = [[state.volumeTex, filter], [state.sigmaTex, gl.NEAREST],
+                  [state.raysTex, gl.NEAREST], [state.snrTex, gl.NEAREST]];
     for (const [tex, f] of sets) {
       if (!tex) continue;
       gl.bindTexture(gl.TEXTURE_3D, tex);
@@ -519,6 +641,18 @@ export function initViewer(root) {
     gl.uniform1f(uniforms.uClipPlaneD, state.clipPlaneD);
     gl.uniform1i(uniforms.uSigmaGateEnabled, state.sigmaGateEnabled ? 1 : 0);
     gl.uniform1f(uniforms.uSigmaGateValue, state.sigmaGateValue);
+    gl.uniform1i(uniforms.uCoverageGateEnabled, (state.coverageGateEnabled && state.hasRays) ? 1 : 0);
+    gl.uniform1f(uniforms.uMinRays, state.minRays);
+    gl.uniform1i(uniforms.uSnrGateEnabled, (state.snrGateEnabled && state.hasSnr) ? 1 : 0);
+    gl.uniform1f(uniforms.uMinSnr, state.minSnr);
+    gl.uniform1i(uniforms.uRenderMode, state.renderMode === 'cubes' ? 1 : 0);
+    gl.uniform1f(uniforms.uCubeThreshold, state.cubeThreshold);
+    const cg = state.renderMode === 'cubes' ? ensureCubeGrid() : null;
+    const cShape = cg ? cg.shape : (state.meta ? state.meta.shape : [1, 1, 1]);
+    const cVoxel = cg ? cg.spacing : 1;
+    gl.uniform3fv(uniforms.uCubeSize, [cShape[0], cShape[1], cShape[2]]);
+    gl.uniform1f(uniforms.uCubeVoxel, cVoxel);
+    gl.uniform1i(uniforms.uCubeBaked, cg && cg.baked ? 1 : 0);
     // Fast preview while interacting (drag/zoom/slider): fewer march steps
     // and no shading for this frame only -- state.shading itself is left
     // untouched, so the checkbox/readout never lies about the setting, and
@@ -556,6 +690,15 @@ export function initViewer(root) {
     gl.activeTexture(gl.TEXTURE3);
     gl.bindTexture(gl.TEXTURE_2D, state.surfTex);
     gl.uniform1i(uniforms.uSurfTex, 3);
+    gl.activeTexture(gl.TEXTURE4);
+    gl.bindTexture(gl.TEXTURE_3D, state.raysTex);
+    gl.uniform1i(uniforms.uRaysTex, 4);
+    gl.activeTexture(gl.TEXTURE5);
+    gl.bindTexture(gl.TEXTURE_3D, state.snrTex);
+    gl.uniform1i(uniforms.uSnrTex, 5);
+    gl.activeTexture(gl.TEXTURE6);
+    gl.bindTexture(gl.TEXTURE_3D, cg && cg.tex ? cg.tex : state.volumeTex);
+    gl.uniform1i(uniforms.uCubeTex, 6);
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     if (state.showDetectors && state.meta && state.markerVertexCount > 0) {
@@ -1136,6 +1279,25 @@ export function initViewer(root) {
     // campaign volume off-screen or reduced to a speck.
     frameAll();
 
+    applyViewerCrop(meta);
+    state.loadSeq += 1;
+    {
+      const sel = root.querySelector('#cube-size');
+      if (sel) {
+        for (const opt of sel.options) {
+          const b = parseInt(opt.value, 10);
+          opt.textContent = `${b}\u00d7 (${(b * meta.spacing_m).toFixed(2)} m)`;
+        }
+      }
+    }
+    {
+      const iso = Array.isArray(meta.suggested_iso) ? meta.suggested_iso[0] : null;
+      const vr = Array.isArray(meta.value_range) ? meta.value_range : [0, 1];
+      state.cubeThreshold = Number.isFinite(iso) ? iso : 0.5 * (vr[0] + vr[1]);
+      const el = root.querySelector('#cube-threshold');
+      if (el) el.value = String(state.cubeThreshold);
+    }
+
     state.activeLayer = 'volume';
     state.volumeTex = makeVolumeTexture(gl, meta.shape, state.layerData.get('volume'));
     if (state.layerData.has('sigma')) {
@@ -1148,6 +1310,22 @@ export function initViewer(root) {
       state.sigmaMax = smax;
     } else {
       state.sigmaMax = 1;
+    }
+    state.hasRays = state.layerData.has('rays');
+    state.raysTex = state.hasRays
+      ? makeVolumeTexture(gl, meta.shape, state.layerData.get('rays'))
+      : dummyVolume;
+    for (const id of ['#coverage-gate-enabled', '#coverage-gate-value']) {
+      const el = root.querySelector(id);
+      if (el) el.disabled = !state.hasRays;
+    }
+    state.hasSnr = state.layerData.has('snr');
+    state.snrTex = state.hasSnr
+      ? makeVolumeTexture(gl, meta.shape, state.layerData.get('snr'))
+      : dummyVolume;
+    for (const id of ['#snr-gate-enabled', '#snr-gate-value']) {
+      const el = root.querySelector(id);
+      if (el) el.disabled = !state.hasSnr;
     }
     applyVolumeFilter();
 
@@ -1170,10 +1348,25 @@ export function initViewer(root) {
         }
       }
       state.layerMax = max;
-      state.window = data ? robustWindow(data) : [0, 1];
+      state.window = data ? robustWindow(gatedForWindow(data)) : [0, 1];
       syncWindowSliders();
     }
     state.applyWindowForLayer = applyWindowForLayer;
+
+    // With the coverage gate on, the auto window comes from the voxels the
+    // gate KEEPS: the hidden shell's inflated values would otherwise set the
+    // colour scale and push the constrained interior into the dark end.
+    function gatedForWindow(data) {
+      const rays = state.coverageGateEnabled && state.hasRays ? state.layerData.get('rays') : null;
+      const snr = state.snrGateEnabled && state.hasSnr ? state.layerData.get('snr') : null;
+      if (!rays && !snr) return data;
+      const out = new Float32Array(data.length);
+      for (let i = 0; i < data.length; i++) {
+        const kept = (!rays || rays[i] >= state.minRays) && (!snr || snr[i] >= state.minSnr);
+        out[i] = kept ? data[i] : NaN;
+      }
+      return out;
+    }
 
     function setActiveLayer(key) {
       state.activeLayer = key;
@@ -1508,6 +1701,27 @@ export function initViewer(root) {
   });
 
   const axes = { x: 0, y: 1, z: 2 };
+  // meta.viewer_crop_xy_m ([[x0,x1],[y0,y1]] metres) sets the initial clip box
+  // in x/y. Display-only: the exporter writes it from the site config, the
+  // solve box is unchanged. Without it the clip box is left as it is.
+  function applyViewerCrop(meta) {
+    const crop = meta.viewer_crop_xy_m;
+    if (!Array.isArray(crop) || crop.length !== 2) return;
+    for (const [idx, axis] of [[0, 'x'], [1, 'y']]) {
+      const o = meta.origin_m[idx];
+      const ext = meta.shape[idx] * meta.spacing_m;
+      const lo = Math.min(1, Math.max(0, (crop[idx][0] - o) / ext));
+      const hi = Math.min(1, Math.max(0, (crop[idx][1] - o) / ext));
+      state.clipMin[idx] = lo;
+      state.clipMax[idx] = hi;
+      for (const [id, v] of [[`#clip-${axis}-min`, lo], [`#clip-${axis}-max`, hi]]) {
+        const el = root.querySelector(id);
+        if (el) el.value = String(v);
+        const val = root.querySelector(`${id}-val`);
+        if (val) val.textContent = v.toFixed(2);
+      }
+    }
+  }
   for (const axis of Object.keys(axes)) {
     const minInput = root.querySelector(`#clip-${axis}-min`);
     const minVal = root.querySelector(`#clip-${axis}-min-val`);
@@ -1576,6 +1790,82 @@ export function initViewer(root) {
     render();
   });
 
+  root.querySelector('#coverage-gate-enabled').addEventListener('change', (ev) => {
+    state.coverageGateEnabled = ev.target.checked;
+    if (state.applyWindowForLayer) state.applyWindowForLayer(state.activeLayer);
+    render();
+  });
+  root.querySelector('#coverage-gate-value').addEventListener('input', (ev) => {
+    const n = parseFloat(ev.target.value);
+    if (!Number.isFinite(n)) return;
+    state.minRays = n;
+    if (state.applyWindowForLayer) state.applyWindowForLayer(state.activeLayer);
+    beginInteraction();
+    render();
+  });
+
+  // The cube-mode grid: at block size 1 the active layer itself (gates run in
+  // the shader); above 1 the b^3 block means of the voxels that pass the
+  // sigma / coverage / SNR gates (blockAverage), gates then "baked".
+  function ensureCubeGrid() {
+    const meta = state.meta;
+    if (!meta) return null;
+    const b = Math.max(1, state.cubeBlock | 0);
+    const key = [b, state.activeLayer, state.loadSeq, state.sigmaGateEnabled, state.sigmaGateValue,
+      state.coverageGateEnabled && state.hasRays, state.minRays,
+      state.snrGateEnabled && state.hasSnr, state.minSnr].join('|');
+    if (key === state.cubeGridKey && state.cubeGrid) return state.cubeGrid;
+    if (state.cubeGrid && state.cubeGrid.tex) gl.deleteTexture(state.cubeGrid.tex);
+    const data = state.layerData.get(state.activeLayer);
+    if (b === 1 || !data) {
+      state.cubeGrid = { shape: meta.shape, spacing: meta.spacing_m, values: data, baked: false, tex: null };
+    } else {
+      const sigma = state.sigmaGateEnabled ? state.layerData.get('sigma') : null;
+      const rays = state.coverageGateEnabled && state.hasRays ? state.layerData.get('rays') : null;
+      const snr = state.snrGateEnabled && state.hasSnr ? state.layerData.get('snr') : null;
+      const keep = (n) => !(sigma && sigma[n] > state.sigmaGateValue)
+        && !(rays && rays[n] < state.minRays)
+        && !(snr && !(snr[n] >= state.minSnr));
+      const merged = blockAverage(data, meta.shape, b, keep);
+      state.cubeGrid = { shape: merged.shape, spacing: meta.spacing_m * b, values: merged.values,
+        baked: true, tex: makeVolumeTexture(gl, merged.shape, merged.values) };
+    }
+    state.cubeGridKey = key;
+    return state.cubeGrid;
+  }
+  state.ensureCubeGrid = ensureCubeGrid;
+
+  root.querySelector('#cube-size').addEventListener('change', (ev) => {
+    state.cubeBlock = Math.max(1, parseInt(ev.target.value, 10) || 1);
+    render();
+  });
+
+  root.querySelector('#render-mode').addEventListener('change', (ev) => {
+    state.renderMode = ev.target.value === 'cubes' ? 'cubes' : 'fog';
+    render();
+  });
+  root.querySelector('#cube-threshold').addEventListener('input', (ev) => {
+    const v = parseFloat(ev.target.value);
+    if (!Number.isFinite(v)) return;
+    state.cubeThreshold = v;
+    beginInteraction();
+    render();
+  });
+
+  root.querySelector('#snr-gate-enabled').addEventListener('change', (ev) => {
+    state.snrGateEnabled = ev.target.checked;
+    if (state.applyWindowForLayer) state.applyWindowForLayer(state.activeLayer);
+    render();
+  });
+  root.querySelector('#snr-gate-value').addEventListener('input', (ev) => {
+    const n = parseFloat(ev.target.value);
+    if (!Number.isFinite(n)) return;
+    state.minSnr = n;
+    if (state.applyWindowForLayer) state.applyWindowForLayer(state.activeLayer);
+    beginInteraction();
+    render();
+  });
+
   // Shares cameraMatrices() with render() (mirrored by the GPU-side
   // unproject() in FRAGMENT_SRC), so hover picking always agrees with what
   // was actually drawn. If the projection convention changes, update
@@ -1586,7 +1876,7 @@ export function initViewer(root) {
   // uMinStepVoxels, cubic voxel size, tEnter+(i+0.5)*stepLen) -- always the
   // FULL-quality step count, never the adaptive-preview one, since hover
   // picking is a discrete user action, not a per-frame render. Applies clip
-  // box, clip plane, sigma gate and surface clip in the same order as the
+  // box, clip plane, sigma gate, coverage gate, SNR gate and surface clip in the same order as the
   // shader; the sigma gate reads the CPU-side sigma layer array with
   // sampleNearest (there is no readback from uSigmaTex) and only applies
   // when the gate is enabled AND a sigma layer is loaded.
@@ -1618,6 +1908,7 @@ export function initViewer(root) {
 
     const { min, extent } = worldBounds();
     const boxMax = [min[0] + extent[0], min[1] + extent[1], min[2] + extent[2]];
+    if (state.renderMode === 'cubes') return castCubeRay(nearP, dirN, data);
     const hit = rayBox(nearP, dirN, min, boxMax);
     if (!hit) return null;
     const [tEnter, tExit] = hit;
@@ -1628,6 +1919,10 @@ export function initViewer(root) {
 
     const sigmaData = state.layerData.get('sigma');
     const sigmaGateActive = state.sigmaGateEnabled && !!sigmaData;
+    const raysData = state.layerData.get('rays');
+    const coverageGateActive = state.coverageGateEnabled && state.hasRays && !!raysData;
+    const snrData = state.layerData.get('snr');
+    const snrGateActive = state.snrGateEnabled && state.hasSnr && !!snrData;
 
     for (let i = 0; i < RAY_STEPS; i++) {
       const tt = tEnter + (i + 0.5) * stepLen;
@@ -1647,6 +1942,12 @@ export function initViewer(root) {
         const sigma = sampleNearest(sigmaData, state.meta.shape, vi, vj, vk);
         clipped = !Number.isNaN(sigma) && sigma > state.sigmaGateValue;
       }
+      if (!clipped && coverageGateActive) {
+        clipped = sampleNearest(raysData, state.meta.shape, vi, vj, vk) < state.minRays;
+      }
+      if (!clipped && snrGateActive) {
+        clipped = !(sampleNearest(snrData, state.meta.shape, vi, vj, vk) >= state.minSnr);
+      }
       if (!clipped && state.surfClip && state.hillSurface && state.hillDisplayH) {
         const hs = surfaceHeightAt(state.hillDisplayH, state.hillSurface.gx, state.hillSurface.gy, world[0], world[1]);
         if (Number.isFinite(hs) && world[2] > hs) clipped = true;
@@ -1660,6 +1961,45 @@ export function initViewer(root) {
     }
     return null;
   }
+  // Cube-mode hover: the same voxel-to-voxel march as FRAGMENT_SRC's
+  // cubeMarch (voxelMarch, grid.mjs), with every gate evaluated at the voxel
+  // centre in the shader's order, returning the first voxel >= threshold.
+  function castCubeRay(nearP, dirN, data) {
+    const meta = state.meta;
+    const grid = ensureCubeGrid();
+    if (!grid || !grid.values) return null;
+    const [nx, ny, nz] = meta.shape;
+    const [cx, cy, cz] = grid.shape;
+    const s = grid.spacing, o = meta.origin_m;
+    const ext = [nx * meta.spacing_m, ny * meta.spacing_m, nz * meta.spacing_m];
+    const sigmaData = state.layerData.get('sigma');
+    const raysData = state.layerData.get('rays');
+    const snrData = state.layerData.get('snr');
+    const at = (arr, i, j, k) => arr[i * ny * nz + j * nz + k];
+    const clamp01 = (v) => Math.min(1, Math.max(0, v));
+    let value = NaN;
+    const cmeta = { shape: grid.shape, origin_m: o, spacing_m: s };
+    const hit = voxelMarch(nearP, dirN, cmeta, (i, j, k) => {
+      const world = [o[0] + (i + 0.5) * s, o[1] + (j + 0.5) * s, o[2] + (k + 0.5) * s];
+      const tex = [0, 1, 2].map((a) => clamp01((world[a] - o[a]) / ext[a]));
+      if (!insideClipBox(tex, state.clipMin, state.clipMax)) return false;
+      if (state.clipPlaneEnabled && !insideClipPlane(tex, state.clipPlaneNormal, state.clipPlaneD)) return false;
+      if (!grid.baked) {
+        if (state.sigmaGateEnabled && sigmaData && at(sigmaData, i, j, k) > state.sigmaGateValue) return false;
+        if (state.coverageGateEnabled && state.hasRays && raysData && at(raysData, i, j, k) < state.minRays) return false;
+        if (state.snrGateEnabled && state.hasSnr && snrData && !(at(snrData, i, j, k) >= state.minSnr)) return false;
+      }
+      if (state.surfClip && state.hillSurface && state.hillDisplayH) {
+        const hs = surfaceHeightAt(state.hillDisplayH, state.hillSurface.gx, state.hillSurface.gy, world[0], world[1]);
+        if (Number.isFinite(hs) && world[2] > hs) return false;
+      }
+      const v = grid.values[i * cy * cz + j * cz + k];
+      if (v >= state.cubeThreshold) { value = v; return true; }
+      return false;
+    });
+    return hit ? { i: hit[0], j: hit[1], k: hit[2], value } : null;
+  }
+
   // Test hook: state.pick(x, y) -> {i,j,k,value} | null, exercised directly
   // by Playwright tests without simulating pointermove events.
   state.pick = (x, y) => castHoverRay(x, y);

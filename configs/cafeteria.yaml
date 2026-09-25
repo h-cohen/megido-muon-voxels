@@ -1,0 +1,93 @@
+# TAU cafeteria campaign — run through the megido pipeline, detached from Megiddo.
+#
+# Data: pre-binned DAQ ROOT histograms (`txty`, 800x800 over tan +-2), two
+# detector positions and one clear-sky roof run of the same detector. Phase 2
+# therefore divides by the sky run (megido.skyref) instead of the tilt-based
+# joint solve Megiddo needs.
+#
+#   uv run python -m megido.cli ingest      --config configs/cafeteria.yaml --out runs/cafeteria/ingest
+#   uv run python -m megido.cli solve       --config configs/cafeteria.yaml --run runs/cafeteria/ingest --out runs/cafeteria/solve
+#   uv run python -m megido.cli reconstruct --config configs/cafeteria.yaml --solve runs/cafeteria/solve --run runs/cafeteria/ingest --out runs/cafeteria/voxels --cache runs/cafeteria/.cache --bootstrap 8
+#   uv run python -m megido.cli export      --config configs/cafeteria.yaml --run runs/cafeteria/voxels
+#   uv run python -m megido.cli hillside    --config configs/cafeteria.yaml --solve runs/cafeteria/solve --run runs/cafeteria/ingest --out runs/cafeteria/voxels
+site: cafeteria
+data_dir: /home/hadar/Cloud/Work/Postdoc/01_data/processed/tau_cafeteria_root
+frame:
+  origin: pos0
+  x_axis_bearing_deg: 0
+
+# Measured from this campaign's own sky run, 2026-09-24 (NOT the Megiddo unit's
+# constants, which fail here: Megiddo's acceptance edge is tan 1.22, this
+# detector's is 0.91).
+#   active width: `Hit Position cm Layer0..3`, span above 1% of plateau = 35.375 cm
+#     on all four layers (23 bars, all live).
+#   layer separation: sky `txty` acceptance edge |tan| = 0.9075 (tx), 0.9125 (ty)
+#     at 0.2% of peak -> dz = 35.375 / 0.91 = 38.9 cm.
+detector:
+  active_width_cm: 35.375
+  layer_dz_cm: 38.9
+  source: "measured from HistsOutSkyRoofRuns37-77.root hit positions + txty acceptance edge"
+
+binning:        # same 0.005-tan bins as the ROOT file, cropped to +-1.25
+  t_max: 1.25
+  n_bins: 500
+
+volume:
+  z_min_m: 1.0
+  z_max_m: 9.0          # ceiling ~7 m (cafeteria project: beam parallax + layered CV)
+  spacing_m: 0.2
+  n_aperture_sub: 4
+  # Initial VIEWER clip box only (the solve stays auto +-8 m): the region both
+  # positions see, as the cafeteria project's viewer_crop. Cropping the solve
+  # box itself was tested and is worse -- oblique rays exit through its sides
+  # and their opacity lands on the box walls at 2-5 m.
+  viewer_crop_xy_m: [[-5.0, 7.0], [-5.0, 5.0]]
+
+reconstruction:
+  algorithm: tv
+  n_iter: 150
+  # 0.03, not Megiddo's 0.01. Sweep on the real data, measured gauge,
+  # analytic sigma, 2026-09-24 (docs/cafeteria-run.md):
+  #   tv_alpha            0.01   0.03   0.05   0.08   0.2
+  #   chi2                0.31   0.75   1.10   1.60   2.66
+  #   beam modulation     0.99   0.72   0.55   0.34   ~0.2 (beams smeared)
+  #   shell (1-2 rays)    5.2x   2.8x   2.4x   2.2x   1.2x
+  # Every step up costs beam contrast; the shell is handled by the viewer's
+  # coverage gate instead (edge/centre p99 at gate 6: 3.3 / 1.8 / 1.8 / 1.8).
+  # The pipeline's bootstrap sigma is ~1.45x tighter than analytic, so 0.03 is
+  # where chi2 ~ 1 under the pipeline's own errors: the least smoothing that
+  # stops fitting noise. 0.2 removes the shell but blurs the beams away.
+  tv_alpha: 0.03
+  # 0, not 0.5: smoothing along z fights the only depth information (the
+  # parallax of sharp features between the two positions). Phantom (beams at
+  # 6.6-7.0 m, real geometry + real-sigma noise): both settings focus the
+  # beams at 6.7 m, contrast 2.64 (0.5) vs 3.16 (0) of truth 4.67. Real data:
+  # beam contrast peaks at 7.5 m (0.5) vs 7.1 m (0) -- the cafeteria
+  # project's model-free beam parallax says 7.0-7.1 m -- contrast 1.91 vs
+  # 2.46, chi2 0.75 vs 0.67 (analytic sigma). Contrast is ~0 at 1.9-5.5 m.
+  tv_z_weight: 0.0
+  # 0.05: voxels crossed by one or two rays hold those rays' noise as a bright
+  # outer shell (non-negativity keeps + noise, clips -). Damping by 1/coverage,
+  # at equal chi2 (real 0.67 -> 0.68): side/beam brightness 3.85 -> 1.60, beam
+  # contrast 2.46 -> 3.28; phantom false shell 0.22 -> 0.12 of the beams, mass
+  # below 4 m 6% -> 22% (truth 20%). 0.2+ over-damps: mass piles above the
+  # detectors. A soft depth prior toward the 6.3-7.9 m band was tested on top
+  # and REJECTED: real beam contrast fell 3.28 -> 0.91 and a deliberately wrong
+  # band captured 24-74% of the mass.
+  coverage_damping: 0.05
+
+sky_reference:
+  id: SKY
+  root_file: HistsOutSkyRoofRuns37-77.root
+
+exposures:
+  - id: pos0
+    root_file: HistsOutDataCafePos0.root
+    pose: {x: 0.0, y: 0.0, z: 0.0, tilt_deg: 0, az_deg: 0}
+
+  - id: pos1
+    root_file: HistsOutDataCafePos1.root
+    # cafeteria_3d_modeling production pose (self-calibrated, never surveyed —
+    # absolute scale rides on it; see its NEW_PROJECT_BRIEF §1.5)
+    pose: {x: 1.7753, y: 0.7203, z: 0.0, tilt_deg: 0, az_deg: 0.0475}
+    note: "pose self-calibrated in cafeteria_3d_modeling, unverified by survey"

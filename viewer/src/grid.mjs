@@ -81,3 +81,84 @@ export function reorderForTexture(data, shape) {
   }
   return out;
 }
+
+// Exact voxel-to-voxel traversal (Amanatides & Woo 1987 DDA) for the "Voxel
+// cubes" render mode. Enters the box via rayBox (same slab test and 1e-8
+// guard as the shader), then steps one voxel face at a time, calling
+// visit(i, j, k, axis) for every voxel in order -- `axis` is the face the
+// ray entered through (0 x, 1 y, 2 z; -1 when the ray starts inside the
+// box). Returns [i, j, k, axis] for the first voxel visit() accepts, or null.
+// FRAGMENT_SRC's cube branch runs this same algorithm; keep them in step.
+export function voxelMarch(origin, dir, meta, visit) {
+  const [nx, ny, nz] = meta.shape;
+  const n = [nx, ny, nz];
+  const s = meta.spacing_m;
+  const o = meta.origin_m;
+  const min = o;
+  const max = [o[0] + nx * s, o[1] + ny * s, o[2] + nz * s];
+  const hit = rayBox(origin, dir, min, max);
+  if (!hit) return null;
+  const [tEnter, tExit] = hit;
+
+  const safe = dir.map((d) => (Math.abs(d) < 1e-8 ? (d >= 0 ? 1e-8 : -1e-8) : d));
+  // Entry face: the axis whose slab entry time is the latest (the face hit).
+  let axis = -1;
+  if (tEnter > 0) {
+    let best = -Infinity;
+    for (let a = 0; a < 3; a++) {
+      const t0 = (min[a] - origin[a]) / safe[a], t1 = (max[a] - origin[a]) / safe[a];
+      const te = Math.min(t0, t1);
+      if (te > best) { best = te; axis = a; }
+    }
+  }
+  const p = [0, 1, 2].map((a) => origin[a] + dir[a] * tEnter);
+  const idx = [0, 1, 2].map((a) => Math.min(n[a] - 1, Math.max(0, Math.floor((p[a] - o[a]) / s))));
+  const step = safe.map((d) => (d > 0 ? 1 : -1));
+  const tDelta = safe.map((d) => Math.abs(s / d));
+  const tMax = [0, 1, 2].map((a) => {
+    const boundary = o[a] + (idx[a] + (step[a] > 0 ? 1 : 0)) * s;
+    return (boundary - origin[a]) / safe[a];
+  });
+
+  for (let guard = 0; guard < nx + ny + nz + 3; guard++) {
+    if (visit(idx[0], idx[1], idx[2], axis)) return [idx[0], idx[1], idx[2], axis];
+    let a = 0;
+    if (tMax[1] < tMax[a]) a = 1;
+    if (tMax[2] < tMax[a]) a = 2;
+    if (tMax[a] > tExit) return null;
+    idx[a] += step[a];
+    if (idx[a] < 0 || idx[a] >= n[a]) return null;
+    tMax[a] += tDelta[a];
+    axis = a;
+  }
+  return null;
+}
+
+// Display-only merge for the "Cube size" control: every b x b x b block of
+// voxels becomes one cube holding the mean of the block's voxels that
+// keep(flatIndex) accepts and that are finite. A block with none is NaN
+// ("not constrained here", never 0). Partial blocks at the far edges keep
+// whatever voxels they have. Numpy C-order in and out (z fastest).
+export function blockAverage(values, shape, b, keep) {
+  const [nx, ny, nz] = shape;
+  const cx = Math.ceil(nx / b), cy = Math.ceil(ny / b), cz = Math.ceil(nz / b);
+  const sum = new Float64Array(cx * cy * cz);
+  const cnt = new Uint32Array(cx * cy * cz);
+  for (let x = 0; x < nx; x++) {
+    const bx = Math.floor(x / b);
+    for (let y = 0; y < ny; y++) {
+      const by = Math.floor(y / b);
+      for (let z = 0; z < nz; z++) {
+        const n = x * ny * nz + y * nz + z;
+        const v = values[n];
+        if (!Number.isFinite(v) || !keep(n)) continue;
+        const c = bx * cy * cz + by * cz + Math.floor(z / b);
+        sum[c] += v;
+        cnt[c] += 1;
+      }
+    }
+  }
+  const out = new Float32Array(cx * cy * cz);
+  for (let c = 0; c < out.length; c++) out[c] = cnt[c] ? sum[c] / cnt[c] : NaN;
+  return { values: out, shape: [cx, cy, cz] };
+}

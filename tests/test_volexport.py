@@ -91,12 +91,13 @@ def test_optional_layers_are_exported_when_present(tmp_path):
                         n_replicas=np.asarray(4), origin=np.asarray(GRID.origin),
                         spacing=np.asarray(GRID.spacing))
     np.save(run / "views.npy", np.full(GRID.shape, 2, dtype=np.int16))
+    np.save(run / "rays.npy", np.full(GRID.shape, 7, dtype=np.int32))
 
     export_volume(run, _cfg(tmp_path))
     meta = json.loads((run / "meta.json").read_text())
     assert (run / "sigma.npy").exists()
     assert (run / "views.npy").exists()
-    assert set(meta["layers"]) >= {"volume", "sigma", "snr", "views"}
+    assert set(meta["layers"]) >= {"volume", "sigma", "snr", "views", "rays"}
 
 
 def test_export_without_optional_layers_still_succeeds(tmp_path):
@@ -128,3 +129,17 @@ def test_compare_rejects_mismatched_grids():
                           offsets={}, position_ids=(), info={})
     with pytest.raises(ValueError, match="grid"):
         compare_volumes(a, other)
+
+
+def test_viewer_crop_is_written_when_configured_and_absent_otherwise(tmp_path):
+    from dataclasses import replace
+    run = tmp_path / "run"
+    _vol().save(run / "volume_full.npz")
+    cfg = _cfg(tmp_path)
+    export_volume(run, cfg)
+    assert "viewer_crop_xy_m" not in json.loads((run / "meta.json").read_text())
+
+    crop = ((-1.0, 2.0), (-0.5, 1.5))
+    export_volume(run, replace(cfg, volume=replace(cfg.volume, viewer_crop_xy_m=crop)))
+    meta = json.loads((run / "meta.json").read_text())
+    assert meta["viewer_crop_xy_m"] == [[-1.0, 2.0], [-0.5, 1.5]]

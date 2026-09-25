@@ -147,3 +147,47 @@ def test_an_all_zero_weight_fit_returns_zeros_rather_than_dividing_by_zero():
                                              chi2_target=-1.0))
     assert np.all(x == 0.0)
     assert np.all(np.isfinite(list(info["offsets"].values())))
+
+
+def _noisy_ceiling(seed=0):
+    """Real-scale synthetic cafeteria geometry: flat 0.8 m slab at 6.6-7.4 m,
+    noise growing toward the acceptance edge as in the real data."""
+    from dataclasses import replace
+    from megido.config import load_site_config
+    from megido.forward import build_forward_model
+    from megido.phantom import sky_rows
+
+    cfg = load_site_config("configs/cafeteria.yaml")
+    cfg = replace(cfg, volume=replace(cfg.volume, spacing_m=0.3))
+    rows = sky_rows(("pos0", "pos1"), t_max=0.9, n_bins=36)
+    fwd = build_forward_model(rows, cfg, cache_dir=None)
+    zc = fwd.grid.axis_centers(2)
+    truth = np.zeros(fwd.grid.shape)
+    truth[:, :, (zc > 6.6) & (zc < 7.4)] = 0.1
+    t2 = rows.sx**2 + rows.sy**2
+    sig = 0.007 * (1 + 8 * t2**2)
+    lam = fwd.A @ truth.ravel() + np.random.default_rng(seed).normal(size=rows.n_rows) * sig
+    rays = np.diff(fwd.A.tocsc().indptr)
+    return fwd, FitData(lam=lam, w=1 / sig**2, rows=rows), rays, cfg.reconstruction
+
+
+def test_coverage_damping_removes_the_noise_shell_without_losing_the_fit():
+    """Voxels crossed by one or two rays are those rays' private unknowns; under
+    non-negativity SIRT parks their noise there as a bright outer shell. The
+    damping (strength proportional to 1/coverage) must remove it at the same
+    fit quality -- and the undamped solve must show it, or the gate tests nothing."""
+    from dataclasses import replace
+    fwd, data, rays, rc = _noisy_ceiling()
+    low, cov = (rays >= 1) & (rays < 3), rays >= 30
+
+    x0, info0 = sirt_tv(fwd, data, replace(rc, coverage_damping=0.0), fit_offsets=False)
+    x1, info1 = sirt_tv(fwd, data, replace(rc, coverage_damping=0.05), fit_offsets=False)
+    shell0 = x0[low].mean() / x0[cov].mean()
+    shell1 = x1[low].mean() / x1[cov].mean()
+    assert shell0 > 2.0                       # the artifact exists without damping
+    assert shell1 < 0.5                       # and is gone with it
+    assert info1["best_chi2"] <= info0["best_chi2"] + 0.15
+
+
+def test_coverage_damping_defaults_off():
+    assert Reconstruction().coverage_damping == 0.0

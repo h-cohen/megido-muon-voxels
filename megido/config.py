@@ -52,6 +52,8 @@ class Exposure:
     pose_sigma: PoseSigma = field(default_factory=PoseSigma)
     norm_group: str = ""
     note: str = ""
+    root_file: str = ""       # pre-binned ROOT histogram source (instead of run ids)
+    root_hist: str = "txty"
 
 
 @dataclass(frozen=True)
@@ -77,6 +79,10 @@ class Volume:
     z_max_m: float = 12.0
     spacing_m: float = 0.25
     xy_m: tuple | None = None       # ((x0, x1), (y0, y1)); None -> from ray footprints
+    # Initial viewer clip box ((x0, x1), (y0, y1)) in metres. DISPLAY-only: the
+    # solve box stays `xy_m`. Cropping the solve instead makes oblique rays exit
+    # through its sides and dumps their opacity on the box walls.
+    viewer_crop_xy_m: tuple | None = None
     n_aperture_sub: int = 4         # sub-rays per axis across the aperture (n^2 total)
 
 
@@ -88,7 +94,36 @@ class Reconstruction:
     chi2_target: float = 1.0        # discrepancy-principle stop for plain SIRT
     tv_alpha: float = 0.01          # TV threshold as a fraction of x's p95
     tv_z_weight: float = 0.5        # anisotropic TV: relative weight of z gradients
+    # Pull each voxel toward 0 by a factor 1/(1 + mu * median(coverage)/coverage)
+    # per iteration: "little data, little mass". 0 = off. See
+    # megido.inversion._coverage_damping for why (the noise shell).
+    coverage_damping: float = 0.0
     seed: int = 42
+
+
+@dataclass(frozen=True)
+class SkyReference:
+    """An open-sky run of the SAME detector, used as the response reference.
+
+    Megiddo has none (the tilt campaign exists to do without one); a campaign
+    that has one divides by it instead. It is not an exposure: it is not a
+    position, has no pose in the site frame, and no opacity is solved for it.
+    """
+    id: str
+    root_file: str
+    root_hist: str = "txty"
+
+
+@dataclass(frozen=True)
+class DetectorOverride:
+    """Measured geometry of a detector other than the Megiddo unit.
+
+    `source` records where each number came from; these are measured from the
+    campaign's own data, never retyped from a datasheet.
+    """
+    active_width_cm: float
+    layer_dz_cm: float
+    source: str = ""
 
 
 @dataclass(frozen=True)
@@ -101,6 +136,8 @@ class SiteConfig:
     binning: Binning
     volume: Volume = field(default_factory=Volume)
     reconstruction: Reconstruction = field(default_factory=Reconstruction)
+    sky_reference: SkyReference | None = None
+    detector: DetectorOverride | None = None
 
     def exposure(self, eid: str) -> Exposure:
         for e in self.exposures:
@@ -114,6 +151,10 @@ class SiteConfig:
         A run id in the configured range with no file on disk is skipped, not an
         error: the campaign has gaps (e.g. DET200117, DET200118).
         """
+        exp = self.exposure(eid)
+        if exp.root_file:
+            p = self.data_dir / exp.root_file
+            return [p] if p.exists() else []
         out: list[Path] = []
         for rid in self.exposure(eid).run_ids:
             matches = sorted(self.data_dir.glob(f"DET{rid}_*.data"))
@@ -142,18 +183,23 @@ def load_site_config(path: str | Path) -> SiteConfig:
         exposures.append(
             Exposure(
                 id=eid,
-                run_ids=_parse_runs(block["runs"]),
+                run_ids=_parse_runs(block["runs"]) if "runs" in block else (),
                 pose=Pose(**block["pose"]),
                 pose_sigma=PoseSigma(**block.get("pose_sigma", {})),
                 norm_group=block.get("norm_group", eid),
                 note=block.get("note", ""),
+                root_file=block.get("root_file", ""),
+                root_hist=block.get("root_hist", "txty"),
             )
         )
     vol_raw = dict(raw.get("volume", {}))
-    if vol_raw.get("xy_m") is not None:
-        vol_raw["xy_m"] = tuple(tuple(float(v) for v in pair) for pair in vol_raw["xy_m"])
+    for key in ("xy_m", "viewer_crop_xy_m"):
+        if vol_raw.get(key) is not None:
+            vol_raw[key] = tuple(tuple(float(v) for v in pair) for pair in vol_raw[key])
     volume = Volume(**vol_raw)
     reconstruction = Reconstruction(**raw.get("reconstruction", {}))
+    sky_ref = SkyReference(**raw["sky_reference"]) if raw.get("sky_reference") else None
+    detector = DetectorOverride(**raw["detector"]) if raw.get("detector") else None
 
     return SiteConfig(
         site=raw["site"],
@@ -164,4 +210,6 @@ def load_site_config(path: str | Path) -> SiteConfig:
         binning=binning,
         volume=volume,
         reconstruction=reconstruction,
+        sky_reference=sky_ref,
+        detector=detector,
     )

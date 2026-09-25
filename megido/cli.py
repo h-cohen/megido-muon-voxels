@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import itertools
 import json
 from pathlib import Path
@@ -21,8 +22,10 @@ from megido.hillside_surface import fit_surface
 from megido.pipeline import process_all
 from megido.reader import EventChunk, read_chunks
 from megido.reconstruct import VoxelSolution, solve_voxels
-from megido.resolution import campaign_resolution, format_resolution, views_per_voxel
+from megido.resolution import (campaign_resolution, format_resolution, rays_per_voxel,
+                               views_per_voxel)
 from megido.silhouette import extract_silhouette
+from megido.skyref import skyref_sigma, solve_skyref
 from megido.validate2 import format_report2, leave_one_out, nll_per_bin_check, opacity_uncertainty
 from megido.volexport import _json_safe, compare_volumes, export_volume
 from megido.voxuncert import systematic_map, voxel_bootstrap
@@ -59,8 +62,45 @@ def _cmd_validate(args) -> int:
     return 0 if all(c.passed for c in checks) else 1
 
 
+def _grid_ids(cfg) -> list[str]:
+    """Counts ids a Phase 2 solve reads: the exposures, plus the open-sky
+    reference when the campaign has one (it is not an exposure/position)."""
+    ids = [e.id for e in cfg.exposures]
+    if cfg.sky_reference is not None:
+        ids.append(cfg.sky_reference.id)
+    return ids
+
+
+def _live_times(run_dir: Path, cfg) -> dict[str, float] | None:
+    """Per-id live time (s) recorded at ROOT ingest, or None if any is missing.
+
+    All-or-nothing: a measured gauge needs every run's live time; a partial
+    set would silently mix a measured and a conventional scale."""
+    meta = Path(run_dir) / "meta.json"
+    if cfg.sky_reference is None or not meta.exists():
+        return None
+    exps = json.loads(meta.read_text()).get("exposures", {})
+    out = {i: exps.get(i, {}).get("live_time_s") for i in _grid_ids(cfg)}
+    return out if all(v for v in out.values()) else None
+
+
+def _phase2_solver(cfg, run_dir: Path | None = None):
+    if cfg.sky_reference is None:
+        return solve_baseline
+    live = _live_times(run_dir, cfg) if run_dir is not None else None
+    return functools.partial(solve_skyref, live_time=live)
+
+
 def _cmd_ingest(args) -> int:
     cfg = load_site_config(args.config)
+    if any(e.root_file for e in cfg.exposures):
+        from megido.rootingest import ingest_root
+
+        for r in ingest_root(cfg, Path(args.out)):
+            kept = r.total_kept / r.total_in_file if r.total_in_file else 0.0
+            print(f"{r.source_id:6s} root   counts={r.total_kept:>10,} of "
+                  f"{r.total_in_file:,} in file ({kept:.1%} inside the binning)")
+        return 0
     for r in process_all(cfg, Path(args.out), force=args.force, chunksize=args.chunksize):
         tag = "cached" if r.cached else "built"
         rate = r.n_valid / r.n_events if r.n_events else 0.0
@@ -76,13 +116,15 @@ def _cmd_solve(args) -> int:
         print(f"no such run directory: {run_dir}")
         return 1
 
-    exposure_ids = [e.id for e in cfg.exposures]
+    exposure_ids = _grid_ids(cfg)
     missing = [e for e in exposure_ids if not (run_dir / f"counts_{e}.npz").exists()]
     if missing:
         print(f"missing counts artifacts for: {', '.join(missing)}")
         return 1
 
     grid = load_analysis_grid(run_dir, exposure_ids, factor=args.rebin)
+    if cfg.sky_reference is not None:
+        return _cmd_solve_skyref(args, cfg, grid, run_dir)
     sol = solve_baseline(grid, cfg, n_iter=args.iters)
 
     out = Path(args.out)
@@ -110,6 +152,33 @@ def _cmd_solve(args) -> int:
     return 0 if all(c.passed for c in checks) else 1
 
 
+def _cmd_solve_skyref(args, cfg, grid, run_dir: Path) -> int:
+    """Phase 2 by open-sky division (megido.skyref) instead of the joint solve."""
+    live = _live_times(run_dir, cfg)
+    sol = solve_skyref(grid, cfg, live_time=live)
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    sol.save(out / "baseline.npz")
+    print(f"phase 2         open-sky ratio against {cfg.sky_reference.id!r} "
+          f"(response and flux cancel; no joint fit)")
+    if live is not None:
+        print("live time       " + "  ".join(f"{k}={v:,.0f} s" for k, v in live.items()))
+        print("scale           " + "  ".join(f"{p}={v:.4g}" for p, v in sorted(sol.norms.items()))
+              + "  (MEASURED live-time ratio: opacity is absolute, c_p will be fixed at 0)")
+    else:
+        print("scale           " + "  ".join(f"{p}={v:.4g}" for p, v in sorted(sol.norms.items()))
+              + "  (norm_quantile convention, degenerate with the opacity zero point)")
+    for pid in sorted(sol.opacity):
+        lam = sol.opacity[pid]
+        norm = sol.normalized_opacity(pid)
+        ref = ("absolute" if sol.absolute
+               else "referenced to most transparent")
+        print(f"opacity {pid}: {int(np.isfinite(lam).sum())} sky bins constrained; "
+              f"{ref}: min {np.nanmin(norm):+.4f}  median {np.nanmedian(norm):.4f}  "
+              f"p95 {np.nanpercentile(norm, 95):.4f}  max {np.nanmax(norm):.4f}")
+    return 0
+
+
 _SKY_SIGMA_T = 0.05     # Phase 2 sky grid bin width; see megido.sky.make_sky_grid
 
 
@@ -135,14 +204,21 @@ def _cmd_reconstruct(args) -> int:
 
     sigma = None
     counts_grid = None
+    solver = _phase2_solver(cfg, Path(args.run) if args.run else None)
+    if sol.absolute and args.run and _live_times(Path(args.run), cfg) is None:
+        print("baseline is absolute (live-time gauge) but --run has no live times; "
+              "bootstrap replicas would fall back to the conventional gauge")
+        return 1
     if args.run:
-        exposure_ids = [e.id for e in cfg.exposures]
-        counts_grid = load_analysis_grid(Path(args.run), exposure_ids, factor=args.rebin)
+        counts_grid = load_analysis_grid(Path(args.run), _grid_ids(cfg), factor=args.rebin)
         if args.bootstrap:
             print(f"bootstrapping sky opacity sigma ({args.bootstrap} replicas)...",
                   flush=True)
             sigma = opacity_uncertainty(counts_grid, cfg, n_replicas=args.bootstrap,
-                                        n_iter=args.iters)
+                                        solver=solver, n_iter=args.iters)
+        elif cfg.sky_reference is not None:
+            print("sky opacity sigma: analytic Poisson sqrt(1/n_pos + 1/n_sky)")
+            sigma = skyref_sigma(counts_grid, cfg)
 
     fits = solve_voxels(sol, cfg, sigma=sigma, cache_dir=args.cache,
                         holdouts=not args.no_holdouts)
@@ -154,14 +230,23 @@ def _cmd_reconstruct(args) -> int:
     fwd = build_forward_model(data.rows, cfg, cache_dir=args.cache)
     views = views_per_voxel(fwd)
     np.save(out / "views.npy", views)
+    np.save(out / "rays.npy", rays_per_voxel(fwd))
 
     print(f"grid            {full.grid.shape} at {full.grid.spacing:.3f} m, "
           f"origin {tuple(round(v, 2) for v in full.grid.origin)}")
     print(f"rows            {data.rows.n_rows} over "
           f"{len(data.rows.position_ids)} positions")
     print(f"chi2            {full.info.get('best_chi2', float('nan')):.4f}")
-    print("offsets         " + "  ".join(f"{k}={v:+.4f}"
-                                         for k, v in sorted(full.offsets.items())))
+    if sol.absolute:
+        print("offsets         fixed at 0 (opacity gauge measured from the sky run's live time)")
+        free = solve_voxels(sol, cfg, sigma=sigma, cache_dir=args.cache, holdouts=False,
+                            fit_offsets=True)["full"]
+        print("  diagnostic    a free-offset fit would take c_p = "
+              + "  ".join(f"{k}={v:+.4f}" for k, v in sorted(free.offsets.items()))
+              + "  (that much level moved out of the voxels)")
+    else:
+        print("offsets         " + "  ".join(f"{k}={v:+.4f}"
+                                             for k, v in sorted(full.offsets.items())))
     rho = full.rho3()
     print(f"opacity density median {np.median(rho[rho > 0]) if (rho > 0).any() else 0:.4f}"
           f"  p95 {np.percentile(rho, 95):.4f}  max {rho.max():.4f} 1/m")
@@ -169,7 +254,8 @@ def _cmd_reconstruct(args) -> int:
     if args.bootstrap and counts_grid is not None:
         boot = voxel_bootstrap(counts_grid, cfg, n_replicas=args.bootstrap,
                                cache_dir=args.cache,
-                               solve_kwargs={"n_iter": args.iters})
+                               solve_kwargs={"n_iter": args.iters},
+                               solver=solver)
         boot.save(out / "uncertainty.npz")
         snr = boot.snr()
         n_grid = views.size
@@ -192,7 +278,8 @@ def _cmd_reconstruct(args) -> int:
     if not args.no_systematic:
         sysmap = systematic_map(sol, cfg, cache_dir=args.cache)
         np.save(out / "systematic.npy", sysmap.astype(np.float32))
-        print(f"gauge systematic  max |delta rho| {np.abs(sysmap).max():.4f} 1/m "
+        label = "flux-scale systematic (+3%)" if sol.absolute else "gauge systematic"
+        print(f"{label}  max |delta rho| {np.abs(sysmap).max():.4f} 1/m "
               f"({np.abs(sysmap).max() / max(rho.max(), 1e-12):.1%} of the peak)")
 
     if args.backproject_z is not None:
