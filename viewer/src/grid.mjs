@@ -133,3 +133,32 @@ export function voxelMarch(origin, dir, meta, visit) {
   }
   return null;
 }
+
+// Display-only merge for the "Cube size" control: every b x b x b block of
+// voxels becomes one cube holding the mean of the block's voxels that
+// keep(flatIndex) accepts and that are finite. A block with none is NaN
+// ("not constrained here", never 0). Partial blocks at the far edges keep
+// whatever voxels they have. Numpy C-order in and out (z fastest).
+export function blockAverage(values, shape, b, keep) {
+  const [nx, ny, nz] = shape;
+  const cx = Math.ceil(nx / b), cy = Math.ceil(ny / b), cz = Math.ceil(nz / b);
+  const sum = new Float64Array(cx * cy * cz);
+  const cnt = new Uint32Array(cx * cy * cz);
+  for (let x = 0; x < nx; x++) {
+    const bx = Math.floor(x / b);
+    for (let y = 0; y < ny; y++) {
+      const by = Math.floor(y / b);
+      for (let z = 0; z < nz; z++) {
+        const n = x * ny * nz + y * nz + z;
+        const v = values[n];
+        if (!Number.isFinite(v) || !keep(n)) continue;
+        const c = bx * cy * cz + by * cz + Math.floor(z / b);
+        sum[c] += v;
+        cnt[c] += 1;
+      }
+    }
+  }
+  const out = new Float32Array(cx * cy * cz);
+  for (let c = 0; c < out.length; c++) out[c] = cnt[c] ? sum[c] / cnt[c] : NaN;
+  return { values: out, shape: [cx, cy, cz] };
+}

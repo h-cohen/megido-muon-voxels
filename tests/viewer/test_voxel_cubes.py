@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 
 import numpy as np
+import pytest
 
 SHAPE = (6, 5, 4)
 _GRID = [(fx / 30, fy / 30) for fx in range(3, 28) for fy in range(3, 28) if fy != 15]
@@ -122,10 +123,13 @@ def test_cubes_have_hard_edges_where_fog_is_soft(page, dist_path, run_fixture):
     assert dim_fraction(fog) > 0.2            # the fog render fades out softly
 
 
-def test_hover_and_shader_agree_on_which_pixels_hold_a_cube(page, dist_path, run_fixture):
+@pytest.mark.parametrize("size, threshold", [("1", 0.5), ("2", 0.05)])
+def test_hover_and_shader_agree_on_which_pixels_hold_a_cube(page, dist_path, run_fixture, size, threshold):
     run, _ = _run(run_fixture)
     _load(page, dist_path, run)
-    _cubes(page, 0.5)
+    _cubes(page, threshold)
+    page.locator("#cube-size").select_option(size)
+    page.evaluate("() => window.__viewerState.idleNow()")
     picks = _picks(page)
     lum = np.array(_luminance(page))
     w, h = page.evaluate("() => [document.querySelector('#gl-canvas').width, document.querySelector('#gl-canvas').height]")
@@ -134,3 +138,51 @@ def test_hover_and_shader_agree_on_which_pixels_hold_a_cube(page, dist_path, run
     mismatch = sum(bool(p) != l for p, l in zip(picks, lit))
     assert sum(lit) > 0
     assert mismatch <= 0.02 * len(_GRID)
+
+
+def test_threshold_arrows_step_by_a_thousandth(page, dist_path, run_fixture):
+    run, _ = _run(run_fixture)
+    _load(page, dist_path, run)
+    box = page.locator("#cube-threshold")
+    assert box.get_attribute("step") == "0.001"
+    box.focus()
+    page.keyboard.press("ArrowUp")
+    assert abs(float(box.input_value()) - 0.301) < 1e-9
+    page.keyboard.press("ArrowDown")
+    page.keyboard.press("ArrowDown")
+    assert abs(float(box.input_value()) - 0.299) < 1e-9
+    assert abs(page.evaluate("() => window.__viewerState.cubeThreshold") - 0.299) < 1e-9
+
+
+def test_cube_size_merges_blocks_by_their_mean(page, dist_path, run_fixture):
+    """At 2x, the block holding the 1.0 voxel (coarse (1,1,1), 8 voxels) has
+    mean 1/8; the block holding the 0.8 voxel (coarse (1,1,0)) has mean 0.1."""
+    run, _ = _run(run_fixture)
+    _load(page, dist_path, run)
+    _cubes(page, 0.11)
+    page.locator("#cube-size").select_option("2")
+    page.evaluate("() => window.__viewerState.idleNow()")
+    picked = [p for p in _picks(page) if p]
+    assert {(p["i"], p["j"], p["k"]) for p in picked} == {(1, 1, 1)}
+    assert abs(picked[0]["value"] - 0.125) < 1e-6
+    _cubes(page, 0.13)                       # above the diluted mean: nothing
+    assert all(p is None for p in _picks(page))
+    assert max(_luminance(page)) == 0
+
+
+def test_cube_size_merges_only_voxels_that_pass_the_gates(page, dist_path, run_fixture):
+    run, vol = _run(run_fixture)
+    rays = np.full(SHAPE, 10.0, dtype=np.float32)
+    rays[2, 2, 2] = 1.0                      # gated (coverage gate default 2), inside coarse (1,1,1)
+    np.save(run / "rays.npy", rays)
+    vol[2, 2, 2] = 50.0                      # a huge value that must NOT enter the mean
+    np.save(run / "volume.npy", vol)
+    meta = json.loads((run / "meta.json").read_text())
+    meta["layers"] = ["volume", "rays"]
+    (run / "meta.json").write_text(json.dumps(meta))
+    _load(page, dist_path, run)
+    _cubes(page, 0.11)
+    page.locator("#cube-size").select_option("2")
+    page.evaluate("() => window.__viewerState.idleNow()")
+    picked = [p for p in _picks(page) if p]
+    assert picked and all(abs(p["value"] - 1.0 / 7.0) < 1e-6 for p in picked)   # 7 kept voxels

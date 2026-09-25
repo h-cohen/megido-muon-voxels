@@ -158,3 +158,31 @@ test('voxelMarch: a ray that misses the box visits nothing', () => {
   assert.equal(hit, null);
   assert.equal(n, 0);
 });
+
+// blockAverage: display-only merge of b x b x b voxels into one cube for the
+// "Cube size" control. Mean over the voxels `keep` accepts (and that are
+// finite); NaN when none are -- "no constrained voxel here", never 0.
+import { blockAverage } from '../src/grid.mjs';
+
+test('blockAverage: means each block and keeps partial edge blocks', () => {
+  const shape = [3, 2, 2];                       // x=2 is a partial block at b=2
+  const v = new Float32Array(12).map((_, n) => n);
+  const out = blockAverage(v, shape, 2, () => true);
+  assert.deepEqual(out.shape, [2, 1, 1]);
+  // block (0,0,0): x 0-1, y 0-1, z 0-1 -> indices x*4+y*2+z for x<2
+  assert.equal(out.values[0], (0 + 1 + 2 + 3 + 4 + 5 + 6 + 7) / 8);
+  assert.equal(out.values[1], (8 + 9 + 10 + 11) / 4);   // partial block: only x=2
+});
+
+test('blockAverage: gated voxels are excluded, and an all-gated block is NaN', () => {
+  const shape = [2, 2, 2];
+  const v = new Float32Array([1, 1, 1, 1, 1, 1, 1, 9]);
+  assert.equal(blockAverage(v, shape, 2, (n) => n !== 7).values[0], 1);
+  assert.ok(Number.isNaN(blockAverage(v, shape, 2, () => false).values[0]));
+});
+
+test('blockAverage: block size 1 returns the values unchanged', () => {
+  const v = new Float32Array([3, 1, 4, 1, 5, 9, 2, 6]);
+  const out = blockAverage(v, [2, 2, 2], 1, () => true);
+  assert.deepEqual(Array.from(out.values), Array.from(v));
+});
