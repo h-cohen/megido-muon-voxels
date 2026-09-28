@@ -1,7 +1,6 @@
 import { parseNpy } from './npy.mjs';
 import { identity, multiply, perspective, lookAt, invert } from './mat4.mjs';
-import { worldToVoxel, sampleNearest, reorderForTexture, rayBox, voxelMarch, blockAverage } from './grid.mjs';
-import { insideClipBox, insideClipPlane } from './clip.mjs';
+import { worldToVoxel, reorderForTexture, rayBox, voxelMarch, blockAverage } from './grid.mjs';
 import { buildTransferLUT } from './transfer.mjs';
 import { orbitToEye, CAMERA_PRESETS } from './camera.mjs';
 import { computeHistogram, robustWindow, windowToBandPx, bandPxToWindow } from './histogram.mjs';
@@ -13,6 +12,7 @@ import { captureView, loadViews, saveViews } from './views.mjs';
 import { SHORTCUTS, keyToAction } from './shortcuts.mjs';
 import { markerVertices, silhouetteVertices, SILHOUETTE_RAYLEN_M, dedupeDetectors, projectToScreen } from './markers.mjs';
 import { surfaceMesh, smoothHeightfield, surfaceVertexColors, robustRange, symmetricLimit, surfaceHeightAt, surfaceTextureData, residualVertexColors } from './surfacemesh.mjs';
+import { voxelGates, spatialGates } from './gates.mjs';
 
 const VERTEX_SRC = `#version 300 es
 out vec2 vUv;
@@ -108,9 +108,9 @@ float sampleDensity(vec3 tex) {
              mix(mix(c001, c101, f.x), mix(c011, c111, f.x), f.y), f.z);
 }
 
-// Cube mode: every gate evaluated once per voxel, at its centre, in the same
-// order as the fog march (clip box, clip plane, sigma, coverage, SNR,
-// surface). castHoverRay's cube branch mirrors this exactly.
+// Cube mode: every gate evaluated once per voxel, at its centre. GLSL twin of
+// gates.mjs (the reference): uniforms come from voxelGates().uniforms;
+// tests/viewer/test_gate_parity.py checks the two agree.
 bool voxelGated(vec3 tex, vec3 world) {
   bool clipped = any(lessThan(tex, uClipMin)) || any(greaterThan(tex, uClipMax));
   if (uClipPlaneEnabled) {
@@ -230,6 +230,7 @@ void main() {
       float d = dot(tex - vec3(0.5), uClipPlaneNormal) - uClipPlaneD;
       clipped = clipped || d < 0.0;
     }
+    // Gates: GLSL twin of gates.mjs (voxelGates + spatialGates); keep in step.
     if (uSigmaGateEnabled) {
       float sigma = texture(uSigmaTex, tex).r;
       clipped = clipped || sigma > uSigmaGateValue;
@@ -544,6 +545,29 @@ export function initViewer(root) {
     return { min: origin_m, extent };
   }
 
+  // Gate sets are rebuilt from state at each use (cheap, and tests mutate
+  // state directly before calling render()/pick()).
+  function stateVoxelGates() {
+    return voxelGates(state, {
+      sigma: state.layerData.get('sigma'),
+      rays: state.hasRays ? state.layerData.get('rays') : null,
+      snr: state.hasSnr ? state.layerData.get('snr') : null,
+    });
+  }
+  function stateSpatialGates() {
+    const surface = state.hillSurface && state.hillDisplayH
+      ? { H: state.hillDisplayH, gx: state.hillSurface.gx, gy: state.hillSurface.gy } : null;
+    return spatialGates(state, surface);
+  }
+  // Flat numpy-order index for a voxel-space (possibly fractional) coordinate,
+  // or -1 when it falls outside the grid (mirrors sampleNearest's bounds
+  // check in grid.mjs, grid.mjs will carry this as voxelIndex in Task 2).
+  const voxelFlatIndex = (shape, i, j, k) => {
+    const [nx, ny, nz] = shape;
+    const a = Math.floor(i), b2 = Math.floor(j), c = Math.floor(k);
+    return (a < 0 || a >= nx || b2 < 0 || b2 >= ny || c < 0 || c >= nz) ? -1 : a * ny * nz + b2 * nz + c;
+  };
+
   // World Z is the physical vertical (detectors at z=0, rock above). Near
   // straight-down/up (|pitch| > PITCH_GIMBAL_LIMIT) the z-up vector goes
   // parallel to the eye-to-target axis and lookAt degenerates, so we fall
@@ -646,12 +670,13 @@ export function initViewer(root) {
     gl.uniform1i(uniforms.uClipPlaneEnabled, state.clipPlaneEnabled ? 1 : 0);
     gl.uniform3fv(uniforms.uClipPlaneNormal, state.clipPlaneNormal);
     gl.uniform1f(uniforms.uClipPlaneD, state.clipPlaneD);
-    gl.uniform1i(uniforms.uSigmaGateEnabled, state.sigmaGateEnabled ? 1 : 0);
-    gl.uniform1f(uniforms.uSigmaGateValue, state.sigmaGateValue);
-    gl.uniform1i(uniforms.uCoverageGateEnabled, (state.coverageGateEnabled && state.hasRays) ? 1 : 0);
-    gl.uniform1f(uniforms.uMinRays, state.minRays);
-    gl.uniform1i(uniforms.uSnrGateEnabled, (state.snrGateEnabled && state.hasSnr) ? 1 : 0);
-    gl.uniform1f(uniforms.uMinSnr, state.minSnr);
+    const vg = stateVoxelGates().uniforms;
+    gl.uniform1i(uniforms.uSigmaGateEnabled, vg.sigmaEnabled ? 1 : 0);
+    gl.uniform1f(uniforms.uSigmaGateValue, vg.sigmaValue);
+    gl.uniform1i(uniforms.uCoverageGateEnabled, vg.coverageEnabled ? 1 : 0);
+    gl.uniform1f(uniforms.uMinRays, vg.minRays);
+    gl.uniform1i(uniforms.uSnrGateEnabled, vg.snrEnabled ? 1 : 0);
+    gl.uniform1f(uniforms.uMinSnr, vg.minSnr);
     gl.uniform1i(uniforms.uRenderMode, state.renderMode === 'cubes' ? 1 : 0);
     gl.uniform1f(uniforms.uCubeThreshold, state.cubeThreshold);
     gl.uniform1f(uniforms.uOpacity, state.opacity);
@@ -1361,18 +1386,13 @@ export function initViewer(root) {
     }
     state.applyWindowForLayer = applyWindowForLayer;
 
-    // With the coverage gate on, the auto window comes from the voxels the
-    // gate KEEPS: the hidden shell's inflated values would otherwise set the
-    // colour scale and push the constrained interior into the dark end.
+    // The auto window comes from the voxels the window gates KEEP (see
+    // keepForWindow in gates.mjs for why sigma is not one of them).
     function gatedForWindow(data) {
-      const rays = state.coverageGateEnabled && state.hasRays ? state.layerData.get('rays') : null;
-      const snr = state.snrGateEnabled && state.hasSnr ? state.layerData.get('snr') : null;
-      if (!rays && !snr) return data;
+      const g = stateVoxelGates();
+      if (!g.windowActive) return data;
       const out = new Float32Array(data.length);
-      for (let i = 0; i < data.length; i++) {
-        const kept = (!rays || rays[i] >= state.minRays) && (!snr || snr[i] >= state.minSnr);
-        out[i] = kept ? data[i] : NaN;
-      }
+      for (let i = 0; i < data.length; i++) out[i] = g.keepForWindow(i) ? data[i] : NaN;
       return out;
     }
 
@@ -1819,22 +1839,15 @@ export function initViewer(root) {
     const meta = state.meta;
     if (!meta) return null;
     const b = Math.max(1, state.cubeBlock | 0);
-    const key = [b, state.activeLayer, state.loadSeq, state.sigmaGateEnabled, state.sigmaGateValue,
-      state.coverageGateEnabled && state.hasRays, state.minRays,
-      state.snrGateEnabled && state.hasSnr, state.minSnr].join('|');
+    const vgates = stateVoxelGates();
+    const key = [b, state.activeLayer, state.loadSeq, vgates.key].join('|');
     if (key === state.cubeGridKey && state.cubeGrid) return state.cubeGrid;
     if (state.cubeGrid && state.cubeGrid.tex) gl.deleteTexture(state.cubeGrid.tex);
     const data = state.layerData.get(state.activeLayer);
     if (b === 1 || !data) {
       state.cubeGrid = { shape: meta.shape, spacing: meta.spacing_m, values: data, baked: false, tex: null };
     } else {
-      const sigma = state.sigmaGateEnabled ? state.layerData.get('sigma') : null;
-      const rays = state.coverageGateEnabled && state.hasRays ? state.layerData.get('rays') : null;
-      const snr = state.snrGateEnabled && state.hasSnr ? state.layerData.get('snr') : null;
-      const keep = (n) => !(sigma && sigma[n] > state.sigmaGateValue)
-        && !(rays && rays[n] < state.minRays)
-        && !(snr && !(snr[n] >= state.minSnr));
-      const merged = blockAverage(data, meta.shape, b, keep);
+      const merged = blockAverage(data, meta.shape, b, vgates.keep);
       state.cubeGrid = { shape: merged.shape, spacing: meta.spacing_m * b, values: merged.values,
         baked: true, tex: makeVolumeTexture(gl, merged.shape, merged.values) };
     }
@@ -1934,12 +1947,7 @@ export function initViewer(root) {
     const minStepVoxels = state.minStepVoxels != null ? state.minStepVoxels : 0.5;
     const stepLen = Math.max(minStepVoxels * voxel, (tExit - tEnter) / RAY_STEPS);
 
-    const sigmaData = state.layerData.get('sigma');
-    const sigmaGateActive = state.sigmaGateEnabled && !!sigmaData;
-    const raysData = state.layerData.get('rays');
-    const coverageGateActive = state.coverageGateEnabled && state.hasRays && !!raysData;
-    const snrData = state.layerData.get('snr');
-    const snrGateActive = state.snrGateEnabled && state.hasSnr && !!snrData;
+    const vgates = stateVoxelGates(), sgates = stateSpatialGates();
 
     for (let i = 0; i < RAY_STEPS; i++) {
       const tt = tEnter + (i + 0.5) * stepLen;
@@ -1950,30 +1958,12 @@ export function initViewer(root) {
         (world[1] - min[1]) / extent[1],
         (world[2] - min[2]) / extent[2],
       ];
-      let clipped = !insideClipBox(tex, state.clipMin, state.clipMax);
-      if (!clipped && state.clipPlaneEnabled) {
-        clipped = !insideClipPlane(tex, state.clipPlaneNormal, state.clipPlaneD);
-      }
       const [vi, vj, vk] = worldToVoxel(world, state.meta);
-      if (!clipped && sigmaGateActive) {
-        const sigma = sampleNearest(sigmaData, state.meta.shape, vi, vj, vk);
-        clipped = !Number.isNaN(sigma) && sigma > state.sigmaGateValue;
-      }
-      if (!clipped && coverageGateActive) {
-        clipped = sampleNearest(raysData, state.meta.shape, vi, vj, vk) < state.minRays;
-      }
-      if (!clipped && snrGateActive) {
-        clipped = !(sampleNearest(snrData, state.meta.shape, vi, vj, vk) >= state.minSnr);
-      }
-      if (!clipped && state.surfClip && state.hillSurface && state.hillDisplayH) {
-        const hs = surfaceHeightAt(state.hillDisplayH, state.hillSurface.gx, state.hillSurface.gy, world[0], world[1]);
-        if (Number.isFinite(hs) && world[2] > hs) clipped = true;
-      }
-      if (!clipped) {
-        const value = sampleNearest(data, state.meta.shape, vi, vj, vk);
-        if (!Number.isNaN(value) && value > (state.window ? state.window[0] : 0)) {
-          return { i: Math.floor(vi), j: Math.floor(vj), k: Math.floor(vk), value };
-        }
+      const n = voxelFlatIndex(state.meta.shape, vi, vj, vk);
+      if (n < 0 || !sgates.keep(tex, world) || !vgates.keep(n)) continue;
+      const value = data[n];
+      if (!Number.isNaN(value) && value > (state.window ? state.window[0] : 0)) {
+        return { i: Math.floor(vi), j: Math.floor(vj), k: Math.floor(vk), value };
       }
     }
     return null;
@@ -1989,27 +1979,15 @@ export function initViewer(root) {
     const [cx, cy, cz] = grid.shape;
     const s = grid.spacing, o = meta.origin_m;
     const ext = [nx * meta.spacing_m, ny * meta.spacing_m, nz * meta.spacing_m];
-    const sigmaData = state.layerData.get('sigma');
-    const raysData = state.layerData.get('rays');
-    const snrData = state.layerData.get('snr');
-    const at = (arr, i, j, k) => arr[i * ny * nz + j * nz + k];
     const clamp01 = (v) => Math.min(1, Math.max(0, v));
+    const vgates = stateVoxelGates(), sgates = stateSpatialGates();
     let value = NaN;
     const cmeta = { shape: grid.shape, origin_m: o, spacing_m: s };
     const hit = voxelMarch(nearP, dirN, cmeta, (i, j, k) => {
       const world = [o[0] + (i + 0.5) * s, o[1] + (j + 0.5) * s, o[2] + (k + 0.5) * s];
       const tex = [0, 1, 2].map((a) => clamp01((world[a] - o[a]) / ext[a]));
-      if (!insideClipBox(tex, state.clipMin, state.clipMax)) return false;
-      if (state.clipPlaneEnabled && !insideClipPlane(tex, state.clipPlaneNormal, state.clipPlaneD)) return false;
-      if (!grid.baked) {
-        if (state.sigmaGateEnabled && sigmaData && at(sigmaData, i, j, k) > state.sigmaGateValue) return false;
-        if (state.coverageGateEnabled && state.hasRays && raysData && at(raysData, i, j, k) < state.minRays) return false;
-        if (state.snrGateEnabled && state.hasSnr && snrData && !(at(snrData, i, j, k) >= state.minSnr)) return false;
-      }
-      if (state.surfClip && state.hillSurface && state.hillDisplayH) {
-        const hs = surfaceHeightAt(state.hillDisplayH, state.hillSurface.gx, state.hillSurface.gy, world[0], world[1]);
-        if (Number.isFinite(hs) && world[2] > hs) return false;
-      }
+      if (!sgates.keep(tex, world)) return false;
+      if (!grid.baked && !vgates.keep(i * ny * nz + j * nz + k)) return false;
       const v = grid.values[i * cy * cz + j * cz + k];
       if (v >= state.cubeThreshold) { value = v; return true; }
       return false;

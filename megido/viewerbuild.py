@@ -27,6 +27,7 @@ _MODULE_ORDER = [
     "shortcuts.mjs",
     "markers.mjs",
     "surfacemesh.mjs",
+    "gates.mjs",
     "app.mjs",
 ]
 
