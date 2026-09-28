@@ -50,8 +50,9 @@ export function sampleNearest(data, shape, i, j, k) {
 // Slab intersection mirroring the shader's box march (FRAGMENT_SRC in
 // app.mjs): same sign-preserving 1e-8 guard on a zero/near-zero direction
 // component (so 1/dir never divides by exact zero), tEnter clamped at 0, and
-// null when the ray misses the box (tExit <= tEnter). castHoverRay uses this
-// so CPU-side hover picking marches the same box the GPU shader does.
+// null when the ray misses the box (tExit <= tEnter). picker.mjs's
+// pickFogAlong uses this so CPU-side hover picking marches the same box the
+// GPU shader does.
 export function rayBox(origin, dir, min, max) {
   const invDir = [0, 0, 0];
   for (let a = 0; a < 3; a++) {
