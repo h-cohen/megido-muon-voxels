@@ -1,4 +1,3 @@
-import { parseNpy } from './npy.mjs';
 import { identity, multiply, perspective, lookAt, invert } from './mat4.mjs';
 import { reorderForTexture, cubeGrid } from './grid.mjs';
 import { buildTransferLUT } from './transfer.mjs';
@@ -11,9 +10,10 @@ import { COLORMAP_NAMES, colormapStops } from './colormap.mjs';
 import { captureView, loadViews, saveViews } from './views.mjs';
 import { SHORTCUTS, keyToAction } from './shortcuts.mjs';
 import { markerVertices, silhouetteVertices, SILHOUETTE_RAYLEN_M, dedupeDetectors, projectToScreen } from './markers.mjs';
-import { surfaceMesh, smoothHeightfield, surfaceVertexColors, robustRange, symmetricLimit, surfaceHeightAt, surfaceTextureData, residualVertexColors } from './surfacemesh.mjs';
+import { surfaceMesh, smoothHeightfield, surfaceVertexColors, robustRange, surfaceHeightAt, surfaceTextureData, residualVertexColors } from './surfacemesh.mjs';
 import { voxelGates, spatialGates } from './gates.mjs';
 import { pickVoxel } from './picker.mjs';
+import { readRun, readCompareVolume } from './runload.mjs';
 
 const VERTEX_SRC = `#version 300 es
 out vec2 vUv;
@@ -1071,10 +1071,6 @@ export function initViewer(root) {
   state.drawHistogram = drawHistogram;
   state.drawXferEditor = drawXferEditor;
 
-  async function readFile(file) {
-    return file.arrayBuffer();
-  }
-
   // Frame the camera on the grid's world-space center, sized to the volume's
   // diagonal. Shared by loadRun (on every fresh run) and #frame-all-btn (to
   // recover the view after the user has panned/zoomed away), so the framing
@@ -1096,12 +1092,9 @@ export function initViewer(root) {
     state.ready = false;
     const onboardingEl = root.querySelector('#overlay-onboarding');
     if (onboardingEl) onboardingEl.hidden = true;
-    const byName = new Map();
-    for (const f of files) byName.set(f.name, f);
 
-    const metaFile = byName.get('meta.json');
-    if (!metaFile) throw new Error('selected directory has no meta.json');
-    const meta = JSON.parse(await metaFile.text());
+    const run = await readRun(files);
+    const meta = run.meta;
     state.meta = meta;
     state.detectors = meta.detectors || [];
     rebuildMarkerBuffer();
@@ -1109,8 +1102,7 @@ export function initViewer(root) {
     // hill_silhouette.json (S6): an optional ridgeline fan, written by the
     // `hillside` CLI subcommand. Absent for older/synthetic runs - a run
     // without it must not error, and its toggle stays disabled.
-    const silhouetteFile = byName.get('hill_silhouette.json');
-    state.silhouette = silhouetteFile ? JSON.parse(await silhouetteFile.text()) : null;
+    state.silhouette = run.silhouette;
     rebuildSilhouetteBuffer();
     const toggleSilhouetteEl = root.querySelector('#toggle-silhouette');
     if (toggleSilhouetteEl) {
@@ -1125,10 +1117,6 @@ export function initViewer(root) {
     // overburden height-field, written by the `hillside` CLI subcommand.
     // BOTH files must be present - a run missing either (older/synthetic
     // runs) must not error, and the toggle stays disabled and unchecked.
-    const hillSurfaceFile = byName.get('hill_surface.npy');
-    const hillSurfaceMetaFile = byName.get('hill_surface_meta.json');
-    const hillSurfaceSigmaFile = byName.get('hill_surface_sigma.npy');
-    const hillResidualFile = byName.get('hill_residual_grid.npy');
     const toggleHillSurfaceEl = root.querySelector('#toggle-hill-surface');
     const hillSurfaceCaveatEl = root.querySelector('#hill-surface-caveat');
     const hillSurfaceSmoothEl = root.querySelector('#hill-surface-smooth');
@@ -1190,28 +1178,11 @@ export function initViewer(root) {
     }
     state.updateHillColourLegend = updateHillColourLegend;
 
-    if (hillSurfaceFile && hillSurfaceMetaFile) {
-      const { data: H } = parseNpy(await readFile(hillSurfaceFile));
-      const hillMeta = JSON.parse(await hillSurfaceMetaFile.text());
-      let sigma = null;
-      if (hillSurfaceSigmaFile) {
-        const { data } = parseNpy(await readFile(hillSurfaceSigmaFile));
-        if (data.length === H.length) sigma = data;
-      }
-      let residual = null;
-      if (hillResidualFile) {
-        const { data } = parseNpy(await readFile(hillResidualFile));
-        if (data.length === H.length) residual = data;
-      }
-      // The CLI records residual_grid_lim; when it is null (no finite residual
-      // at write time, or an older run) derive the same 98th-percentile |r|
-      // scale from the data rather than a meaningless default.
-      const residualLim = Number.isFinite(hillMeta.residual_grid_lim)
-        ? hillMeta.residual_grid_lim
-        : (residual ? symmetricLimit(residual) : NaN);
-      state.hillSurface = { H, gx: hillMeta.gx, gy: hillMeta.gy, meta: hillMeta, sigma, residual, residualLim };
-      state.hillColourMode = sigma ? 'sigma' : 'flat';
-      if (sigma) state.hillSigmaRange = robustRange(sigma);
+    if (run.hillSurface) {
+      const surf = run.hillSurface;
+      state.hillSurface = surf;
+      state.hillColourMode = surf.sigma ? 'sigma' : 'flat';
+      if (surf.sigma) state.hillSigmaRange = robustRange(surf.sigma);
       rebuildHillSurfaceBuffer();
       if (toggleHillSurfaceEl) {
         toggleHillSurfaceEl.disabled = false;
@@ -1227,10 +1198,11 @@ export function initViewer(root) {
         hillColourModeEl.disabled = false;
         hillColourModeEl.value = state.hillColourMode;
         const residualOption = hillColourModeEl.querySelector('option[value="residual"]');
-        if (residualOption) residualOption.disabled = !residual;
+        if (residualOption) residualOption.disabled = !surf.residual;
       }
       updateHillColourLegend();
       if (hillSurfaceCaveatEl) {
+        const hillMeta = surf.meta;
         const pctCell = Math.round((hillMeta.variance_explained || 0) * 100);
         const rayVe = hillMeta.ray_ve;
         // The per-ray VE depends strongly on the assumed inverse-density
@@ -1280,15 +1252,8 @@ export function initViewer(root) {
     // layers (e.g. a 2D backprojection plane) under the same meta.layers
     // list; those are silently skipped here, not offered as a radio, and
     // never treated as an error — they are correctly not volume layers.
-    const voxelCount = meta.shape[0] * meta.shape[1] * meta.shape[2];
     state.layerData.clear();
-    for (const name of meta.layers) {
-      const file = byName.get(`${name}.npy`);
-      if (!file) continue;
-      const { data } = parseNpy(await readFile(file));
-      if (data.length !== voxelCount) continue;
-      state.layerData.set(name, data);
-    }
+    for (const [name, data] of run.layers) state.layerData.set(name, data);
 
     // Reset any stale delta from a previously loaded compare run: a new
     // primary load makes the old 'B minus A' comparison meaningless.
@@ -1316,9 +1281,7 @@ export function initViewer(root) {
       }
     }
     {
-      const iso = Array.isArray(meta.suggested_iso) ? meta.suggested_iso[0] : null;
-      const vr = Array.isArray(meta.value_range) ? meta.value_range : [0, 1];
-      state.cubeThreshold = Number.isFinite(iso) ? iso : 0.5 * (vr[0] + vr[1]);
+      state.cubeThreshold = run.cubeThreshold;
       const el = root.querySelector('#cube-threshold');
       if (el) el.value = String(state.cubeThreshold);
     }
@@ -1326,16 +1289,9 @@ export function initViewer(root) {
     state.activeLayer = 'volume';
     state.volumeTex = makeVolumeTexture(gl, meta.shape, state.layerData.get('volume'));
     if (state.layerData.has('sigma')) {
-      const sig = state.layerData.get('sigma');
-      state.sigmaTex = makeVolumeTexture(gl, meta.shape, sig);
-      // Plain loop, not Math.max(...sig): a spread blows the call stack on
-      // the real campaign's 675,840-element sigma array.
-      let smax = 0;
-      for (let i = 0; i < sig.length; i++) if (sig[i] > smax) smax = sig[i];
-      state.sigmaMax = smax;
-    } else {
-      state.sigmaMax = 1;
+      state.sigmaTex = makeVolumeTexture(gl, meta.shape, state.layerData.get('sigma'));
     }
+    state.sigmaMax = run.sigmaMax;
     state.hasRays = state.layerData.has('rays');
     state.raysTex = state.hasRays
       ? makeVolumeTexture(gl, meta.shape, state.layerData.get('rays'))
@@ -1432,26 +1388,20 @@ export function initViewer(root) {
 
   root.querySelector('#load-second-run-input').addEventListener('change', async (ev) => {
     const files = Array.from(ev.target.files);
-    const byName = new Map(files.map((f) => [f.name, f]));
-    const metaFile = byName.get('meta.json');
-    if (!metaFile) return;
+    if (!files.some((f) => f.name === 'meta.json')) return;
     if (!state.meta) {
       root.querySelector('#delta-verdict').textContent = 'load a primary run first';
       return;
     }
-    const secondMeta = JSON.parse(await metaFile.text());
     // Full grid match, mirroring megido/volexport.py's compare_volumes,
     // which keys the grid on shape + spacing + origin, not shape alone.
-    const gridMismatch =
-      JSON.stringify(secondMeta.shape) !== JSON.stringify(state.meta.shape) ||
-      secondMeta.spacing_m !== state.meta.spacing_m ||
-      JSON.stringify(secondMeta.origin_m) !== JSON.stringify(state.meta.origin_m);
-    if (gridMismatch) {
+    const res = await readCompareVolume(files, state.meta);
+    if (!res) return;
+    if (res.mismatch) {
       root.querySelector('#delta-verdict').textContent = 'grid mismatch: cannot diff';
       return;
     }
-    const volFile = byName.get('volume.npy');
-    const { data: secondVolume } = parseNpy(await readFile(volFile));
+    const secondVolume = res.volume;
     const primary = state.layerData.get('volume');
     const delta = computeDelta(primary, secondVolume);
     state.layerData.set('delta', delta);

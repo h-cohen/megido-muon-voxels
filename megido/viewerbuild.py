@@ -29,6 +29,7 @@ _MODULE_ORDER = [
     "surfacemesh.mjs",
     "gates.mjs",
     "picker.mjs",
+    "runload.mjs",
     "app.mjs",
 ]
 
