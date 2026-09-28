@@ -200,3 +200,26 @@ handler.
 
 Deleting `megido/hillside.py` (candidate 4), the CLI and campaign candidates
 (3, 5, 6, 7), pruning browser tests, and any new viewer feature.
+
+## As built (2026-09-28)
+
+Where the shipped code differs from the text above (each recorded as a
+ruling in the SDD ledger):
+
+- `createState()` takes no argument.
+- `EFFECT_ORDER` is filter → surfaceMesh → legend → window → histogram →
+  lut → render. Each swapped pair reads disjoint state.
+- The parity test asserts per column rather than with a flat mismatch
+  tolerance, which a fully broken GLSL gate passed. With one gate on, the
+  hidden column's footprint is ≤ 10% lit and every kept column is ≥ 70% lit.
+  It was proven red by removing the GLSL σ gate and by inverting the SNR gate.
+- R5: the σ uniform requires the σ layer to be loaded. This fixes a stale
+  `sigmaTex` that made the GPU hide voxels hover kept after loading a run
+  without σ.
+- `sampleNearest` was removed; `voxelIndex` carries the floor convention.
+- These still write state outside `commit()`: saved-view apply, frame-all,
+  theme, layer switch, viewer crop. They are not single-field changes; a later
+  slice could route them through `commit()`.
+- Parked: `voxelGates().key` includes the thresholds of inert gates. The only
+  cost is an unneeded cube-grid rebuild.
+

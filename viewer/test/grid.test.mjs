@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { modelMatrixFromMeta, worldToVoxel, voxelToWorld, sampleNearest, reorderForTexture, rayBox, voxelIndex, cubeGrid } from '../src/grid.mjs';
+import { modelMatrixFromMeta, worldToVoxel, voxelToWorld, reorderForTexture, rayBox, voxelIndex, cubeGrid } from '../src/grid.mjs';
 
 const META = { shape: [4, 3, 2], spacing_m: 0.5, origin_m: [1, 2, 3] };
 
@@ -27,31 +27,23 @@ test('modelMatrixFromMeta maps the unit cube onto the world-space box', () => {
   assert.ok(Math.abs(z - (3 + 2 * 0.5)) < 1e-6);
 });
 
-test('sampleNearest reads C-order [nx,ny,nz] data', () => {
+test('voxelIndex addresses C-order [nx,ny,nz] data', () => {
   const shape = [2, 2, 2];
   const data = new Float32Array([0, 1, 2, 3, 4, 5, 6, 7]); // index = i*4 + j*2 + k
-  assert.equal(sampleNearest(data, shape, 0, 0, 0), 0);
-  assert.equal(sampleNearest(data, shape, 1, 0, 1), 5);
-  assert.equal(sampleNearest(data, shape, 1, 1, 1), 7);
+  assert.equal(data[voxelIndex(shape, 0, 0, 0)], 0);
+  assert.equal(data[voxelIndex(shape, 1, 0, 1)], 5);
+  assert.equal(data[voxelIndex(shape, 1, 1, 1)], 7);
 });
 
-test('sampleNearest floors a fractional voxel coordinate to the containing box, not the nearest integer', () => {
+test('voxelIndex floors a fractional voxel coordinate to the containing box, not the nearest integer', () => {
   // Voxel k occupies [k, k+1) in worldToVoxel units (center k+0.5), matching
   // GL NEAREST texture filtering (texel index = floor(coord)). i=1.8 lies in
   // box [1,2) -- a round-to-nearest-integer implementation would wrongly
-  // read voxel 2 (round(1.8) = 2) instead of voxel 1.
+  // pick voxel 2 (round(1.8) = 2) instead of voxel 1.
   const shape = [4, 1, 1];
-  const data = new Float32Array([10, 20, 30, 40]);
-  assert.equal(sampleNearest(data, shape, 1.8, 0, 0), 20);
-  assert.equal(sampleNearest(data, shape, 1.01, 0, 0), 20);
-  assert.equal(sampleNearest(data, shape, 1.99, 0, 0), 20);
-});
-
-test('sampleNearest returns NaN out of bounds', () => {
-  const shape = [2, 2, 2];
-  const data = new Float32Array(8);
-  assert.ok(Number.isNaN(sampleNearest(data, shape, -1, 0, 0)));
-  assert.ok(Number.isNaN(sampleNearest(data, shape, 2, 0, 0)));
+  assert.equal(voxelIndex(shape, 1.8, 0, 0), 1);
+  assert.equal(voxelIndex(shape, 1.01, 0, 0), 1);
+  assert.equal(voxelIndex(shape, 1.99, 0, 0), 1);
 });
 
 test('reorderForTexture transposes numpy C-order (z-fastest) to GL x-fastest', () => {

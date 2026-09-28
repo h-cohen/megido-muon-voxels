@@ -124,14 +124,19 @@ Built in phases, each with its own spec-referenced plan under
   page. The viewer's logic lives in pure modules, node-tested without a
   browser: `gates.mjs` is the ONE reference for which voxels are hidden (σ,
   coverage, SNR gates and the spatial clips, NaN semantics defined there;
-  the two GLSL gate copies read its uniforms, and
-  `tests/viewer/test_gate_parity.py` checks shader against it gate by gate),
+  the two GLSL copies of the σ/coverage/SNR gates read its
+  `voxelGates().uniforms`, and `tests/viewer/test_gate_parity.py` checks
+  shader against it gate by gate; the clip box/plane/surface uniforms are
+  still uploaded from state and not parity-tested),
   `picker.mjs` does hover picking, `runload.mjs` reads a run directory, and
   `model.mjs` holds the state defaults and the field → follow-up table that
   `commit()` in app.mjs runs. app.mjs is the GL/DOM adapter. A new display
   setting = its field in `createState` plus its effects in `EFFECTS`
-  (`effectsFor` throws if you forget); a new gate = `gates.mjs`, the two GLSL
-  copies, and a parity-test case. Rays march only inside the volume box (slab intersection,
+  (`effectsFor` throws if you forget); a new data gate = `gates.mjs`, the two GLSL
+  copies, its texture in `loadRun`, and a parity-test case (its uniform
+  upload in `render()` comes from `voxelGates().uniforms`). Saved-view apply,
+  frame-all, theme, layer switch and the viewer crop still write state
+  directly, outside `commit()`. Rays march only inside the volume box (slab intersection,
   >= half-voxel steps, opacity-corrected to the legacy per-sample length so
   the transfer function keeps its look — exactly at the image centre; the old
   per-pixel step was longer toward the edges, so edges are now slightly

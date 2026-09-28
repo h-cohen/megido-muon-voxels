@@ -25,26 +25,20 @@ export function voxelToWorld(v, meta) {
   ];
 }
 
-// Nearest-voxel lookup for a fractional voxel-space coordinate (as returned
-// by worldToVoxel). Voxel k occupies the half-open box [k, k+1) in this
-// coordinate (center at k+0.5) -- the SAME convention GL's NEAREST texture
-// filtering uses for a texture coordinate scaled by the axis size (texel
-// index = floor(coord)). Uses Math.floor, not Math.round: rounding to the
-// nearest INTEGER (rather than the nearest voxel BOX) is off by up to half a
-// voxel and disagrees with which voxel the GPU actually sampled -- exactly
-// the kind of drift hover picking must not have from the renderer.
 // Flat numpy-order index of the voxel containing fractional voxel-space
-// coordinate (i, j, k) (floor convention, see sampleNearest), or -1 outside.
+// coordinate (i, j, k) (as returned by worldToVoxel), or -1 outside the grid.
+// Voxel k occupies the half-open box [k, k+1) in this coordinate (center at
+// k+0.5) -- the SAME convention GL's NEAREST texture filtering uses for a
+// texture coordinate scaled by the axis size (texel index = floor(coord)).
+// Uses Math.floor, not Math.round: rounding to the nearest INTEGER (rather
+// than the nearest voxel BOX) is off by up to half a voxel and disagrees with
+// which voxel the GPU actually sampled -- exactly the kind of drift hover
+// picking must not have from the renderer.
 export function voxelIndex(shape, i, j, k) {
   const [nx, ny, nz] = shape;
   const ii = Math.floor(i), jj = Math.floor(j), kk = Math.floor(k);
   if (ii < 0 || ii >= nx || jj < 0 || jj >= ny || kk < 0 || kk >= nz) return -1;
   return ii * ny * nz + jj * nz + kk;
-}
-
-export function sampleNearest(data, shape, i, j, k) {
-  const n = voxelIndex(shape, i, j, k);
-  return n < 0 ? NaN : data[n];
 }
 
 // Slab intersection mirroring the shader's box march (FRAGMENT_SRC in
@@ -75,7 +69,7 @@ export function rayBox(origin, dir, min, max) {
 // numpy C-order for shape [nx,ny,nz] is z-fastest: data[x*ny*nz + y*nz + z].
 // WebGL's texImage3D reads its buffer x-fastest: texel (x,y,z) at
 // buf[z*ny*nx + y*nx + x]. Reorder into a new buffer for the GPU upload only;
-// `data` itself (and anything else reading it, e.g. sampleNearest) stays
+// `data` itself (and anything else reading it, e.g. voxelIndex lookups) stays
 // numpy-order.
 export function reorderForTexture(data, shape) {
   const [nx, ny, nz] = shape;

@@ -10,7 +10,8 @@ on-screen footprint (~10-20 probes), so a fully broken GLSL gate can hide
 inside that budget. Instead, an all-gates-off pass records which probe
 points land on each column (its footprint), then with one gate on: the
 hidden column's footprint must be mostly UNLIT (<=10%), and every kept
-column's footprint must be mostly LIT (>=80%).
+column's footprint must be mostly LIT (>=70%; correct code measures
+77.8% at worst, the narrowest fog footprint).
 """
 from __future__ import annotations
 
