@@ -79,19 +79,19 @@ export function createState() {
   };
 }
 
-const R = ['render'];
+const RENDER_ONLY = ['render'];
 export const EFFECTS = {
-  camera: R,
-  clipMin: R, clipMax: R, clipPlaneEnabled: R, clipPlaneD: R,
+  camera: RENDER_ONLY,
+  clipMin: RENDER_ONLY, clipMax: RENDER_ONLY, clipPlaneEnabled: RENDER_ONLY, clipPlaneD: RENDER_ONLY,
   // The sigma gate is a continuous slider: it never re-windows (gates.mjs).
-  sigmaGateEnabled: R, sigmaGateValue: R,
+  sigmaGateEnabled: RENDER_ONLY, sigmaGateValue: RENDER_ONLY,
   coverageGateEnabled: ['window', 'render'], minRays: ['window', 'render'],
   snrGateEnabled: ['window', 'render'], minSnr: ['window', 'render'],
-  renderMode: R, cubeThreshold: R, cubeBlock: R, opacity: R,
+  renderMode: RENDER_ONLY, cubeThreshold: RENDER_ONLY, cubeBlock: RENDER_ONLY, opacity: RENDER_ONLY,
   smoothSampling: ['filter', 'render'],
-  shading: R, adaptiveQuality: R,
-  showDetectors: R, showSilhouette: R, showHillSurface: R, surfClip: R,
-  hillColourMode: ['legend', 'surfaceMesh', 'render'],
+  shading: RENDER_ONLY, adaptiveQuality: RENDER_ONLY,
+  showDetectors: RENDER_ONLY, showSilhouette: RENDER_ONLY, showHillSurface: RENDER_ONLY, surfClip: RENDER_ONLY,
+  hillColourMode: ['surfaceMesh', 'legend', 'render'],
   hillSurfaceSmooth: ['surfaceMesh', 'render'],
   window: ['histogram', 'render'],
   transferStops: ['lut', 'render'],

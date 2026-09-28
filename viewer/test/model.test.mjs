@@ -41,3 +41,15 @@ test('defaults match the viewer today', () => {
   assert.deepEqual(s.clipMax, [1, 1, 1]);
   assert.equal(s.window, null);
 });
+
+test('render runs last and the window is set before the histogram draws it', () => {
+  assert.equal(EFFECT_ORDER.at(-1), 'render');
+  assert.ok(EFFECT_ORDER.indexOf('window') < EFFECT_ORDER.indexOf('histogram'));
+  assert.ok(EFFECT_ORDER.indexOf('lut') < EFFECT_ORDER.indexOf('render'));
+});
+
+test('load-bearing effects: the LUT rebuilds, the camera renders', () => {
+  assert.deepEqual(effectsFor({ transferStops: [] }), ['lut', 'render']);
+  assert.deepEqual(effectsFor({ camera: {} }), ['render']);
+  assert.deepEqual(effectsFor({ window: [0, 1] }), ['histogram', 'render']);
+});
