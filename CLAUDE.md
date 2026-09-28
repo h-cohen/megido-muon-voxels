@@ -121,7 +121,17 @@ Built in phases, each with its own spec-referenced plan under
   raymarching, zero runtime dependencies) built by `megido/viewerbuild.py`
   into one self-contained `viewer/dist/index.html`. Loads any run directory
   at runtime via a local file picker; never bakes data into the shipped
-  page. Rays march only inside the volume box (slab intersection,
+  page. The viewer's logic lives in pure modules, node-tested without a
+  browser: `gates.mjs` is the ONE reference for which voxels are hidden (σ,
+  coverage, SNR gates and the spatial clips, NaN semantics defined there;
+  the two GLSL gate copies read its uniforms, and
+  `tests/viewer/test_gate_parity.py` checks shader against it gate by gate),
+  `picker.mjs` does hover picking, `runload.mjs` reads a run directory, and
+  `model.mjs` holds the state defaults and the field → follow-up table that
+  `commit()` in app.mjs runs. app.mjs is the GL/DOM adapter. A new display
+  setting = its field in `createState` plus its effects in `EFFECTS`
+  (`effectsFor` throws if you forget); a new gate = `gates.mjs`, the two GLSL
+  copies, and a parity-test case. Rays march only inside the volume box (slab intersection,
   >= half-voxel steps, opacity-corrected to the legacy per-sample length so
   the transfer function keeps its look — exactly at the image centre; the old
   per-pixel step was longer toward the edges, so edges are now slightly
@@ -149,7 +159,7 @@ Built in phases, each with its own spec-referenced plan under
   steps, no shading) and one full render after 150 ms idle; tests must call
   `state.idleNow()` before comparing frames, or a "render changed" check
   compares a preview to a full frame and passes by construction. Hover
-  picking mirrors the shader's march and clip order exactly (`rayBox` in
+  picking (`picker.mjs`) mirrors the shader's march exactly (`rayBox` in
   `grid.mjs`); `VoxelGrid.origin` is the grid CORNER, so the containing voxel
   is `floor((p − origin)/spacing)`.
 - **Phase 5** (done): S6 — the hillside surface, the campaign's most resolvable
