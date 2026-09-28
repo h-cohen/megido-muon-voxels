@@ -14,6 +14,7 @@ import { surfaceMesh, smoothHeightfield, surfaceVertexColors, robustRange, surfa
 import { voxelGates, spatialGates } from './gates.mjs';
 import { pickVoxel } from './picker.mjs';
 import { readRun, readCompareVolume } from './runload.mjs';
+import { createState, effectsFor } from './model.mjs';
 
 const VERTEX_SRC = `#version 300 es
 out vec2 vUv;
@@ -462,82 +463,11 @@ export function initViewer(root) {
   }
 
   const dummyVolume = makeVolumeTexture(gl, [1, 1, 1], new Float32Array([0]));
-  const state = {
-    meta: null,
-    layerData: new Map(),
-    activeLayer: null,
-    gl, program, uniforms,
-    // Default view is the "observation" preset (see camera.mjs
-    // CAMERA_PRESETS.observation): z-up, detectors (z=0) low in frame,
-    // reconstructed rock rising above them.
-    camera: {
-      yaw: CAMERA_PRESETS.observation.yaw,
-      pitch: CAMERA_PRESETS.observation.pitch,
-      distance: 3,
-      target: [0, 0, 0],
-    },
-    transferStops: colormapStops('viridis'),
-    clipMin: [0, 0, 0],
-    clipMax: [1, 1, 1],
-    clipPlaneEnabled: false,
-    clipPlaneNormal: [0, 0, 1],
-    clipPlaneD: 0,
-    sigmaGateEnabled: false,
-    sigmaGateValue: 1e9,
-    // Coverage gate (display-only): hide voxels crossed by fewer than minRays
-    // measured directions. On by default, but only live when the run ships a
-    // `rays` layer (hasRays) -- the dummy texture reads 0 and would hide all.
-    coverageGateEnabled: true,
-    minRays: 2,
-    hasRays: false,
-    raysTex: dummyVolume,
-    // SNR gate (display-only): hide voxels whose bootstrap SNR < minSnr. On
-    // by default, live only when the run ships an `snr` layer.
-    snrGateEnabled: true,
-    minSnr: 3,
-    hasSnr: false,
-    snrTex: dummyVolume,
-    // 'fog' (density raymarch, default) or 'cubes' (opaque voxel blocks >=
-    // cubeThreshold; display-only). cubeThreshold defaults to the run's
-    // meta.suggested_iso[0] on load.
-    renderMode: 'fog',
-    cubeThreshold: 0,
-    opacity: 1, // display-only multiplier on voxel opacity (fog alpha / cube translucency)
-    // Cube size: b x b x b voxels merged into one display cube (1 = the solved
-    // voxels). Built lazily by ensureCubeGrid(), keyed on everything it reads.
-    cubeBlock: 1,
-    cubeGrid: null,
-    cubeGridKey: '',
-    loadSeq: 0,
-    volumeTex: dummyVolume,
-    sigmaTex: dummyVolume,
-    floatLinear,
-    smoothSampling: true,
-    shading: true,
-    adaptiveQuality: true, // fast preview (fewer steps, no shading) while interacting
-    interacting: false,
-    minStepVoxels: 0.5, // test hook: minimum march step, in voxels (uMinStepVoxels)
+  const state = Object.assign(createState(), {
+    gl, program, uniforms, floatLinear,
+    raysTex: dummyVolume, snrTex: dummyVolume, volumeTex: dummyVolume, sigmaTex: dummyVolume,
     lutTex: makeLutTexture(gl, buildTransferLUT(colormapStops('viridis'))),
-    detectors: [],
-    detectorLabels: [],
-    showDetectors: false,
-    markerVertexCount: 0,
-    silhouette: null,
-    showSilhouette: false,
-    silhouetteRanges: [],
-    hillSurface: null,
-    showHillSurface: false,
-    hillSurfaceIndexCount: 0,
-    hillSurfaceSmooth: 0, // display-only smoothing pass count; 0 = raw fit
-    hillColourMode: 'flat', // 'sigma' | 'residual' | 'flat' - reset by loadRun
-    hillSigmaRange: null, // [lo, hi] robust range of sigma, set by loadRun
-    surfClip: false, // display-only: skip volume samples above the fitted surface
-    hillDisplayH: null, // the DISPLAYED (possibly smoothed) height field the clip must match
-    surfTex: null,
-    surfMin: [0, 0],
-    surfStep: [1, 1],
-    surfSize: [0, 0],
-  };
+  });
 
   function worldBounds() {
     if (!state.meta) return { min: [0, 0, 0], extent: [1, 1, 1] };
@@ -633,6 +563,29 @@ export function initViewer(root) {
   }
   state.beginInteraction = beginInteraction;
   state.idleNow = idleNow;
+
+  // The one way a UI control changes display state: assign the patch, run the
+  // follow-ups model.mjs declares for those fields (fixed order), and render
+  // a fast preview when the change is part of a continuous drag.
+  function commit(patch, { interactive = false } = {}) {
+    const effects = effectsFor(patch);
+    Object.assign(state, patch);
+    for (const e of effects) {
+      if (e === 'filter') applyVolumeFilter();
+      else if (e === 'surfaceMesh') rebuildHillSurfaceBuffer();
+      else if (e === 'legend') { if (state.updateHillColourLegend) state.updateHillColourLegend(); }
+      else if (e === 'window') { if (state.applyWindowForLayer) state.applyWindowForLayer(state.activeLayer); }
+      else if (e === 'histogram') drawHistogram();
+      else if (e === 'lut') {
+        gl.deleteTexture(state.lutTex);
+        state.lutTex = makeLutTexture(gl, buildTransferLUT(state.transferStops));
+        drawXferEditor();
+      } else if (e === 'render') {
+        if (interactive) beginInteraction();
+        render();
+      }
+    }
+  }
 
   function render() {
     const { width, height } = canvas.getBoundingClientRect();
@@ -980,12 +933,6 @@ export function initViewer(root) {
       ctx.fillText(axis.label, cx + axis.dx * (r + 10), cy - axis.dy * (r + 10));
     }
   }
-  function rebuildLut() {
-    gl.deleteTexture(state.lutTex);
-    state.lutTex = makeLutTexture(gl, buildTransferLUT(state.transferStops));
-    render();
-  }
-
   function drawHistogram() {
     const canvas = root.querySelector('#histogram-canvas');
     const ctx = canvas.getContext('2d');
@@ -1449,24 +1396,22 @@ export function initViewer(root) {
     if (!dragging) return;
     const dx = ev.clientX - lastX, dy = ev.clientY - lastY;
     lastX = ev.clientX; lastY = ev.clientY;
-    state.camera.yaw += dx * 0.01;
-    state.camera.pitch = Math.max(-1.5, Math.min(1.5, state.camera.pitch + dy * 0.01));
-    beginInteraction();
-    render();
+    const yaw = state.camera.yaw + dx * 0.01;
+    const pitch = Math.max(-1.5, Math.min(1.5, state.camera.pitch + dy * 0.01));
+    commit({ camera: { ...state.camera, yaw, pitch } }, { interactive: true });
   });
   canvas.addEventListener('wheel', (ev) => {
     ev.preventDefault();
-    state.camera.distance = Math.max(0.5, state.camera.distance * (1 + ev.deltaY * 0.001));
-    beginInteraction();
-    render();
+    const distance = Math.max(0.5, state.camera.distance * (1 + ev.deltaY * 0.001));
+    commit({ camera: { ...state.camera, distance } }, { interactive: true });
   }, { passive: false });
 
   for (const key of Object.keys(CAMERA_PRESETS)) {
     const btn = root.querySelector(`#camera-preset-${key}`);
     btn.addEventListener('click', () => {
-      state.camera.yaw = CAMERA_PRESETS[key].yaw;
-      state.camera.pitch = CAMERA_PRESETS[key].pitch;
-      render();
+      const yaw = CAMERA_PRESETS[key].yaw;
+      const pitch = CAMERA_PRESETS[key].pitch;
+      commit({ camera: { ...state.camera, yaw, pitch } });
     });
   }
 
@@ -1478,33 +1423,28 @@ export function initViewer(root) {
   const toggleDetectorsEl = root.querySelector('#toggle-detectors');
   if (toggleDetectorsEl) {
     toggleDetectorsEl.addEventListener('change', (ev) => {
-      state.showDetectors = ev.target.checked;
-      render();
+      commit({ showDetectors: ev.target.checked });
     });
   }
 
   const toggleSmoothEl = root.querySelector('#toggle-smooth');
   if (toggleSmoothEl) {
     toggleSmoothEl.addEventListener('change', (ev) => {
-      state.smoothSampling = ev.target.checked;
-      applyVolumeFilter();
-      render();
+      commit({ smoothSampling: ev.target.checked });
     });
   }
 
   const toggleShadingEl = root.querySelector('#toggle-shading');
   if (toggleShadingEl) {
     toggleShadingEl.addEventListener('change', (ev) => {
-      state.shading = ev.target.checked;
-      render();
+      commit({ shading: ev.target.checked });
     });
   }
 
   const toggleAdaptiveEl = root.querySelector('#toggle-adaptive');
   if (toggleAdaptiveEl) {
     toggleAdaptiveEl.addEventListener('change', (ev) => {
-      state.adaptiveQuality = ev.target.checked;
-      render();
+      commit({ adaptiveQuality: ev.target.checked });
     });
   }
 
@@ -1512,8 +1452,7 @@ export function initViewer(root) {
   if (toggleSilhouetteEl) {
     toggleSilhouetteEl.disabled = true; // enabled by loadRun once a run is present
     toggleSilhouetteEl.addEventListener('change', (ev) => {
-      state.showSilhouette = ev.target.checked;
-      render();
+      commit({ showSilhouette: ev.target.checked });
     });
   }
 
@@ -1521,8 +1460,7 @@ export function initViewer(root) {
   if (toggleHillSurfaceEl) {
     toggleHillSurfaceEl.disabled = true; // enabled by loadRun once the artifact is present
     toggleHillSurfaceEl.addEventListener('change', (ev) => {
-      state.showHillSurface = ev.target.checked;
-      render();
+      commit({ showHillSurface: ev.target.checked });
     });
   }
 
@@ -1530,10 +1468,7 @@ export function initViewer(root) {
   if (hillColourModeEl) {
     hillColourModeEl.disabled = true; // enabled by loadRun once a surface is present
     hillColourModeEl.addEventListener('change', (ev) => {
-      state.hillColourMode = ev.target.value;
-      if (state.updateHillColourLegend) state.updateHillColourLegend();
-      rebuildHillSurfaceBuffer();
-      render();
+      commit({ hillColourMode: ev.target.value });
     });
   }
 
@@ -1544,8 +1479,7 @@ export function initViewer(root) {
   if (toggleSurfClipEl) {
     toggleSurfClipEl.disabled = true;
     toggleSurfClipEl.addEventListener('change', (ev) => {
-      state.surfClip = ev.target.checked;
-      render();
+      commit({ surfClip: ev.target.checked });
     });
   }
 
@@ -1560,13 +1494,11 @@ export function initViewer(root) {
     hillSurfaceSmoothEl.disabled = true; // enabled by loadRun once the artifact is present
     hillSurfaceSmoothEl.addEventListener('input', (ev) => {
       if (!state.hillSurface) return;
-      state.hillSurfaceSmooth = Number(ev.target.value) || 0;
+      const hillSurfaceSmooth = Number(ev.target.value) || 0;
       if (hillSurfaceSmoothReadoutEl) {
-        hillSurfaceSmoothReadoutEl.textContent = String(state.hillSurfaceSmooth);
+        hillSurfaceSmoothReadoutEl.textContent = String(hillSurfaceSmooth);
       }
-      rebuildHillSurfaceBuffer();
-      beginInteraction();
-      render();
+      commit({ hillSurfaceSmooth }, { interactive: true });
     });
   }
 
@@ -1642,13 +1574,13 @@ export function initViewer(root) {
     if (!draggingWindowEdge) return;
     const px = histCanvasPx(ev);
     const value = bandPxToWindow(px, state.layerMax, histCanvas.width);
+    const w = [...state.window];
     if (draggingWindowEdge === 'lo') {
-      state.window[0] = Math.min(value, state.window[1]);
+      w[0] = Math.min(value, w[1]);
     } else {
-      state.window[1] = Math.max(value, state.window[0]);
+      w[1] = Math.max(value, w[0]);
     }
-    beginInteraction(); // continuous drag: fast preview, full render on idle
-    drawHistogram(); render();
+    commit({ window: w }, { interactive: true }); // continuous drag: fast preview, full render on idle
   });
 
   const xferCanvas = root.querySelector('#xfer-canvas');
@@ -1665,9 +1597,7 @@ export function initViewer(root) {
     const rect = xferCanvas.getBoundingClientRect();
     const t = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
     draggingStop.t = t;
-    beginInteraction(); // continuous drag: fast preview, full render on idle
-    rebuildLut();
-    drawXferEditor();
+    commit({ transferStops: state.transferStops }, { interactive: true }); // continuous drag: fast preview, full render on idle
   });
 
   const axes = { x: 0, y: 1, z: 2 };
@@ -1697,81 +1627,69 @@ export function initViewer(root) {
     const minVal = root.querySelector(`#clip-${axis}-min-val`);
     minVal.textContent = Number(minInput.value).toFixed(2);
     minInput.addEventListener('input', (ev) => {
-      state.clipMin[axes[axis]] = parseFloat(ev.target.value);
+      const next = [...state.clipMin];
+      next[axes[axis]] = parseFloat(ev.target.value);
       minVal.textContent = Number(ev.target.value).toFixed(2);
-      beginInteraction();
-      render();
+      commit({ clipMin: next }, { interactive: true });
     });
     const maxInput = root.querySelector(`#clip-${axis}-max`);
     const maxVal = root.querySelector(`#clip-${axis}-max-val`);
     maxVal.textContent = Number(maxInput.value).toFixed(2);
     maxInput.addEventListener('input', (ev) => {
-      state.clipMax[axes[axis]] = parseFloat(ev.target.value);
+      const next = [...state.clipMax];
+      next[axes[axis]] = parseFloat(ev.target.value);
       maxVal.textContent = Number(ev.target.value).toFixed(2);
-      beginInteraction();
-      render();
+      commit({ clipMax: next }, { interactive: true });
     });
   }
 
-  root.querySelector('#slice-axis').addEventListener('change', updateSlice);
-  root.querySelector('#slice-pos').addEventListener('input', () => {
-    beginInteraction();
-    updateSlice();
-  });
-  function updateSlice() {
+  root.querySelector('#slice-axis').addEventListener('change', () => updateSlice(false));
+  root.querySelector('#slice-pos').addEventListener('input', () => updateSlice(true));
+  function updateSlice(interactive) {
     const axis = root.querySelector('#slice-axis').value;
     const pos = parseFloat(root.querySelector('#slice-pos').value);
+    let clipMin, clipMax;
     if (axis === 'none') {
-      state.clipMin = [0, 0, 0];
-      state.clipMax = [1, 1, 1];
+      clipMin = [0, 0, 0];
+      clipMax = [1, 1, 1];
     } else {
       const idx = axes[axis];
       const half = 0.02;
-      state.clipMin = [0, 0, 0]; state.clipMax = [1, 1, 1];
-      state.clipMin[idx] = Math.max(0, pos - half);
-      state.clipMax[idx] = Math.min(1, pos + half);
+      clipMin = [0, 0, 0]; clipMax = [1, 1, 1];
+      clipMin[idx] = Math.max(0, pos - half);
+      clipMax[idx] = Math.min(1, pos + half);
     }
-    render();
+    commit({ clipMin, clipMax }, { interactive });
   }
 
   root.querySelector('#clip-plane-enabled').addEventListener('change', (ev) => {
-    state.clipPlaneEnabled = ev.target.checked;
-    render();
+    commit({ clipPlaneEnabled: ev.target.checked });
   });
   const clipPlaneDInput = root.querySelector('#clip-plane-d');
   const clipPlaneDVal = root.querySelector('#clip-plane-d-val');
   clipPlaneDVal.textContent = parseFloat(clipPlaneDInput.value).toFixed(2);
   clipPlaneDInput.addEventListener('input', (ev) => {
-    state.clipPlaneD = parseFloat(ev.target.value);
-    clipPlaneDVal.textContent = state.clipPlaneD.toFixed(2);
-    beginInteraction();
-    render();
+    const clipPlaneD = parseFloat(ev.target.value);
+    clipPlaneDVal.textContent = clipPlaneD.toFixed(2);
+    commit({ clipPlaneD }, { interactive: true });
   });
 
   root.querySelector('#sigma-gate-enabled').addEventListener('change', (ev) => {
-    state.sigmaGateEnabled = ev.target.checked;
-    render();
+    commit({ sigmaGateEnabled: ev.target.checked });
   });
   root.querySelector('#sigma-gate-value').addEventListener('input', (ev) => {
     const frac = parseFloat(ev.target.value);
     const max = state.sigmaMax || 1;
-    state.sigmaGateValue = frac * max;
-    beginInteraction();
-    render();
+    commit({ sigmaGateValue: frac * max }, { interactive: true });
   });
 
   root.querySelector('#coverage-gate-enabled').addEventListener('change', (ev) => {
-    state.coverageGateEnabled = ev.target.checked;
-    if (state.applyWindowForLayer) state.applyWindowForLayer(state.activeLayer);
-    render();
+    commit({ coverageGateEnabled: ev.target.checked });
   });
   root.querySelector('#coverage-gate-value').addEventListener('input', (ev) => {
     const n = parseFloat(ev.target.value);
     if (!Number.isFinite(n)) return;
-    state.minRays = n;
-    if (state.applyWindowForLayer) state.applyWindowForLayer(state.activeLayer);
-    beginInteraction();
-    render();
+    commit({ minRays: n }, { interactive: true });
   });
 
   // The cube-mode grid: at block size 1 the active layer itself (gates run in
@@ -1794,43 +1712,33 @@ export function initViewer(root) {
   state.ensureCubeGrid = ensureCubeGrid;
 
   root.querySelector('#cube-size').addEventListener('change', (ev) => {
-    state.cubeBlock = Math.max(1, parseInt(ev.target.value, 10) || 1);
-    render();
+    commit({ cubeBlock: Math.max(1, parseInt(ev.target.value, 10) || 1) });
   });
 
   root.querySelector('#render-mode').addEventListener('change', (ev) => {
-    state.renderMode = ev.target.value === 'cubes' ? 'cubes' : 'fog';
-    render();
+    commit({ renderMode: ev.target.value === 'cubes' ? 'cubes' : 'fog' });
   });
   const opacityReadout = root.querySelector('#opacity-readout');
   root.querySelector('#opacity').addEventListener('input', (ev) => {
     const v = parseFloat(ev.target.value);
     if (!Number.isFinite(v)) return;
-    state.opacity = Math.min(1, Math.max(0, v));
-    if (opacityReadout) opacityReadout.textContent = `${Math.round(state.opacity * 100)}%`;
-    beginInteraction();
-    render();
+    const opacity = Math.min(1, Math.max(0, v));
+    if (opacityReadout) opacityReadout.textContent = `${Math.round(opacity * 100)}%`;
+    commit({ opacity }, { interactive: true });
   });
   root.querySelector('#cube-threshold').addEventListener('input', (ev) => {
     const v = parseFloat(ev.target.value);
     if (!Number.isFinite(v)) return;
-    state.cubeThreshold = v;
-    beginInteraction();
-    render();
+    commit({ cubeThreshold: v }, { interactive: true });
   });
 
   root.querySelector('#snr-gate-enabled').addEventListener('change', (ev) => {
-    state.snrGateEnabled = ev.target.checked;
-    if (state.applyWindowForLayer) state.applyWindowForLayer(state.activeLayer);
-    render();
+    commit({ snrGateEnabled: ev.target.checked });
   });
   root.querySelector('#snr-gate-value').addEventListener('input', (ev) => {
     const n = parseFloat(ev.target.value);
     if (!Number.isFinite(n)) return;
-    state.minSnr = n;
-    if (state.applyWindowForLayer) state.applyWindowForLayer(state.activeLayer);
-    beginInteraction();
-    render();
+    commit({ minSnr: n }, { interactive: true });
   });
 
   // Hover picking: client pixel -> NDC -> pickVoxel (picker.mjs), sharing
@@ -1902,12 +1810,8 @@ export function initViewer(root) {
   try { lastCmap = localStorage.getItem('megido-viewer:colormap') || 'viridis'; } catch { /* ignore */ }
   cmapSel.value = COLORMAP_NAMES.includes(lastCmap) ? lastCmap : 'viridis';
   function applyColormap(name) {
-    state.transferStops = colormapStops(name);
     try { localStorage.setItem('megido-viewer:colormap', name); } catch { /* ignore */ }
-    if (state.drawXferEditor) state.drawXferEditor();
-    gl.deleteTexture(state.lutTex);
-    state.lutTex = makeLutTexture(gl, buildTransferLUT(state.transferStops));
-    render();
+    commit({ transferStops: colormapStops(name) });
   }
   cmapSel.addEventListener('change', (ev) => applyColormap(ev.target.value));
   applyColormap(cmapSel.value);

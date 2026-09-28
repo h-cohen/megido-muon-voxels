@@ -30,6 +30,7 @@ _MODULE_ORDER = [
     "gates.mjs",
     "picker.mjs",
     "runload.mjs",
+    "model.mjs",
     "app.mjs",
 ]
 
