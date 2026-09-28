@@ -3,6 +3,14 @@
 Three bright columns: sigma hides column A, coverage hides B, SNR hides C.
 With one gate on, `pick` (CPU, gates.mjs) and the lit pixels (GPU, GLSL
 copies) must agree, and the gated column must be gone from both.
+
+The GPU check is per-column-FOOTPRINT, not a flat probe-grid tolerance: a
+flat 3%-of-all-probes budget (~41 of 1369) is bigger than a whole column's
+on-screen footprint (~10-20 probes), so a fully broken GLSL gate can hide
+inside that budget. Instead, an all-gates-off pass records which probe
+points land on each column (its footprint), then with one gate on: the
+hidden column's footprint must be mostly UNLIT (<=10%), and every kept
+column's footprint must be mostly LIT (>=80%).
 """
 from __future__ import annotations
 
@@ -45,7 +53,8 @@ def _load(page, dist_path, run):
 
 
 def _set_only(page, gate):
-    """Enable exactly one of sigma / coverage / snr via state, then idle-render."""
+    """Enable exactly one of sigma / coverage / snr via state (or none, for
+    the all-off baseline pass when gate is None), then idle-render."""
     page.evaluate("""(gate) => {
         const s = window.__viewerState;
         s.sigmaGateEnabled = gate === 'sigma';
@@ -81,17 +90,48 @@ def _picks_and_lit(page):
     }""", _GRID)
 
 
+def _footprints(baseline):
+    """Map column x-index -> set of probe indices whose all-gates-off CPU
+    pick landed on that column."""
+    footprint = {}
+    for idx, (col, _lit) in enumerate(baseline):
+        if col is not None:
+            footprint.setdefault(col, set()).add(idx)
+    return footprint
+
+
 @pytest.mark.parametrize("mode", ["fog", "cubes"])
 @pytest.mark.parametrize("gate, hidden", [("sigma", "A"), ("coverage", "B"), ("snr", "C")])
 def test_shader_gate_matches_cpu_gate(page, dist_path, run_fixture, mode, gate, hidden):
     _load(page, dist_path, _run(run_fixture))
     if mode == "cubes":
         page.locator("#render-mode").select_option("cubes")
+
+    # All-gates-off baseline: which probe points land on each column.
+    _set_only(page, None)
+    footprint = _footprints(_picks_and_lit(page))
+
     _set_only(page, gate)
     rows = _picks_and_lit(page)
     picked_cols = {i for i, _ in rows if i is not None}
     assert COLS[hidden] not in picked_cols                      # CPU hides the gated column
     assert {COLS[k] for k in COLS if k != hidden} <= picked_cols  # and keeps the others
-    mismatch = sum((i is not None) != lit for i, lit in rows)
-    assert sum(lit for _, lit in rows) > 0
-    assert mismatch <= 0.03 * len(rows)                          # GPU agrees with CPU
+
+    hidden_fp = footprint[COLS[hidden]]
+    lit_in_hidden = sum(1 for idx in hidden_fp if rows[idx][1])
+    assert lit_in_hidden <= 0.10 * len(hidden_fp)                # GPU also hides it
+
+    # KEPT_MIN_LIT is 70%, not the 80% first proposed: the narrowest column's
+    # footprint (9 probes) sees fog edge-softness bring its true lit ratio to
+    # 7/9 = 77.8% on CORRECT code (measured), so 80% flags good renders. 70%
+    # still leaves a wide margin below any correct-code minimum observed
+    # (77.8%-100% across all 6 cases) and well above what a broken gate shows
+    # (~0%, since a gate that wrongly clips this bright column removes it
+    # entirely -- see the mutation evidence in the task report).
+    KEPT_MIN_LIT = 0.70
+    for name, col in COLS.items():
+        if name == hidden:
+            continue
+        fp = footprint[col]
+        lit = sum(1 for idx in fp if rows[idx][1])
+        assert lit >= KEPT_MIN_LIT * len(fp)                     # GPU keeps the others lit

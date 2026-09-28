@@ -1905,11 +1905,12 @@ export function initViewer(root) {
   // step rule and sample positions as FRAGMENT_SRC's box march (RAY_STEPS,
   // uMinStepVoxels, cubic voxel size, tEnter+(i+0.5)*stepLen) -- always the
   // FULL-quality step count, never the adaptive-preview one, since hover
-  // picking is a discrete user action, not a per-frame render. Applies clip
-  // box, clip plane, sigma gate, coverage gate, SNR gate and surface clip in the same order as the
-  // shader; the sigma gate reads the CPU-side sigma layer array with
-  // sampleNearest (there is no readback from uSigmaTex) and only applies
-  // when the gate is enabled AND a sigma layer is loaded.
+  // picking is a discrete user action, not a per-frame render. Every gate
+  // (clip box, clip plane, sigma, coverage, SNR, surface clip) comes from
+  // gates.mjs (stateVoxelGates()/stateSpatialGates()), the single reference
+  // the GLSL copies are also checked against -- see gates.mjs for the exact
+  // rules (there is no readback from uSigmaTex; this reads the CPU-side
+  // layer arrays directly).
   function castHoverRay(clientX, clientY) {
     if (!state.meta) return null;
     const rect = canvas.getBoundingClientRect();
