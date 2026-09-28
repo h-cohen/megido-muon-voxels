@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { modelMatrixFromMeta, worldToVoxel, voxelToWorld, sampleNearest, reorderForTexture, rayBox } from '../src/grid.mjs';
+import { modelMatrixFromMeta, worldToVoxel, voxelToWorld, sampleNearest, reorderForTexture, rayBox, voxelIndex, cubeGrid } from '../src/grid.mjs';
 
 const META = { shape: [4, 3, 2], spacing_m: 0.5, origin_m: [1, 2, 3] };
 
@@ -185,4 +185,33 @@ test('blockAverage: block size 1 returns the values unchanged', () => {
   const v = new Float32Array([3, 1, 4, 1, 5, 9, 2, 6]);
   const out = blockAverage(v, [2, 2, 2], 1, () => true);
   assert.deepEqual(Array.from(out.values), Array.from(v));
+});
+
+test('voxelIndex floors and returns -1 outside the grid', () => {
+  const shape = [4, 3, 2];
+  assert.equal(voxelIndex(shape, 0, 0, 0), 0);
+  assert.equal(voxelIndex(shape, 1.99, 2.5, 1.2), 1 * 3 * 2 + 2 * 2 + 1);
+  assert.equal(voxelIndex(shape, -0.01, 0, 0), -1);
+  assert.equal(voxelIndex(shape, 4, 0, 0), -1);
+  assert.equal(voxelIndex(shape, 0, 0, 2), -1);
+});
+
+test('cubeGrid at block 1 is the layer itself, unbaked', () => {
+  const meta = { shape: [2, 2, 2], spacing_m: 0.5, origin_m: [0, 0, 0] };
+  const data = Float32Array.from([1, 2, 3, 4, 5, 6, 7, 8]);
+  const g = cubeGrid(data, meta, 1, () => true);
+  assert.equal(g.values, data);
+  assert.deepEqual(g.shape, [2, 2, 2]);
+  assert.equal(g.spacing, 0.5);
+  assert.equal(g.baked, false);
+});
+
+test('cubeGrid above block 1 is the kept-voxel block mean, baked', () => {
+  const meta = { shape: [2, 2, 2], spacing_m: 0.5, origin_m: [0, 0, 0] };
+  const data = Float32Array.from([1, 2, 3, 4, 5, 6, 7, 100]);
+  const g = cubeGrid(data, meta, 2, (n) => n !== 7);
+  assert.deepEqual(g.shape, [1, 1, 1]);
+  assert.equal(g.spacing, 1.0);
+  assert.equal(g.baked, true);
+  assert.ok(Math.abs(g.values[0] - 4) < 1e-6);   // mean of 1..7
 });

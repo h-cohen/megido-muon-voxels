@@ -33,11 +33,18 @@ export function voxelToWorld(v, meta) {
 // nearest INTEGER (rather than the nearest voxel BOX) is off by up to half a
 // voxel and disagrees with which voxel the GPU actually sampled -- exactly
 // the kind of drift hover picking must not have from the renderer.
-export function sampleNearest(data, shape, i, j, k) {
+// Flat numpy-order index of the voxel containing fractional voxel-space
+// coordinate (i, j, k) (floor convention, see sampleNearest), or -1 outside.
+export function voxelIndex(shape, i, j, k) {
   const [nx, ny, nz] = shape;
   const ii = Math.floor(i), jj = Math.floor(j), kk = Math.floor(k);
-  if (ii < 0 || ii >= nx || jj < 0 || jj >= ny || kk < 0 || kk >= nz) return NaN;
-  return data[ii * ny * nz + jj * nz + kk];
+  if (ii < 0 || ii >= nx || jj < 0 || jj >= ny || kk < 0 || kk >= nz) return -1;
+  return ii * ny * nz + jj * nz + kk;
+}
+
+export function sampleNearest(data, shape, i, j, k) {
+  const n = voxelIndex(shape, i, j, k);
+  return n < 0 ? NaN : data[n];
 }
 
 // Slab intersection mirroring the shader's box march (FRAGMENT_SRC in
@@ -161,4 +168,14 @@ export function blockAverage(values, shape, b, keep) {
   const out = new Float32Array(cx * cy * cz);
   for (let c = 0; c < out.length; c++) out[c] = cnt[c] ? sum[c] / cnt[c] : NaN;
   return { values: out, shape: [cx, cy, cz] };
+}
+
+// The cube-mode grid for the "Cube size" control: at block 1 the layer itself
+// (the shader applies the gates per voxel); above 1 the b^3 block means of the
+// voxels keep(n) accepts, with the gates then "baked" into the values.
+export function cubeGrid(data, meta, block, keep) {
+  const b = Math.max(1, block | 0);
+  if (b === 1 || !data) return { shape: meta.shape, spacing: meta.spacing_m, values: data, baked: false };
+  const merged = blockAverage(data, meta.shape, b, keep);
+  return { shape: merged.shape, spacing: meta.spacing_m * b, values: merged.values, baked: true };
 }

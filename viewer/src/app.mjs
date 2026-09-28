@@ -1,6 +1,6 @@
 import { parseNpy } from './npy.mjs';
 import { identity, multiply, perspective, lookAt, invert } from './mat4.mjs';
-import { worldToVoxel, reorderForTexture, rayBox, voxelMarch, blockAverage } from './grid.mjs';
+import { reorderForTexture, cubeGrid } from './grid.mjs';
 import { buildTransferLUT } from './transfer.mjs';
 import { orbitToEye, CAMERA_PRESETS } from './camera.mjs';
 import { computeHistogram, robustWindow, windowToBandPx, bandPxToWindow } from './histogram.mjs';
@@ -13,6 +13,7 @@ import { SHORTCUTS, keyToAction } from './shortcuts.mjs';
 import { markerVertices, silhouetteVertices, SILHOUETTE_RAYLEN_M, dedupeDetectors, projectToScreen } from './markers.mjs';
 import { surfaceMesh, smoothHeightfield, surfaceVertexColors, robustRange, symmetricLimit, surfaceHeightAt, surfaceTextureData, residualVertexColors } from './surfacemesh.mjs';
 import { voxelGates, spatialGates } from './gates.mjs';
+import { pickVoxel } from './picker.mjs';
 
 const VERTEX_SRC = `#version 300 es
 out vec2 vUv;
@@ -559,15 +560,6 @@ export function initViewer(root) {
       ? { H: state.hillDisplayH, gx: state.hillSurface.gx, gy: state.hillSurface.gy } : null;
     return spatialGates(state, surface);
   }
-  // Flat numpy-order index for a voxel-space (possibly fractional) coordinate,
-  // or -1 when it falls outside the grid (mirrors sampleNearest's bounds
-  // check in grid.mjs, grid.mjs will carry this as voxelIndex in Task 2).
-  const voxelFlatIndex = (shape, i, j, k) => {
-    const [nx, ny, nz] = shape;
-    const a = Math.floor(i), b2 = Math.floor(j), c = Math.floor(k);
-    return (a < 0 || a >= nx || b2 < 0 || b2 >= ny || c < 0 || c >= nz) ? -1 : a * ny * nz + b2 * nz + c;
-  };
-
   // World Z is the physical vertical (detectors at z=0, rock above). Near
   // straight-down/up (|pitch| > PITCH_GIMBAL_LIMIT) the z-up vector goes
   // parallel to the eye-to-target axis and lookAt degenerates, so we fall
@@ -1843,14 +1835,9 @@ export function initViewer(root) {
     const key = [b, state.activeLayer, state.loadSeq, vgates.key].join('|');
     if (key === state.cubeGridKey && state.cubeGrid) return state.cubeGrid;
     if (state.cubeGrid && state.cubeGrid.tex) gl.deleteTexture(state.cubeGrid.tex);
-    const data = state.layerData.get(state.activeLayer);
-    if (b === 1 || !data) {
-      state.cubeGrid = { shape: meta.shape, spacing: meta.spacing_m, values: data, baked: false, tex: null };
-    } else {
-      const merged = blockAverage(data, meta.shape, b, vgates.keep);
-      state.cubeGrid = { shape: merged.shape, spacing: meta.spacing_m * b, values: merged.values,
-        baked: true, tex: makeVolumeTexture(gl, merged.shape, merged.values) };
-    }
+    const grid = cubeGrid(state.layerData.get(state.activeLayer), meta, b, vgates.keep);
+    grid.tex = grid.baked ? makeVolumeTexture(gl, grid.shape, grid.values) : null;
+    state.cubeGrid = grid;
     state.cubeGridKey = key;
     return state.cubeGrid;
   }
@@ -1896,104 +1883,25 @@ export function initViewer(root) {
     render();
   });
 
-  // Shares cameraMatrices() with render() (mirrored by the GPU-side
-  // unproject() in FRAGMENT_SRC), so hover picking always agrees with what
-  // was actually drawn. If the projection convention changes, update
-  // cameraMatrices() and the shader together.
-  //
-  // Marches ONLY inside the volume box via rayBox (grid.mjs), using the SAME
-  // step rule and sample positions as FRAGMENT_SRC's box march (RAY_STEPS,
-  // uMinStepVoxels, cubic voxel size, tEnter+(i+0.5)*stepLen) -- always the
-  // FULL-quality step count, never the adaptive-preview one, since hover
-  // picking is a discrete user action, not a per-frame render. Every gate
-  // (clip box, clip plane, sigma, coverage, SNR, surface clip) comes from
-  // gates.mjs (stateVoxelGates()/stateSpatialGates()), the single reference
-  // the GLSL copies are also checked against -- see gates.mjs for the exact
-  // rules (there is no readback from uSigmaTex; this reads the CPU-side
-  // layer arrays directly).
+  // Hover picking: client pixel -> NDC -> pickVoxel (picker.mjs), sharing
+  // cameraMatrices() with render() so it always agrees with what was drawn.
   function castHoverRay(clientX, clientY) {
     if (!state.meta) return null;
     const rect = canvas.getBoundingClientRect();
-    const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
-    const ndcY = -(((clientY - rect.top) / rect.height) * 2 - 1);
-
+    const ndc = [((clientX - rect.left) / rect.width) * 2 - 1, -(((clientY - rect.top) / rect.height) * 2 - 1)];
     const { invViewProj } = cameraMatrices();
-    if (!invViewProj) return null;
-
-    function unproject(z) {
-      const clip = [ndcX, ndcY, z, 1];
-      const m = invViewProj;
-      const w = m[3] * clip[0] + m[7] * clip[1] + m[11] * clip[2] + m[15] * clip[3];
-      return [
-        (m[0] * clip[0] + m[4] * clip[1] + m[8] * clip[2] + m[12] * clip[3]) / w,
-        (m[1] * clip[0] + m[5] * clip[1] + m[9] * clip[2] + m[13] * clip[3]) / w,
-        (m[2] * clip[0] + m[6] * clip[1] + m[10] * clip[2] + m[14] * clip[3]) / w,
-      ];
-    }
-    const nearP = unproject(-1), farP = unproject(1);
-    const dir = [farP[0] - nearP[0], farP[1] - nearP[1], farP[2] - nearP[2]];
-    const len = Math.hypot(...dir);
-    const dirN = [dir[0] / len, dir[1] / len, dir[2] / len];
-    const data = state.layerData.get(state.activeLayer);
-    if (!data) return null;
-
-    const { min, extent } = worldBounds();
-    const boxMax = [min[0] + extent[0], min[1] + extent[1], min[2] + extent[2]];
-    if (state.renderMode === 'cubes') return castCubeRay(nearP, dirN, data);
-    const hit = rayBox(nearP, dirN, min, boxMax);
-    if (!hit) return null;
-    const [tEnter, tExit] = hit;
-
-    const voxel = extent[0] / state.meta.shape[0]; // cubic voxels (single spacing)
-    const minStepVoxels = state.minStepVoxels != null ? state.minStepVoxels : 0.5;
-    const stepLen = Math.max(minStepVoxels * voxel, (tExit - tEnter) / RAY_STEPS);
-
-    const vgates = stateVoxelGates(), sgates = stateSpatialGates();
-
-    for (let i = 0; i < RAY_STEPS; i++) {
-      const tt = tEnter + (i + 0.5) * stepLen;
-      if (tt > tExit) break;
-      const world = [nearP[0] + dirN[0] * tt, nearP[1] + dirN[1] * tt, nearP[2] + dirN[2] * tt];
-      const tex = [
-        (world[0] - min[0]) / extent[0],
-        (world[1] - min[1]) / extent[1],
-        (world[2] - min[2]) / extent[2],
-      ];
-      const [vi, vj, vk] = worldToVoxel(world, state.meta);
-      const n = voxelFlatIndex(state.meta.shape, vi, vj, vk);
-      if (n < 0 || !sgates.keep(tex, world) || !vgates.keep(n)) continue;
-      const value = data[n];
-      if (!Number.isNaN(value) && value > (state.window ? state.window[0] : 0)) {
-        return { i: Math.floor(vi), j: Math.floor(vj), k: Math.floor(vk), value };
-      }
-    }
-    return null;
-  }
-  // Cube-mode hover: the same voxel-to-voxel march as FRAGMENT_SRC's
-  // cubeMarch (voxelMarch, grid.mjs), with every gate evaluated at the voxel
-  // centre in the shader's order, returning the first voxel >= threshold.
-  function castCubeRay(nearP, dirN, data) {
-    const meta = state.meta;
-    const grid = ensureCubeGrid();
-    if (!grid || !grid.values) return null;
-    const [nx, ny, nz] = meta.shape;
-    const [cx, cy, cz] = grid.shape;
-    const s = grid.spacing, o = meta.origin_m;
-    const ext = [nx * meta.spacing_m, ny * meta.spacing_m, nz * meta.spacing_m];
-    const clamp01 = (v) => Math.min(1, Math.max(0, v));
-    const vgates = stateVoxelGates(), sgates = stateSpatialGates();
-    let value = NaN;
-    const cmeta = { shape: grid.shape, origin_m: o, spacing_m: s };
-    const hit = voxelMarch(nearP, dirN, cmeta, (i, j, k) => {
-      const world = [o[0] + (i + 0.5) * s, o[1] + (j + 0.5) * s, o[2] + (k + 0.5) * s];
-      const tex = [0, 1, 2].map((a) => clamp01((world[a] - o[a]) / ext[a]));
-      if (!sgates.keep(tex, world)) return false;
-      if (!grid.baked && !vgates.keep(i * ny * nz + j * nz + k)) return false;
-      const v = grid.values[i * cy * cz + j * cz + k];
-      if (v >= state.cubeThreshold) { value = v; return true; }
-      return false;
+    return pickVoxel(ndc, invViewProj, {
+      meta: state.meta,
+      data: state.layerData.get(state.activeLayer),
+      window: state.window,
+      renderMode: state.renderMode,
+      raySteps: RAY_STEPS,
+      minStepVoxels: state.minStepVoxels,
+      voxel: stateVoxelGates(),
+      spatial: stateSpatialGates(),
+      cubeGrid: state.renderMode === 'cubes' ? ensureCubeGrid() : null,
+      cubeThreshold: state.cubeThreshold,
     });
-    return hit ? { i: hit[0], j: hit[1], k: hit[2], value } : null;
   }
 
   // Test hook: state.pick(x, y) -> {i,j,k,value} | null, exercised directly
