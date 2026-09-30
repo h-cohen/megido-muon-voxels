@@ -101,6 +101,24 @@ beams. Established with phantoms through the real geometry and real-σ noise:
   0.91 per axis). 0.1 m voxels: contrast 2.46 → 2.84 at 4× cost, χ² 0.44.
 - **Viewer coverage gate at 6 rays**: at ceiling height every voxel has only
   4–5 rays, so it hid 82% of the beam voxels; the default is 2.
+- **Neural-field representation (NeRF-style), 2026-09-29.** The voxel vector
+  reparametrised as `softplus(f_θ(x))` through the production `A`, every fit
+  stopped at TV's χ² on the same data (analytic σ). Scored against TV with
+  one set of metrics; a wrong-depth phantom (same scene 2 m lower) catches a
+  representation that imposes a depth. Code, raw rows and numbers: branch
+  `spike/nerf-field`, `spikes/nerf/RESULTS.md`.
+  - Fourier-feature MLP (the classic NeRF encoding), 4 bandwidths: real beam
+    peak at the grid bottom (1.1–1.3 m); wrong-depth phantom (truth 4.9 m)
+    at 1.1–4.3 m. Spectral bias fills the depth null space.
+  - Multiresolution grid + MLP (Instant-NGP-like): over 5 noise realisations
+    the wrong-depth phantom lands at 5.1, 4.3, **8.9**, 5.1, 5.1 m (TV 4.7–5.1
+    every time); beam modulation 0.51 vs TV 0.92 (truth 1.70). Out-of-sample
+    (fit one position, predict the other, margin over a 10-seed shuffled
+    null): pos0→pos1 +0.16…0.22 vs TV +0.08, pos1→pos0 +0.19 vs TV +0.20 —
+    one direction only, which does not offset the depth instability. The
+    same grid without the MLP is no better (shell 2.2×, depth unstable).
+  - What survives: the autodiff machinery, for a Poisson count-level joint
+    fit — not the representation.
 
 ## Compared with cafeteria_3d_modeling
 

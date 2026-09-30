@@ -89,6 +89,13 @@ re-propose without new information — the findings are in the specs/plans):
   convention touches only ~5% of directions (the transparent quantile), picks
   physically sensible grazing directions, and cannot change the meaningful
   relative/shape outputs — because the absolute level is degenerate anyway.
+- **A neural-field (NeRF-style) representation of the voxels:** tested on the
+  cafeteria at equal χ² against TV. Fourier-feature MLPs put the real beams
+  at the grid bottom and fail a wrong-depth phantom; a multiresolution grid
+  loses ~45% beam contrast and sends 1 in 5 noise realisations of the
+  wrong-depth phantom to the grid top. The representation's bias sets depth.
+  Autodiff remains useful for a count-level Poisson joint fit
+  (`docs/cafeteria-run.md`; branch `spike/nerf-field`).
 
 The two real wins this revision landed: the volume **render axis-order fix** and
 the **upper-envelope GP hillside surface** (the detector-spot dip was a genuine
