@@ -255,7 +255,7 @@ def _cmd_reconstruct(args) -> int:
         boot = voxel_bootstrap(counts_grid, cfg, n_replicas=args.bootstrap,
                                cache_dir=args.cache,
                                solve_kwargs={"n_iter": args.iters},
-                               solver=solver)
+                               solver=solver, sigma=sigma)
         boot.save(out / "uncertainty.npz")
         snr = boot.snr()
         n_grid = views.size

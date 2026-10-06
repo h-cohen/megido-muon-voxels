@@ -191,3 +191,57 @@ def test_coverage_damping_removes_the_noise_shell_without_losing_the_fit():
 
 def test_coverage_damping_defaults_off():
     assert Reconstruction().coverage_damping == 0.0
+
+
+@pytest.mark.parametrize("algorithm", ["sirt", "tv"])
+def test_stop_at_best_iter_reproduces_the_nominal_solution_bit_for_bit(algorithm):
+    fwd, truth, data = _toy()
+    noisy = FitData(lam=data.lam + np.random.default_rng(3).normal(0, 0.05, data.lam.size),
+                    w=np.full(data.lam.size, 1 / 0.05**2), rows=data.rows)
+    rc = Reconstruction(algorithm=algorithm, n_iter=60, tv_alpha=0.02, chi2_target=1.0)
+    x, info = solve(fwd, noisy, rc)
+    assert 0 <= info["best_iter"] <= rc.n_iter
+    x2, info2 = solve(fwd, noisy, rc, stop_at=info["best_iter"])
+    np.testing.assert_array_equal(x2, x)
+    assert info2["offsets"] == info["offsets"]
+    assert info2["best_iter"] == info["best_iter"]
+
+
+@pytest.mark.parametrize("algorithm", ["sirt", "tv"])
+def test_stop_at_k_applies_exactly_k_updates(algorithm):
+    fwd, truth, data = _toy()
+    rc = Reconstruction(algorithm=algorithm, n_iter=50, tv_alpha=0.0, chi2_target=1e-12)
+    x0, i0 = solve(fwd, data, rc, stop_at=0)
+    assert i0["best_iter"] == 0
+    assert np.all(x0 == 0.0)                       # no update applied
+    x5, _ = solve(fwd, data, rc, stop_at=5)
+    x6, _ = solve(fwd, data, rc, stop_at=6)
+    assert np.linalg.norm(x6 - x5) > 0             # one more update moved it
+
+
+def test_stop_at_ignores_the_discrepancy_target():
+    fwd, truth, data = _toy()
+    rc = Reconstruction(algorithm="sirt", n_iter=200, chi2_target=1e30)  # would stop at k=0
+    x, info = solve(fwd, data, rc)
+    assert info["best_iter"] == 0
+    x7, info7 = solve(fwd, data, rc, stop_at=7)
+    assert info7["best_iter"] == 7 and np.linalg.norm(x7) > 0
+
+
+@pytest.mark.parametrize("algorithm", ["sirt", "tv"])
+@pytest.mark.parametrize("bad", [-1, 51])
+def test_stop_at_outside_zero_to_n_iter_raises(algorithm, bad):
+    fwd, truth, data = _toy()
+    rc = Reconstruction(algorithm=algorithm, n_iter=50, tv_alpha=0.0, chi2_target=1e-12)
+    with pytest.raises(ValueError, match="stop_at"):
+        solve(fwd, data, rc, stop_at=bad)
+
+
+@pytest.mark.parametrize("algorithm", ["sirt", "tv"])
+def test_stop_at_n_iter_applies_all_n_iter_updates(algorithm):
+    fwd, truth, data = _toy()
+    rc = Reconstruction(algorithm=algorithm, n_iter=50, tv_alpha=0.0, chi2_target=1e-12)
+    x49, _ = solve(fwd, data, rc, stop_at=49)
+    x50, info = solve(fwd, data, rc, stop_at=50)
+    assert info["best_iter"] == 50
+    assert np.linalg.norm(x50 - x49) > 0           # the 50th update was applied

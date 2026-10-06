@@ -41,3 +41,12 @@ exposures:
   - id: P1
     runs: DET200145-DET200155
     pose: {x: 2.2, y: 0.0, z: 0.0, tilt_deg: 0, az_deg: 241}
+
+# Point-spread probe settings, consumed only by megido/kernels.py and its tests.
+# No CLI flag, viewer layer or coverage claim exists (spec
+# 2026-10-06-voxel-averaging-kernels-design.md §10). delta_sigma 10: the TV
+# solver is amplitude-dependent, a 1-sigma bump gives an erratic response.
+kernels:
+  spacing_m: 1.0
+  sep_m: 3.0
+  delta_sigma: 10.0
