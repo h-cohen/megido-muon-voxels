@@ -1,6 +1,8 @@
 # Voxel averaging kernels — honest per-voxel uncertainty
 
-Status: design approved in brainstorming, 2026-10-06. Binding authority for the
+Status: design approved 2026-10-06; **executed through plan Task 4, then
+stopped** (see §10: the central `R·t` claim failed its own gates). Originally:
+design approved in brainstorming, 2026-10-06. Binding authority for the
 physics remains `2026-09-16-megido-muon-voxels-design.md`; this spec adds one S4
 product and changes no physics.
 
@@ -253,3 +255,42 @@ Written from the full-scale numbers:
 | Probe iterate | The nominal `best_iter` | Each solve's own best-χ² iterate | Keeps PSFs continuous and deterministic |
 | Bootstrap weights | Same σ as the delivered volume | Unweighted replicas (today) | σ must describe the delivered estimator |
 | Coverage band | [0.58, 0.78], fixed before building | Tuned after running | CLAUDE.md: never tune a gate to the output |
+
+## 10. Outcome — stopped after plan Task 4 (2026-10-06)
+
+Landed on `main`: `solve(..., stop_at=)` / `info["best_iter"]`
+(`INVERSION_VERSION` 3); `voxel_bootstrap(sigma=)` so replicas fit the
+delivered estimator; the `kernels:` config block; and `megido/kernels.py`'s
+probe core (`probe_batches`, `probe_deltas`, `point_spreads`, `psf_metrics`),
+gated by a well-resolved control (9 detectors at 3 m pitch, probe at 3.5 m:
+mass 0.98, depth spread 0.94 m, shift −0.11 m) and determinism. Not wired to
+the CLI or viewer.
+
+Why it stopped: the method of §3.2 and the claim of §2 failed the gates of §4
+in the limited-view (two-position) geometry. Diagnosis on the Megiddo test
+geometry (0.5 m voxels, one 2.2 m baseline):
+
+- **The PSFs are wide and do not superpose.** Batched, cell-truncated PSFs
+  predict the response to a whole-lattice spike phantom with relative L2
+  error 0.6–0.7 (gate: ≤ 0.2). Even a strictly linear SIRT misses by 0.61
+  at `sep_m` 4 (only 40% of one probe's |response| lies in its cell) and
+  0.39 at `sep_m` 8 (84% inside). TV adds ~0.2 of genuine nonlinearity on
+  top (0.58 at `sep_m` 8). A resolution-operator description `R·t =
+  Σ t_j PSF_j` of the delivered volume is therefore not validated.
+- **TV's response is amplitude-dependent.** A 1-σ probe gives an erratic
+  response (mass 0.58–1.71 between neighbouring probes); a 10-σ probe is
+  stable (hence `delta_sigma` 10, Ruling R4), but 0.5δ vs 2δ still differ by
+  rel L2 0.6.
+- **The solve box localises depth near its edges.** Depth spread falls with
+  height (5.2 m at 2.25 m → 2.4 m at 10.25 m, grid top 11 m) for linear
+  SIRT too, dropping below the analytic parallax `dz` (3.4 m at 10 m): the
+  box edge, not the data, bounds the smear.
+- The well-resolved control first failed because the plan's 25-detector
+  geometry (10 m pitch) put the probe in view of ONE detector (|t| ≤ 1.2
+  cone radius 4.2 m at 3.5 m): no parallax. Fixed by Ruling R3.
+
+What remains true from §1: the delivered σ is a correct noise σ, the bias
+dominates, and SNR ≥ 3 is not a detection test. Code and failing gates of
+Task 5: branch `spike/kernels-task5-failed`; diagnostics recorded in the
+plan's SDD ledger. Options left open: descriptive per-location spike tests
+(no superposition claim) or one-solve-per-probe full-grid PSFs.
