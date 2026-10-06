@@ -135,7 +135,8 @@ synthetic campaigns and run in the normal suite.
    `sep_m` or record the nonlinearity, never to loosen the threshold.
 5. **Determinism.** The same inputs give bit-identical PSFs.
 6. **Calibration (count level).** A small synthetic sky-reference campaign
-   (two positions 2 m apart, 0.5 m voxels, 30×30 sky bins) with a spike
+   (the cafeteria config's two positions, 1.9 m apart; 0.5 m voxels; 40×40
+   detector bins over |t| ≤ 1.0; live times 1000/1000/3000 s) with a spike
    phantom on the probe lattice, observed once, and σ from 16 replicas that
    Poisson-resample the observed counts:
    - `P(|x̂ − R·t| ≤ σ)` lies in **[0.58, 0.78]**. The band was fixed before
