@@ -71,11 +71,17 @@ def _named(c: np.ndarray, position_ids) -> dict[str, float]:
 
 
 def sirt(fwd: ForwardModel, data: FitData, rc: Reconstruction, *,
-         fit_offsets: bool = True) -> tuple[np.ndarray, dict]:
+         fit_offsets: bool = True, stop_at: int | None = None) -> tuple[np.ndarray, dict]:
     """Weighted SIRT with nonnegativity and per-position offset refinement.
 
     Stops at rc.chi2_target by the discrepancy principle: fitting past the noise
     floor is how SIRT turns counting statistics into structure.
+
+    `stop_at=k` returns the iterate after exactly k updates and ignores the
+    discrepancy stop. Kernel probes (megido.kernels) use it to re-solve
+    perturbed data along the nominal solve's path: a perturbation must not
+    change WHICH iterate is delivered, or the point-spread function would jump.
+    `info["best_iter"]` is the number of updates applied to the returned x.
     """
     A, lam, w = fwd.A, data.lam, data.w
     n_pos = len(fwd.rows.position_ids)
@@ -87,7 +93,7 @@ def sirt(fwd: ForwardModel, data: FitData, rc: Reconstruction, *,
 
     history: list[float] = []
     chi2 = float("inf")
-    k = -1
+    n_updates = 0
     for k in range(rc.n_iter):
         resid = lam - (A @ x + c[data.rows.pos_of_row])
         if fit_offsets:
@@ -96,18 +102,23 @@ def sirt(fwd: ForwardModel, data: FitData, rc: Reconstruction, *,
         chi2 = float(np.sum(w * resid**2) / n_used)
         if k % 20 == 0:
             history.append(chi2)
-        if chi2 <= rc.chi2_target:
+        if stop_at is not None:
+            if k == stop_at:
+                break
+        elif chi2 <= rc.chi2_target:
             break
         x = x + col_inv * (A.T @ (w * resid * row_inv))
         if rc.nonneg:
             np.maximum(x, 0.0, out=x)
         if damp is not None:
             x /= damp
+        n_updates = k + 1
     history.append(chi2)
     return x, {"offsets": _named(c, fwd.rows.position_ids),
                "chi2_history": history,
                "best_chi2": float(min(history)),
-               "n_iter_used": k + 1}
+               "n_iter_used": n_updates,
+               "best_iter": n_updates}
 
 
 def _grad3(x3: np.ndarray, z_weight: float) -> np.ndarray:
@@ -148,13 +159,17 @@ def _prox_tv(v: np.ndarray, gamma: float, zw: float, dual: np.ndarray,
 
 
 def sirt_tv(fwd: ForwardModel, data: FitData, rc: Reconstruction, *,
-            fit_offsets: bool = True) -> tuple[np.ndarray, dict]:
+            fit_offsets: bool = True, stop_at: int | None = None) -> tuple[np.ndarray, dict]:
     """SIRT with a per-iteration anisotropic-TV proximal (denoising) step.
 
     tv_alpha is a fraction of the reconstructed scale (x's p95), so it transfers
     across datasets instead of needing a retune per campaign. Runs the full
     budget and returns the best-chi2 iterate: the TV step keeps it from
     overfitting the way plain SIRT does, so there is no discrepancy stop.
+
+    `info["best_iter"]` = k means the returned x is the iterate after k updates.
+    `stop_at=k` returns exactly that iterate (with its offsets) instead of the
+    best-chi2 one; see `sirt` for why the kernel probes need it.
     """
     A, lam, w = fwd.A, data.lam, data.w
     shape = fwd.grid.shape
@@ -167,15 +182,19 @@ def sirt_tv(fwd: ForwardModel, data: FitData, rc: Reconstruction, *,
     dual = np.zeros((3,) + shape)
 
     history: list[float] = []
-    best = (float("inf"), x.copy(), c.copy())
+    best = (float("inf"), x.copy(), c.copy(), 0)
     for k in range(rc.n_iter):
         resid = lam - (A @ x + c[data.rows.pos_of_row])
         if fit_offsets:
             c = c + _update_offsets(resid, w, data.rows.pos_of_row, n_pos)
         resid = lam - (A @ x + c[data.rows.pos_of_row])
         chi2 = float(np.sum(w * resid**2) / n_used)
+        if stop_at is not None and k == stop_at:
+            return x, {"offsets": _named(c, fwd.rows.position_ids),
+                       "chi2_history": history + [chi2], "best_chi2": chi2,
+                       "n_iter_used": k, "best_iter": k}
         if chi2 < best[0]:
-            best = (chi2, x.copy(), c.copy())
+            best = (chi2, x.copy(), c.copy(), k)
         if k % 20 == 0:
             history.append(chi2)
 
@@ -192,18 +211,20 @@ def sirt_tv(fwd: ForwardModel, data: FitData, rc: Reconstruction, *,
     return best[1], {"offsets": _named(best[2], fwd.rows.position_ids),
                      "chi2_history": history,
                      "best_chi2": float(best[0]),
-                     "n_iter_used": rc.n_iter}
+                     "n_iter_used": rc.n_iter,
+                     "best_iter": int(best[3])}
 
 
 SOLVERS = {"sirt": sirt, "tv": sirt_tv}
 
 
 def solve(fwd: ForwardModel, data: FitData, rc: Reconstruction, *,
-          fit_offsets: bool = True) -> tuple[np.ndarray, dict]:
+          fit_offsets: bool = True, stop_at: int | None = None) -> tuple[np.ndarray, dict]:
     """`fit_offsets=False` holds every c_p at 0: only for a MEASURED opacity
     gauge (BaselineSolution.absolute). Fitting c_p against a measured level
     re-opens the degeneracy that moves a flat overburden into the offset and
-    its oblique excess into the outer shell of the volume."""
+    its oblique excess into the outer shell of the volume.
+    `stop_at`: see `sirt` (kernel probes only)."""
     if rc.algorithm not in SOLVERS:
         raise ValueError(f"unknown algorithm {rc.algorithm!r}; have {sorted(SOLVERS)}")
-    return SOLVERS[rc.algorithm](fwd, data, rc, fit_offsets=fit_offsets)
+    return SOLVERS[rc.algorithm](fwd, data, rc, fit_offsets=fit_offsets, stop_at=stop_at)

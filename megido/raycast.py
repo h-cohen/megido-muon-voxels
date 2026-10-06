@@ -26,7 +26,8 @@ from megido.voxels import VoxelGrid
 # Bumped whenever ray-casting logic changes. It is part of the cache key: in
 # Phase 1 a cache that ignored the code version silently served artifacts built
 # before a reconstruction fix, and the same trap is live here.
-INVERSION_VERSION = 2
+# 3: info.best_iter / stop_at (kernels); bootstrap replicas use the delivered sigma weights.
+INVERSION_VERSION = 3
 
 _SAMPLES_PER_VOXEL = 3          # sampling step along a ray = spacing / this
 _ROW_BLOCK = 512                # rows processed per vectorised block
