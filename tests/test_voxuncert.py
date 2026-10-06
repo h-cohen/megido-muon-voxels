@@ -127,3 +127,22 @@ def test_systematic_map_is_zero_when_both_quantiles_agree(tmp_path):
     same = systematic_map(sol, cfg, base_quantile=0.05, alt_quantile=0.05,
                           cache_dir=None)
     np.testing.assert_allclose(same, 0.0, atol=1e-12)
+
+
+def test_replicas_fit_with_the_same_sigma_weights_as_the_delivered_volume(tmp_path, monkeypatch):
+    """Gate 7: sigma must describe the DELIVERED (sigma-weighted) estimator."""
+    import megido.voxuncert as vu
+    cfg = _cfg(tmp_path)
+    seen = []
+    real = vu.solve_voxels
+
+    def spy(sol, cfg_, **kw):
+        seen.append(kw.get("sigma"))
+        return real(sol, cfg_, **kw)
+
+    monkeypatch.setattr(vu, "solve_voxels", spy)
+    sigma = {"pos0": np.full(10_000, 0.05), "pos1": np.full(10_000, 0.05)}
+    vu.voxel_bootstrap(_grid(), cfg, n_replicas=2, cache_dir=None,
+                       solve_kwargs={"n_iter": 5}, sigma=sigma)
+    assert len(seen) == 3                      # nominal + 2 replicas
+    assert all(s is sigma for s in seen)

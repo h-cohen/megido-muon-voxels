@@ -64,7 +64,8 @@ def voxel_bootstrap(grid: AnalysisGrid, cfg: SiteConfig, *,
                     n_replicas: int = 8, seed: int = 0,
                     cache_dir: str | Path | None = "runs/.cache",
                     solve_kwargs: dict | None = None,
-                    solver=solve_baseline) -> BootstrapResult:
+                    solver=solve_baseline,
+                    sigma: dict[str, np.ndarray] | None = None) -> BootstrapResult:
     """Poisson-resample the counts and re-run the WHOLE chain per replica.
 
     Resampling counts and re-solving only the voxels would hold the baseline
@@ -80,6 +81,13 @@ def voxel_bootstrap(grid: AnalysisGrid, cfg: SiteConfig, *,
     `np.stack` below would crash (or, worse, silently misalign with the
     nominal grid used for honest-SNR reporting downstream). Pinning removes
     that possibility rather than merely making it unlikely.
+
+    `sigma` is the per-sky-bin weighting the DELIVERED volume was fitted with.
+    Every replica is fitted with the same weights, so the spread describes the
+    estimator that is shown. Replicas fitted unweighted described a different,
+    noisier estimator (~1.4x the weighted sigma on the cafeteria; spike
+    spike/sigma-calibration). The weights are held fixed, not re-bootstrapped:
+    they define the estimator, they are not part of the noise.
     """
     rng = np.random.default_rng(seed)
     kw = dict(solve_kwargs or {})
@@ -88,14 +96,14 @@ def voxel_bootstrap(grid: AnalysisGrid, cfg: SiteConfig, *,
     # Nominal (unresampled) solve fixes the lattice; its own rho is not part
     # of the statistics, only its grid is.
     nominal_sol = solver(grid, cfg, **kw)
-    vgrid: VoxelGrid = solve_voxels(nominal_sol, cfg, cache_dir=cache_dir,
+    vgrid: VoxelGrid = solve_voxels(nominal_sol, cfg, sigma=sigma, cache_dir=cache_dir,
                                     holdouts=False)["full"].grid
 
     for _ in range(n_replicas):
         counts = {eid: rng.poisson(v).astype(np.int64)
                   for eid, v in grid.counts.items()}
         sol = solver(AnalysisGrid(edges=grid.edges, counts=counts), cfg, **kw)
-        fits = solve_voxels(sol, cfg, cache_dir=cache_dir, holdouts=False,
+        fits = solve_voxels(sol, cfg, sigma=sigma, cache_dir=cache_dir, holdouts=False,
                             grid=vgrid)
         stack.append(fits["full"].rho3())
 
