@@ -102,6 +102,25 @@ class Reconstruction:
 
 
 @dataclass(frozen=True)
+class KernelConfig:
+    """Point-spread probes of the delivered solver (megido.kernels).
+
+    spacing_m   probe lattice pitch, laterally and between z levels
+    sep_m       lateral spacing of probes that share ONE perturbed solve; must
+                exceed the PSF's lateral reach, or neighbouring probes' responses
+                mix (the linearity gate in tests/test_kernels.py measures this)
+    z_levels_m  probe heights; None -> every spacing_m from z_min + spacing_m/2
+    delta_sigma probe amplitude in units of the median opacity sigma of the rows
+                crossing the probe voxel: big enough to dominate round-off, small
+                enough to stay in the solver's linear regime
+    """
+    spacing_m: float = 1.0
+    sep_m: float = 3.0
+    z_levels_m: tuple | None = None
+    delta_sigma: float = 1.0
+
+
+@dataclass(frozen=True)
 class SkyReference:
     """An open-sky run of the SAME detector, used as the response reference.
 
@@ -138,6 +157,7 @@ class SiteConfig:
     reconstruction: Reconstruction = field(default_factory=Reconstruction)
     sky_reference: SkyReference | None = None
     detector: DetectorOverride | None = None
+    kernels: KernelConfig = field(default_factory=KernelConfig)
 
     def exposure(self, eid: str) -> Exposure:
         for e in self.exposures:
@@ -200,6 +220,10 @@ def load_site_config(path: str | Path) -> SiteConfig:
     reconstruction = Reconstruction(**raw.get("reconstruction", {}))
     sky_ref = SkyReference(**raw["sky_reference"]) if raw.get("sky_reference") else None
     detector = DetectorOverride(**raw["detector"]) if raw.get("detector") else None
+    ker_raw = dict(raw.get("kernels", {}))
+    if ker_raw.get("z_levels_m") is not None:
+        ker_raw["z_levels_m"] = tuple(float(v) for v in ker_raw["z_levels_m"])
+    kernels = KernelConfig(**ker_raw)
 
     return SiteConfig(
         site=raw["site"],
@@ -212,4 +236,5 @@ def load_site_config(path: str | Path) -> SiteConfig:
         reconstruction=reconstruction,
         sky_reference=sky_ref,
         detector=detector,
+        kernels=kernels,
     )

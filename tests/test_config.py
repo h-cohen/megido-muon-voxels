@@ -170,3 +170,22 @@ def test_coverage_damping_is_read_from_the_config(tmp_path):
         "    pose: {x: 0, y: 0, z: 0, tilt_deg: 0, az_deg: 0}\n"
     )
     assert load_site_config(p).reconstruction.coverage_damping == 0.05
+
+
+def test_kernels_block_defaults_and_overrides(tmp_path):
+    from megido.config import KernelConfig, load_site_config
+    base = ("site: t\ndata_dir: /tmp\nexposures:\n  - id: P0\n    runs: DET1-DET2\n"
+            "    pose: {x: 0, y: 0, z: 0, tilt_deg: 0, az_deg: 0}\n")
+    p = tmp_path / "a.yaml"; p.write_text(base)
+    assert load_site_config(p).kernels == KernelConfig()
+    q = tmp_path / "b.yaml"
+    q.write_text(base + "kernels: {spacing_m: 2.0, sep_m: 4.0, z_levels_m: [3, 5.5], delta_sigma: 0.5}\n")
+    k = load_site_config(q).kernels
+    assert k == KernelConfig(spacing_m=2.0, sep_m=4.0, z_levels_m=(3.0, 5.5), delta_sigma=0.5)
+
+
+def test_both_site_configs_carry_a_kernels_block():
+    from megido.config import load_site_config
+    for path in ("configs/megido.yaml", "configs/cafeteria.yaml"):
+        k = load_site_config(path).kernels
+        assert k.sep_m >= 2 * k.spacing_m        # batches need >= 2x2 offsets per level
