@@ -5,7 +5,7 @@ Spec: docs/superpowers/specs/2026-10-06-voxel-averaging-kernels-design.md.
 A delivered voxel x_hat +- sigma estimates the truth blurred by the solver's
 local resolution operator R (TV + non-negativity + damping + c_p, as
 configured), not the point truth: count-level phantoms showed the bootstrap
-sigma is a correct NOISE sigma that covers the point truth in only 33-55% of
+sigma is a correct NOISE sigma that covers the point truth in only 33-55% (cafeteria 33-40%, Megiddo 42-55%) of
 voxels, because the bias of the one-sided geometry dominates
 (spike/sigma-calibration). This module measures columns of R by perturbation:
 
@@ -13,8 +13,13 @@ voxels, because the bias of the one-sided geometry dominates
 
 re-solved along the nominal solve's path (`stop_at=best_iter`), for batches of
 probes far enough apart laterally to share one solve. Columns suffice: the
-gate's R t = sum_j t_j PSF_j, and rows would need the adjoint of a nonlinear
+intended use R t = sum_j t_j PSF_j, and rows would need the adjoint of a nonlinear
 iterative solver.
+
+CAVEAT: that superposition claim was NOT validated in the two-position
+geometry (spec §10). PSFs are cell-truncated: the |PSF| metrics normalise
+within the cell, and psf_lat is capped by the cell half-width. This module is
+a probe tool, not a coverage claim.
 """
 from __future__ import annotations
 

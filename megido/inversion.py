@@ -82,6 +82,7 @@ def sirt(fwd: ForwardModel, data: FitData, rc: Reconstruction, *,
     perturbed data along the nominal solve's path: a perturbation must not
     change WHICH iterate is delivered, or the point-spread function would jump.
     `info["best_iter"]` is the number of updates applied to the returned x.
+    Valid range: 0 <= stop_at <= rc.n_iter (`solve` raises ValueError outside it).
     """
     A, lam, w = fwd.A, data.lam, data.w
     n_pos = len(fwd.rows.position_ids)
@@ -207,6 +208,17 @@ def sirt_tv(fwd: ForwardModel, data: FitData, rc: Reconstruction, *,
         gamma = rc.tv_alpha * max(scale, 1e-9)
         x = _prox_tv(x.reshape(shape), gamma, rc.tv_z_weight, dual).ravel()
 
+    if stop_at is not None and stop_at == rc.n_iter:
+        # all n_iter updates applied: offsets/chi2 as the loop would at k = n_iter
+        resid = lam - (A @ x + c[data.rows.pos_of_row])
+        if fit_offsets:
+            c = c + _update_offsets(resid, w, data.rows.pos_of_row, n_pos)
+        resid = lam - (A @ x + c[data.rows.pos_of_row])
+        chi2 = float(np.sum(w * resid**2) / n_used)
+        return x, {"offsets": _named(c, fwd.rows.position_ids),
+                   "chi2_history": history + [chi2], "best_chi2": chi2,
+                   "n_iter_used": rc.n_iter, "best_iter": rc.n_iter}
+
     history.append(best[0])
     return best[1], {"offsets": _named(best[2], fwd.rows.position_ids),
                      "chi2_history": history,
@@ -224,7 +236,10 @@ def solve(fwd: ForwardModel, data: FitData, rc: Reconstruction, *,
     gauge (BaselineSolution.absolute). Fitting c_p against a measured level
     re-opens the degeneracy that moves a flat overburden into the offset and
     its oblique excess into the outer shell of the volume.
-    `stop_at`: see `sirt` (kernel probes only)."""
+    `stop_at`: see `sirt` (kernel probes only); must satisfy
+    0 <= stop_at <= rc.n_iter, else ValueError."""
     if rc.algorithm not in SOLVERS:
         raise ValueError(f"unknown algorithm {rc.algorithm!r}; have {sorted(SOLVERS)}")
+    if stop_at is not None and not 0 <= stop_at <= rc.n_iter:
+        raise ValueError(f"stop_at={stop_at} outside 0 <= stop_at <= n_iter={rc.n_iter}")
     return SOLVERS[rc.algorithm](fwd, data, rc, fit_offsets=fit_offsets, stop_at=stop_at)

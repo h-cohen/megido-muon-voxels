@@ -226,3 +226,22 @@ def test_stop_at_ignores_the_discrepancy_target():
     assert info["best_iter"] == 0
     x7, info7 = solve(fwd, data, rc, stop_at=7)
     assert info7["best_iter"] == 7 and np.linalg.norm(x7) > 0
+
+
+@pytest.mark.parametrize("algorithm", ["sirt", "tv"])
+@pytest.mark.parametrize("bad", [-1, 51])
+def test_stop_at_outside_zero_to_n_iter_raises(algorithm, bad):
+    fwd, truth, data = _toy()
+    rc = Reconstruction(algorithm=algorithm, n_iter=50, tv_alpha=0.0, chi2_target=1e-12)
+    with pytest.raises(ValueError, match="stop_at"):
+        solve(fwd, data, rc, stop_at=bad)
+
+
+@pytest.mark.parametrize("algorithm", ["sirt", "tv"])
+def test_stop_at_n_iter_applies_all_n_iter_updates(algorithm):
+    fwd, truth, data = _toy()
+    rc = Reconstruction(algorithm=algorithm, n_iter=50, tv_alpha=0.0, chi2_target=1e-12)
+    x49, _ = solve(fwd, data, rc, stop_at=49)
+    x50, info = solve(fwd, data, rc, stop_at=50)
+    assert info["best_iter"] == 50
+    assert np.linalg.norm(x50 - x49) > 0           # the 50th update was applied

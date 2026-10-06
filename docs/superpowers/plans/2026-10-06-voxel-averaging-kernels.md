@@ -1,5 +1,7 @@
 # Voxel Averaging Kernels Implementation Plan
 
+**STOPPED after Task 4 (user decision, 2026-10-06): Task 5's gates failed — see the spec §10. Tasks 5-8 were not executed. Task 4's gate-1 geometry was changed by controller ruling R3 (9 detectors at 3 m pitch; the 25-detector geometry put the probe in view of one detector), and delta_sigma is 10 (ruling R4).**
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Measure the point-spread function (PSF) of the delivered voxel solver at a lattice of probe voxels, so that every reported voxel carries four honest kernel metrics. These make the claim "x̂ ± σ estimates the kernel-blurred truth" testable, and a count-level coverage gate tests it.

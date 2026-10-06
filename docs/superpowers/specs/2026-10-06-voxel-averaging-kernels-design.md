@@ -82,6 +82,8 @@ PSFs ("a feature here would appear smeared over …").
 
 ### 3.2 Batching
 
+*Superseded in part — see §10: the CLI/viewer layers and the R·t coverage gate were not built.*
+
 Probes at one height share a solve when they are far enough apart laterally.
 A batch is the set of probes at one `z_level` on a lateral lattice spaced
 `sep_m`. `(sep_m / spacing_m)²` offset batches per level fill the `spacing_m`
@@ -111,6 +113,8 @@ renormalised over the available corners. A voxel with no probe within one
 `spacing_m` is NaN ("not characterised", never 0).
 
 ## 4. Gates and tests
+
+*Superseded in part — see §10: the CLI/viewer layers and the R·t coverage gate were not built.*
 
 Each gate must be able to fail for a broken implementation. Tests use small
 synthetic campaigns and run in the normal suite.
@@ -155,6 +159,8 @@ synthetic campaigns and run in the normal suite.
 summary tables written to the docs (§7).
 
 ## 5. Architecture
+
+*Superseded in part — see §10: the CLI/viewer layers and the R·t coverage gate were not built.*
 
 **New module `megido/kernels.py`** (pure logic; I/O only for its own result):
 
@@ -206,6 +212,8 @@ summary tables written to the docs (§7).
 
 ## 6. Data flow
 
+*Superseded in part — see §10: the CLI/viewer layers and the R·t coverage gate were not built.*
+
 ```
 baseline.npz + σ ──► solve_voxels ──► x̂, info.best_iter
                                   │
@@ -217,6 +225,8 @@ Downstream consumers read `kernels.npz` / `psf_*.npy` only. Nothing upstream
 imports `kernels.py`.
 
 ## 7. Docs and reporting
+
+*Superseded in part — see §10: the CLI/viewer layers and the R·t coverage gate were not built.*
 
 Written from the full-scale numbers:
 
@@ -247,6 +257,8 @@ Written from the full-scale numbers:
 
 ## 9. Decision record
 
+*Superseded in part — see §10: the CLI/viewer layers and the R·t coverage gate were not built.*
+
 | Decision | Chosen | Rejected | Why |
 |---|---|---|---|
 | What σ claims | Kernel-blurred truth `R·t` | Point truth via a posterior | A prior would set σ in the null space |
@@ -258,7 +270,7 @@ Written from the full-scale numbers:
 
 ## 10. Outcome — stopped after plan Task 4 (2026-10-06)
 
-Landed on `main`: `solve(..., stop_at=)` / `info["best_iter"]`
+Delivered by this plan (branch feat/voxel-kernels): `solve(..., stop_at=)` / `info["best_iter"]`
 (`INVERSION_VERSION` 3); `voxel_bootstrap(sigma=)` so replicas fit the
 delivered estimator; the `kernels:` config block; and `megido/kernels.py`'s
 probe core (`probe_batches`, `probe_deltas`, `point_spreads`, `psf_metrics`),
@@ -291,6 +303,5 @@ geometry (0.5 m voxels, one 2.2 m baseline):
 
 What remains true from §1: the delivered σ is a correct noise σ, the bias
 dominates, and SNR ≥ 3 is not a detection test. Code and failing gates of
-Task 5: branch `spike/kernels-task5-failed`; diagnostics recorded in the
-plan's SDD ledger. Options left open: descriptive per-location spike tests
+Task 5: branch `spike/kernels-task5-failed`; diagnostic numbers are those quoted in this section. Options left open: descriptive per-location spike tests
 (no superposition claim) or one-solve-per-probe full-grid PSFs.

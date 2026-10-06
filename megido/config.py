@@ -108,7 +108,8 @@ class KernelConfig:
     spacing_m   probe lattice pitch, laterally and between z levels
     sep_m       lateral spacing of probes that share ONE perturbed solve; must
                 exceed the PSF's lateral reach, or neighbouring probes' responses
-                mix (the linearity gate in tests/test_kernels.py measures this)
+                mix. In the two-position geometry PSFs are metres wide and
+                cell-truncated PSFs do not superpose (spec §10).
     z_levels_m  probe heights; None -> every spacing_m from z_min + spacing_m/2
     delta_sigma probe amplitude in units of the median opacity sigma of the rows
                 crossing the probe voxel. 10: the delivered TV solver is amplitude-

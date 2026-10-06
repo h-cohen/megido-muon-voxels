@@ -100,7 +100,7 @@ re-propose without new information — the findings are in the specs/plans):
   (`docs/cafeteria-run.md`; branch `spike/nerf-field`).
 - **A linear resolution-operator (`R·t`) description of the voxel volume:**
   point-spread probes of the delivered solver (`megido/kernels.py` core,
-  `solve(stop_at=)`) work in a well-resolved control, but in the
+  `solve(stop_at=)`; kept as a probe tool, not wired into the CLI or viewer) work in a well-resolved control, but in the
   two-position geometry the PSFs are metres wide and do not superpose
   (rel L2 0.6–0.7; 0.39 even for linear SIRT), TV's response depends on
   feature amplitude (1 σ erratic, 10 σ stable), and near the solve-box top

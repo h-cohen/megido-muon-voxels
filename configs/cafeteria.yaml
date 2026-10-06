@@ -92,12 +92,10 @@ exposures:
     pose: {x: 1.7753, y: 0.7203, z: 0.0, tilt_deg: 0, az_deg: 0.0475}
     note: "pose self-calibrated in cafeteria_3d_modeling, unverified by survey"
 
-# Point-spread probes of the delivered solver (`reconstruct --kernels`,
-# megido/kernels.py, spec 2026-10-06-voxel-averaging-kernels-design.md).
-#   spacing_m 1.0: five voxels at 0.20 m; ~50 solves (~12 min).
-#   sep_m 3.0: probes 3 m apart share a solve. The lateral PSF reach measured on
-#     the cafeteria spike is ~1-2 m; the linearity gate catches it if not.
-#   delta_sigma 10.0: bump = ten median noise-sigmas of opacity through one voxel; the TV solver is amplitude-dependent and a 1-sigma bump gives an erratic PSF.
+# Point-spread probe settings, consumed only by megido/kernels.py and its tests.
+# No CLI flag, viewer layer or coverage claim exists (spec
+# 2026-10-06-voxel-averaging-kernels-design.md §10). delta_sigma 10: the TV
+# solver is amplitude-dependent, a 1-sigma bump gives an erratic response.
 kernels:
   spacing_m: 1.0
   sep_m: 3.0
