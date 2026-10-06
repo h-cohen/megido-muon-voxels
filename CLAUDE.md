@@ -34,7 +34,9 @@ reasoning, the dead ends, and every decision.
   (`dz ≈ √2·σ_t·z²/b`), and the real campaign has one baseline (2.2 m), giving
   ~1.4 m depth error at mid-range — depth is *not* resolved. Never write a gate
   or a claim that assumes depth is recovered. `megido/resolution.py` computes the
-  honest numbers; report them. The productive response to this is a *different
+  honest numbers; report them. Lateral recovery is in *pattern* (correlation),
+  not amplitude: on the cafeteria phantom column integrals came out at a median
+  0.43× truth, mass pulled toward the detector. The productive response to this is a *different
   observable*, not despair: the detector sits under a small hill looking up, so
   the hill's silhouette is a sharp flux edge (thick overburden at the crown,
   near-open sky off the flanks) — a lateral feature this geometry resolves well,
@@ -96,6 +98,15 @@ re-propose without new information — the findings are in the specs/plans):
   wrong-depth phantom to the grid top. The representation's bias sets depth.
   Autodiff remains useful for a count-level Poisson joint fit
   (`docs/cafeteria-run.md`; branch `spike/nerf-field`).
+- **A linear resolution-operator (`R·t`) description of the voxel volume:**
+  point-spread probes of the delivered solver (`megido/kernels.py` core,
+  `solve(stop_at=)`) work in a well-resolved control, but in the
+  two-position geometry the PSFs are metres wide and do not superpose
+  (rel L2 0.6–0.7; 0.39 even for linear SIRT), TV's response depends on
+  feature amplitude (1 σ erratic, 10 σ stable), and near the solve-box top
+  the box edge — not parallax — bounds depth. The claim "x̂ ± σ covers the
+  kernel-blurred truth" was not validated; stopped after plan Task 4
+  (spec `2026-10-06-voxel-averaging-kernels-design.md` §10).
 
 The two real wins this revision landed: the volume **render axis-order fix** and
 the **upper-envelope GP hillside surface** (the detector-spot dip was a genuine
@@ -160,7 +171,10 @@ Built in phases, each with its own spec-referenced plan under
   has the same shell; re-run `reconstruct` to get the layer. An SNR gate
   ("hide voxels with SNR below N", on at 3 when `snr.npy` exists) removes
   the streaks the noisiest directions (acceptance corners) leave; both
-  gates also set the auto colour window from the voxels they keep. A
+  gates also set the auto colour window from the voxels they keep. The SNR is a NOISE SNR, not a
+  detection test: on cafeteria count-level phantoms the voxel σ covers the
+  point truth in only 33–40% of voxels (bias, not noise, dominates) and 92%
+  of SNR ≥ 3 voxels were empty in truth (`spike/sigma-calibration`). A
   "Voxel cubes" render mode draws every voxel ≥ a threshold (default
   `meta.suggested_iso[0]`) as an opaque, face-shaded block: an exact
   voxel-to-voxel DDA (`voxelMarch` in `grid.mjs`, twin of `cubeMarch` in the
