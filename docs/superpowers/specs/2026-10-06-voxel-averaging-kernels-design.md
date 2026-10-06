@@ -69,7 +69,7 @@ PSFs ("a feature here would appear smeared over …").
   corrected.
 - **Amplitude.** `δ = delta_sigma · median(σ_rows crossing j) / spacing_m`.
   This is the density whose vertical path through one voxel adds about
-  `delta_sigma` noise-σ of opacity. Linearity is checked at 0.5δ and 2δ (§4).
+  `delta_sigma` noise-σ of opacity. Default `delta_sigma` is 10: the delivered TV solver is amplitude-dependent (a 1-sigma bump is the size of the noise structure TV reshapes and its response is erratic, mass 0.58-1.71 between neighbouring probes; a 10-sigma bump gives a stable, compact PSF). Kernels therefore describe a feature 10 noise-sigma strong; weaker features are blurred more. Linearity is checked at 0.5δ and 2δ (§4).
 - **Determinism.** Production `sirt_tv` returns the best-χ² iterate. For
   perturbed data that can be a different iteration, which would make the PSF
   jump. Probe solves therefore run to the nominal solve's `best_iter` and
@@ -179,7 +179,7 @@ summary tables written to the docs (§7).
   `info` gains `best_iter`).
 - `megido/config.py` plus both site YAMLs: a `kernels:` block with
   `spacing_m` (default 1.0), `sep_m` (3.0), `z_levels_m` (default: every
-  `spacing_m` from `z_min + spacing/2`), and `delta_sigma` (1.0), each
+  `spacing_m` from `z_min + spacing/2`), and `delta_sigma` (10.0), each
   justified inline in the YAML. Tunables live in config, not code.
 - `megido/cli.py`: `reconstruct --kernels` (opt-in; ~50+ solves). It writes
   `kernels.npz` plus four layers, `psf_mass.npy`, `psf_dz.npy`,

@@ -15,7 +15,7 @@
 - Units: Phase 3 is metres everywhere in this plan.
 - NaN means "not characterised / not constrained", never 0.
 - `INVERSION_VERSION` goes 2 → 3 (`megido/raycast.py`).
-- Tunables live in the `kernels:` YAML block, never hardcoded: `spacing_m` 1.0, `sep_m` 3.0, `z_levels_m` (default: every `spacing_m` from `z_min + spacing_m/2`), `delta_sigma` 1.0.
+- Tunables live in the `kernels:` YAML block, never hardcoded: `spacing_m` 1.0, `sep_m` 3.0, `z_levels_m` (default: every `spacing_m` from `z_min + spacing_m/2`), `delta_sigma` 10.0.
 - Gate thresholds are fixed now and are never loosened to get a pass: well-resolved mass ≥ 0.8, spread ≤ 2 voxels, |shift| ≤ 1 voxel; linearity relative L2 ≤ 0.2; coverage of `R·t` within **[0.58, 0.78]**. If a gate fails, find out which side is wrong and report it.
 - `.npy` volumes are numpy C-order `(nx, ny, nz)`. Every new 3D viewer texture goes through `makeVolumeTexture` (which applies `reorderForTexture`).
 - Never run two pytest sessions at once. Viewer browser tests rebuild `viewer/dist/index.html`.
@@ -346,7 +346,7 @@ git commit -m "fix(voxuncert): bootstrap replicas use the delivered sigma weight
 - Test: `tests/test_config.py`
 
 **Interfaces:**
-- Produces: `KernelConfig(spacing_m: float = 1.0, sep_m: float = 3.0, z_levels_m: tuple[float, ...] | None = None, delta_sigma: float = 1.0)`, frozen. `SiteConfig.kernels: KernelConfig` (default `KernelConfig()`). The loader reads `raw["kernels"]` and turns `z_levels_m` into a tuple of floats.
+- Produces: `KernelConfig(spacing_m: float = 1.0, sep_m: float = 3.0, z_levels_m: tuple[float, ...] | None = None, delta_sigma: float = 10.0)`, frozen. `SiteConfig.kernels: KernelConfig` (default `KernelConfig()`). The loader reads `raw["kernels"]` and turns `z_levels_m` into a tuple of floats.
 
 - [ ] **Step 1: Write the failing tests** (append to `tests/test_config.py`)
 
@@ -396,7 +396,7 @@ class KernelConfig:
     spacing_m: float = 1.0
     sep_m: float = 3.0
     z_levels_m: tuple | None = None
-    delta_sigma: float = 1.0
+    delta_sigma: float = 10.0
 ```
 
 Add `kernels: KernelConfig = field(default_factory=KernelConfig)` to `SiteConfig`, after `detector`. In `load_site_config`, before the `return`:
@@ -418,11 +418,11 @@ Append to `configs/megido.yaml`:
 #   spacing_m 1.0: four voxels at 0.25 m; finer only multiplies solves (~1 h here).
 #   sep_m 3.0: probes 3 m apart share a solve. The lateral PSF reach measured on
 #     the cafeteria spike is ~1-2 m; the linearity gate catches it if not.
-#   delta_sigma 1.0: bump = one median noise-sigma of opacity through one voxel.
+#   delta_sigma 10.0: bump = ten median noise-sigmas of opacity through one voxel; the TV solver is amplitude-dependent and a 1-sigma bump gives an erratic PSF.
 kernels:
   spacing_m: 1.0
   sep_m: 3.0
-  delta_sigma: 1.0
+  delta_sigma: 10.0
 ```
 
 Append the same block to `configs/cafeteria.yaml`, with the comment's first bullet reading `spacing_m 1.0: five voxels at 0.20 m; ~50 solves (~12 min).`

@@ -111,13 +111,17 @@ class KernelConfig:
                 mix (the linearity gate in tests/test_kernels.py measures this)
     z_levels_m  probe heights; None -> every spacing_m from z_min + spacing_m/2
     delta_sigma probe amplitude in units of the median opacity sigma of the rows
-                crossing the probe voxel: big enough to dominate round-off, small
-                enough to stay in the solver's linear regime
+                crossing the probe voxel. 10: the delivered TV solver is amplitude-
+                dependent -- a 1-sigma bump is the size of the noise structure TV
+                reshapes and its response is erratic (mass 0.58-1.71 between
+                neighbouring probes); a 10-sigma bump gives a stable, compact PSF.
+                Kernels therefore describe a feature 10 noise-sigma strong; weaker
+                features are blurred more.
     """
     spacing_m: float = 1.0
     sep_m: float = 3.0
     z_levels_m: tuple | None = None
-    delta_sigma: float = 1.0
+    delta_sigma: float = 10.0
 
 
 @dataclass(frozen=True)

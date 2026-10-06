@@ -47,8 +47,8 @@ exposures:
 #   spacing_m 1.0: four voxels at 0.25 m; finer only multiplies solves (~1 h here).
 #   sep_m 3.0: probes 3 m apart share a solve. The lateral PSF reach measured on
 #     the cafeteria spike is ~1-2 m; the linearity gate catches it if not.
-#   delta_sigma 1.0: bump = one median noise-sigma of opacity through one voxel.
+#   delta_sigma 10.0: bump = ten median noise-sigmas of opacity through one voxel; the TV solver is amplitude-dependent and a 1-sigma bump gives an erratic PSF.
 kernels:
   spacing_m: 1.0
   sep_m: 3.0
-  delta_sigma: 1.0
+  delta_sigma: 10.0

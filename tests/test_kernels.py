@@ -11,7 +11,7 @@ from megido.inversion import solve
 from megido.kernels import (PSF, cell_half_width, point_spreads, probe_batches,
                             probe_deltas, psf_metrics)
 from megido.phantom import project, sky_rows
-from megido.resolution import rays_per_voxel
+from megido.resolution import rays_per_voxel, views_per_voxel
 from megido.voxels import VoxelGrid
 
 SIGMA = 0.02
@@ -58,8 +58,9 @@ def _megiddo_problem(tmp_path, positions=2):
 
 
 def _generous_problem(tmp_path):
-    """25 detectors over +-20 m: baselines 10-40 m against z ~ 4 m."""
-    dets = [(x, y) for x in (-20, -10, 0, 10, 20) for y in (-20, -10, 0, 10, 20)]
+    """9 detectors at 3 m pitch: the central probe at z = 3.5 m is seen by all 9
+    positions, baselines 3-8.5 m against z 3.5 m (a 10 m pitch left it seen by one)."""
+    dets = [(x, y) for x in (-3, 0, 3) for y in (-3, 0, 3)]
     blk = "\n".join(
         f"  - id: D{i}\n    runs: DET{i}-DET{i}\n"
         f"    pose: {{x: {dx}, y: {dy}, z: 0, tilt_deg: 0, az_deg: 0}}"
@@ -68,11 +69,11 @@ def _generous_problem(tmp_path):
     p.write_text(
         "site: generous\ndata_dir: /tmp\n"
         "volume: {z_min_m: 0.0, z_max_m: 8.0, spacing_m: 1.0, n_aperture_sub: 2,\n"
-        "         xy_m: [[-30, 30], [-30, 30]]}\n"
+        "         xy_m: [[-14, 14], [-14, 14]]}\n"
         "reconstruction: {algorithm: tv, n_iter: 400, tv_alpha: 0.002, tv_z_weight: 0.3}\n"
         "exposures:\n" + blk + "\n")
     cfg = load_site_config(p)
-    rows = sky_rows(tuple(f"pos{i}" for i in range(25)), t_max=1.2, n_bins=25)
+    rows = sky_rows(tuple(f"pos{i}" for i in range(9)), t_max=1.2, n_bins=25)
     return cfg, _problem(cfg, rows, lambda g: _slab(g, 6.0, 7.0, 0.05))
 
 
@@ -151,13 +152,15 @@ def test_psfs_are_deterministic(tmp_path):
 
 
 def test_well_resolved_geometry_gives_a_compact_psf(tmp_path):
-    """Gate 1: 10-40 m baselines against z ~ 4 m (analytic dz ~ 0.03 m)."""
+    """Gate 1: 9 positions, baselines 3-8.5 m against z = 3.5 m."""
     cfg, (fwd, data, rc, x, info, rays3) = _generous_problem(tmp_path)
     kc = dataclasses.replace(cfg.kernels, spacing_m=1.0, sep_m=6.0)
     i, j = np.array(fwd.grid.shape[:2]) // 2
     k = int((3.5 - fwd.grid.origin[2]) / fwd.grid.spacing)          # probe at z = 3.5 m
     probes = np.array([[i, j, k]])
     assert rays3[i, j, k] >= 2
+    views = views_per_voxel(fwd).reshape(fwd.grid.shape)
+    assert views[i, j, k] >= 4                                      # parallax exists
     deltas = probe_deltas(fwd, data, probes, kc)
     (psf,) = point_spreads(fwd, data, rc, x, info["best_iter"], probes, deltas,
                            fit_offsets=True, cell_half=cell_half_width(fwd.grid, kc))
